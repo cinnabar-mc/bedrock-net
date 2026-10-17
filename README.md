@@ -35,9 +35,17 @@ batches for resource-pack transfers. Encoders split at both packet-count and
 decoded-byte limits, preserve order, and produce no batch for an empty send.
 Compression uses raw DEFLATE despite the protocol's Zlib naming.
 
-This is an incremental implementation. Encryption, transport adapters, login,
-services and real-server compatibility validation are still pending. The existing
-Cinnabar Go backend remains the production implementation.
+`encryption::BatchEncryptor` and `BatchDecryptor` own independent continuous
+AES-256-CTR streams and checksum counters. They take the session key derived by
+the handshake. Encrypt the compressed body after removing any transport marker;
+decrypt and verify before decompressing. Retain outgoing ciphertext in send order,
+and bound incoming wire bytes before decryption. Integrity failures invalidate the
+direction. A compression drop still consumes the encrypted batch's stream state.
+Key exchange and authentication are separate, pending work.
+
+This is an incremental implementation. Transport adapters, login, services and
+real-server compatibility validation are still pending. The existing Cinnabar Go
+backend remains the production implementation.
 
 Run `cargo test --locked` for focused codec tests and `cargo fmt --all --check`
 for formatting. See [NOTICE](NOTICE) for implementation references and licensing.

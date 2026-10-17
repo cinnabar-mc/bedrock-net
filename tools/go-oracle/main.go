@@ -34,6 +34,23 @@ func run() error {
 			return err
 		}
 	}
+	var key [32]byte
+	for index := range key {
+		key[index] = byte(index)
+	}
+	var encrypted bytes.Buffer
+	encoder := packet.NewEncoder(&encrypted)
+	encoder.EnableCompression(packet.NopCompression, 0)
+	encoder.EnableEncryption(key)
+	for index := range 3 {
+		encrypted.Reset()
+		if err := encoder.Encode(packets); err != nil {
+			return fmt.Errorf("encode encrypted oracle batch: %w", err)
+		}
+		if err := emit(fmt.Sprintf("GO_ENCRYPTED_%d", index), encrypted.Bytes()); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 

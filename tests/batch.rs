@@ -1,5 +1,6 @@
 //! Behavioral checks for batch compatibility and untrusted framing.
 
+use bedrock_net::encryption::{BatchDecryptor, BatchEncryptor, EncryptionError};
 use bedrock_net::{
     BatchCodec, BatchError, BatchHeader, BatchLimits, CompressionAlgorithm, CompressionSettings,
     DecodeOutcome, DropReason,
@@ -222,4 +223,72 @@ fn wire_limits_apply_before_decompression_and_outgoing_delivery() {
         codec.encode(&[Bytes::from_static(&[2])]),
         Err(BatchError::EncodedTooLarge { .. })
     ));
+}
+
+#[test]
+fn directional_encryption_matches_consecutive_go_batches_byte_for_byte() {
+    let key = std::array::from_fn(|index| u8::try_from(index).unwrap());
+    let mut encryptor = BatchEncryptor::new(key);
+    let mut decryptor = BatchDecryptor::new(key);
+    let plaintext = Bytes::from_static(&go::GO_BATCH_65535[1..]);
+    for wire in [go::GO_ENCRYPTED_0, go::GO_ENCRYPTED_1, go::GO_ENCRYPTED_2] {
+        let encrypted = encryptor.encrypt(plaintext.clone()).unwrap();
+        assert_eq!(encrypted, &wire[1..]);
+        assert_eq!(decryptor.decrypt(encrypted).unwrap(), plaintext);
+    }
+    // The opposite direction starts independently, even after outgoing traffic.
+    let mut opposite = BatchEncryptor::new(key);
+    assert_eq!(
+        opposite.encrypt(plaintext).unwrap(),
+        &go::GO_ENCRYPTED_0[1..]
+    );
+}
+
+#[test]
+fn discarded_compression_still_advances_the_encrypted_stream() {
+    let mut encryptor = BatchEncryptor::new([7; 32]);
+    let mut decryptor = BatchDecryptor::new([7; 32]);
+    let mut codec = BatchCodec::new(BatchHeader::NetherNet, BatchLimits::default());
+    codec.enable_compression(CompressionSettings {
+        algorithm: CompressionAlgorithm::Deflate,
+        threshold: 0,
+    });
+    let bad = encryptor.encrypt(Bytes::from_static(&[2])).unwrap();
+    let body = decryptor.decrypt(bad).unwrap();
+    assert!(matches!(
+        codec.decode(body),
+        Ok(DecodeOutcome::Dropped(DropReason::UnknownCompression(2)))
+    ));
+    let good = encryptor
+        .encrypt(Bytes::from_static(&go::GO_BATCH_65535[1..]))
+        .unwrap();
+    assert_eq!(packets(&codec, decryptor.decrypt(good).unwrap()).len(), 2);
+}
+
+#[test]
+fn integrity_and_truncation_failures_permanently_invalidate_the_direction() {
+    for truncate in [false, true] {
+        let mut encryptor = BatchEncryptor::new([9; 32]);
+        let mut decryptor = BatchDecryptor::new([9; 32]);
+        let mut encrypted = encryptor
+            .encrypt(Bytes::from_static(b"synthetic packet body"))
+            .unwrap()
+            .to_vec();
+        if truncate {
+            encrypted.truncate(7);
+        } else {
+            encrypted[0] ^= 1;
+        }
+        let error = decryptor.decrypt(Bytes::from(encrypted)).unwrap_err();
+        if truncate {
+            assert_eq!(error, EncryptionError::Truncated { actual: 7 });
+        } else {
+            assert_eq!(error, EncryptionError::InvalidChecksum);
+        }
+        let subsequent = encryptor.encrypt(Bytes::from_static(b"next body")).unwrap();
+        assert_eq!(
+            decryptor.decrypt(subsequent).unwrap_err(),
+            EncryptionError::Invalidated
+        );
+    }
 }
