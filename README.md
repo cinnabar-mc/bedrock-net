@@ -43,7 +43,24 @@ and bound incoming wire bytes before decryption. Integrity failures invalidate t
 direction. A compression drop still consumes the encrypted batch's stream state.
 Key exchange and authentication are separate, pending work.
 
-This is an incremental implementation. Transport adapters, login, services and
+Enable the `raknet` feature for `raknet::RakNetConnection`, a Tokio driver over a
+pinned [bedrock-crustaceans/raknet](https://github.com/bedrock-crustaceans/raknet)
+protocol engine. One connection owns its socket and protocol state and spawns no
+background tasks. Queue complete messages with `queue_send`, then keep `recv`
+polled in the session network loop to service acknowledgements and timers. `flush`
+sends immediately available datagrams. Cancelling these waits retains pending
+state; dropping a dial or connection releases its socket. Transport messages
+retain their batch marker. Receive queue capacities and handshake/close deadlines
+are explicit options. `wait_send_capacity` services ACKs when the outgoing byte
+budget is full, retaining inbound messages for the next `recv`. Complete earlier
+messages drain before terminal errors.
+
+The minimum Rust version is 1.90, required by the pinned transport dependency.
+For Go transport interoperability checks, build the loopback-only helper under
+`tools/raknet-peer` and set `BEDROCK_NET_RAKNET_PEER` to that executable before
+running `cargo test --locked -p bedrock-net --features raknet`.
+
+This is an incremental implementation. NetherNet, login, services and
 real-server compatibility validation are still pending. The existing Cinnabar Go
 backend remains the production implementation.
 

@@ -9,6 +9,12 @@ permissions:
   contents: read
 
 jobs:
+  msrv:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.90
+      - run: cargo check --locked -p bedrock-net --all-targets --all-features
   rust:
     strategy:
       matrix:
@@ -19,9 +25,18 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: tools/raknet-peer/go.mod
+          cache-dependency-path: tools/raknet-peer/go.sum
+      - working-directory: tools/raknet-peer
+        run: go build -o ../../target/raknet-peer.exe .
       - run: cargo fmt --all --check
       - run: cargo test --locked -p bedrock-net
-      - run: cargo clippy --locked -p bedrock-net --all-targets -- -D warnings
+      - run: cargo test --locked -p bedrock-net --features raknet
+        env:
+          BEDROCK_NET_RAKNET_PEER: ${{ github.workspace }}/target/raknet-peer.exe
+      - run: cargo clippy --locked -p bedrock-net --all-targets --all-features -- -D warnings
   oracle:
     runs-on: ubuntu-latest
     steps:
