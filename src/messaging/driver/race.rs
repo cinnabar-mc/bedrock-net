@@ -2,7 +2,10 @@
 
 use super::{Error, SocketStep};
 use nethernet_tokio::CallerSignalingError;
-use std::future::Future;
+use std::{
+    future::{Future, poll_fn},
+    task::Poll,
+};
 
 /// Ready service actions; pending state remains in the two existing owners.
 pub(super) struct Progress {
@@ -10,14 +13,33 @@ pub(super) struct Progress {
     pub(super) admitted: Option<Result<(), CallerSignalingError>>,
 }
 
-/// Drives service I/O and the original retained delivery without rebuilding either owner.
+/// Polls both owners on each turn, retaining both ready results.
+/// A failed admission stops before further socket work; successful handoff survives a simultaneous close.
 pub(super) async fn step(
     socket: impl Future<Output = Result<SocketStep, Error>>,
     admission: impl Future<Output = Result<(), CallerSignalingError>>,
 ) -> Progress {
-    tokio::select! {
-        biased;
-        event = socket => Progress { socket: Some(event), admitted: None },
-        admitted = admission => Progress { socket: None, admitted: Some(admitted) },
-    }
+    tokio::pin!(socket, admission);
+    poll_fn(|cx| {
+        let admitted = match admission.as_mut().poll(cx) {
+            Poll::Ready(result) => Some(result),
+            Poll::Pending => None,
+        };
+        if admitted.as_ref().is_some_and(Result::is_err) {
+            return Poll::Ready(Progress {
+                socket: None,
+                admitted,
+            });
+        }
+        let socket = match socket.as_mut().poll(cx) {
+            Poll::Ready(result) => Some(result),
+            Poll::Pending => None,
+        };
+        if admitted.is_some() || socket.is_some() {
+            Poll::Ready(Progress { socket, admitted })
+        } else {
+            Poll::Pending
+        }
+    })
+    .await
 }

@@ -140,3 +140,61 @@ async fn readable_websocket_burst_cannot_starve_ready_transport_admission() {
     .await
     .expect("bounded socket burst must finish");
 }
+
+/// A known terminal admission cannot dispatch another socket action in the same turn.
+#[tokio::test]
+async fn failed_admission_stops_before_socket_dispatch() {
+    let (dispatched, mut observed) = tokio::sync::oneshot::channel();
+    let progress = race::step(
+        async move {
+            dispatched.send(()).unwrap();
+            Ok(SocketStep::Acknowledged)
+        },
+        std::future::ready(Err(CallerSignalingError::Closed)),
+    )
+    .await;
+    assert!(matches!(
+        progress.admitted,
+        Some(Err(CallerSignalingError::Closed))
+    ));
+    assert!(progress.socket.is_none());
+    assert!(matches!(
+        observed.try_recv(),
+        Err(tokio::sync::oneshot::error::TryRecvError::Closed)
+    ));
+}
+
+/// An actual accepted transport signal survives a socket terminal observed in that same turn.
+#[tokio::test]
+async fn socket_terminal_retains_simultaneous_actual_transport_handoff() {
+    let peer = Uuid::from_u128(1);
+    let (caller, mut driver) = CallerSignaling::new(
+        "7".into(),
+        peer.to_string(),
+        CallerSignalingConfig::default(),
+    )
+    .unwrap();
+    let mut signals = caller.signals().unwrap();
+    let mut offer = Box::pin(caller.signal(Signal::offer(9, "sdp".into(), peer.to_string())));
+    let request = tokio::select! {
+        request = driver.recv() => request.unwrap(),
+        _ = &mut offer => panic!("offer completed without evidence"),
+    };
+    request.finish(Ok(SignalDelivery::PeerReceived));
+    offer.await.unwrap();
+    let delivery = driver
+        .prepare_delivery_before(
+            &peer.to_string(),
+            &Signal::candidate(9, "accepted-prefix".into(), peer.to_string()).to_string(),
+            Instant::now() + Duration::from_secs(5),
+        )
+        .unwrap();
+    let progress = race::step(std::future::ready(Err(Error::Closed)), delivery).await;
+    assert!(matches!(progress.admitted, Some(Ok(()))));
+    assert!(matches!(progress.socket, Some(Err(Error::Closed))));
+    assert_eq!(
+        signals.next().now_or_never().flatten().unwrap().data,
+        "accepted-prefix"
+    );
+    driver.close();
+}

@@ -151,8 +151,7 @@ impl Driver {
         }
         enum Step {
             Outgoing(Option<SignalRequest>),
-            Socket(Result<SocketStep, Error>),
-            Admitted(Result<(), CallerSignalingError>),
+            Service(race::Progress),
             AdmissionTimeout,
             Cancelled,
         }
@@ -181,8 +180,10 @@ impl Driver {
                 }
                 None => (None, None, outgoing_deadline),
             };
+            if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
+                return Err(Error::TimedOut);
+            }
             tokio::select! {
-                biased;
                 progress = race::step(
                     socket_step(&mut self.socket, self.peer, receipt, self.outgoing.as_mut()),
                     async {
@@ -191,11 +192,7 @@ impl Driver {
                             _ => pending().await,
                         }
                     }
-                ) => if let Some(event) = progress.socket {
-                    Step::Socket(event)
-                } else {
-                    Step::Admitted(progress.admitted.expect("ready service step"))
-                },
+                ) => Step::Service(progress),
                 request = async {
                     if has_outgoing { pending().await } else { self.caller.recv().await }
                 } => Step::Outgoing(request),
@@ -220,37 +217,47 @@ impl Driver {
                 self.outgoing = Some(Outgoing::new(request));
                 Ok(())
             }
-            Step::Socket(Err(error)) => Err(error),
-            Step::Socket(Ok(SocketStep::Acknowledged)) => {
+            Step::Service(progress) => {
+                match progress.admitted {
+                    Some(Ok(())) => self.incoming.admitted(),
+                    Some(Err(CallerSignalingError::TimedOut)) => return Err(Error::TimedOut),
+                    Some(Err(CallerSignalingError::Closed)) => return Err(Error::Closed),
+                    Some(Err(_)) => return Err(Error::Signaling),
+                    None => {}
+                }
+                progress
+                    .socket
+                    .map_or(Ok(()), |event| self.socket_progress(event))
+            }
+            Step::AdmissionTimeout => Err(Error::TimedOut),
+        }
+    }
+
+    /// Applies socket progress after recording any handoff completed in the same poll.
+    fn socket_progress(&mut self, event: Result<SocketStep, Error>) -> Result<(), Error> {
+        match event? {
+            SocketStep::Acknowledged => {
                 self.incoming.acknowledged();
                 Ok(())
             }
-            Step::Socket(Ok(SocketStep::Outgoing(id))) => {
+            SocketStep::Outgoing(id) => {
                 if let Some(outgoing) = self.outgoing.take() {
                     self.pending.insert(id, outgoing.request);
                 }
                 Ok(())
             }
-            Step::Socket(Ok(SocketStep::OutgoingCancelled)) => {
+            SocketStep::OutgoingCancelled => {
                 self.outgoing = None;
                 Ok(())
             }
-            Step::Admitted(Ok(())) => {
-                self.incoming.admitted();
-                Ok(())
-            }
-            Step::Admitted(Err(CallerSignalingError::TimedOut)) => Err(Error::TimedOut),
-            Step::Admitted(Err(CallerSignalingError::Closed)) => Err(Error::Closed),
-            Step::Admitted(Err(_)) => Err(Error::Signaling),
-            Step::AdmissionTimeout => Err(Error::TimedOut),
-            Step::Socket(Ok(SocketStep::Event(Err(error)))) => Err(Error::Messaging(error)),
-            Step::Socket(Ok(SocketStep::Event(Ok(Event::Completed { request, result })))) => {
+            SocketStep::Event(Err(error)) => Err(Error::Messaging(error)),
+            SocketStep::Event(Ok(Event::Completed { request, result })) => {
                 if let Some(wait) = self.pending.remove(&request) {
                     complete(wait, result);
                 }
                 Ok(())
             }
-            Step::Socket(Ok(SocketStep::Event(Ok(Event::Signal(signal))))) => {
+            SocketStep::Event(Ok(Event::Signal(signal))) => {
                 let deadline = Instant::now()
                     .checked_add(self.admission_timeout)
                     .ok_or(Error::Configuration)?;
@@ -259,7 +266,7 @@ impl Driver {
                     .map_or(deadline, |attempt| attempt.min(deadline));
                 self.incoming.push(&self.caller, signal, deadline)
             }
-            Step::Socket(Ok(SocketStep::Event(Ok(_)))) => Ok(()),
+            SocketStep::Event(Ok(_)) => Ok(()),
         }
     }
 }
