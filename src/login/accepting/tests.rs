@@ -237,3 +237,148 @@ fn accepting_client_header_cannot_select_another_key_or_algorithm() {
         ));
     }
 }
+
+/// Changes only the unsigned outer envelope, retaining the exact existing client JWT field and length.
+fn replace_envelope(request: &[u8], envelope: &[u8]) -> Vec<u8> {
+    let length = i32::from_le_bytes(request[..4].try_into().unwrap()) as usize;
+    let mut output = Vec::new();
+    output.extend_from_slice(&(envelope.len() as i32).to_le_bytes());
+    output.extend_from_slice(envelope);
+    output.extend_from_slice(&request[4 + length..]);
+    output
+}
+
+#[test]
+fn accepting_go_field_casing_preserves_signed_nonce_and_rejects_ambiguous_aliases() {
+    let issuer = key(3);
+    let client = key(4);
+    let provider = Provider {
+        key: *issuer.verifying_key(),
+        calls: Cell::new(0),
+    };
+    let token = credential(&issuer, &client);
+    let now = UNIX_EPOCH + Duration::from_secs(1000);
+    for field in ["Nonce", "nonce", "NONCE", "nOnCe"] {
+        let text =
+            format!(r#"{{"{field}":"original-member-nonce","opaque":{{"nonce":"unrelated"}}}}"#);
+        let metadata = RawValue::from_string(text.clone()).unwrap();
+        let request = encode_authenticated_request(&client, &token, &metadata, LIMIT).unwrap();
+        let login = verify_authenticated_request(&request, &provider, now, LIMIT).unwrap();
+        assert_eq!(
+            login.nonce(),
+            "original-member-nonce",
+            "signed field {field} lost its nonce"
+        );
+        assert_eq!(login.xuid(), "123");
+        assert_eq!(login.client_data().get().trim(), text);
+        for (mode, credential) in [
+            ("AuthenticationType", "Token"),
+            ("authenticationtype", "token"),
+            ("AUTHENTICATIONTYPE", "TOKEN"),
+            ("aUtHeNtIcAtIoNtYpE", "tOkEn"),
+        ] {
+            let envelope = serde_json::to_vec(&json!({mode:0, credential:token})).unwrap();
+            let changed = replace_envelope(&request, &envelope);
+            let login = verify_authenticated_request(&changed, &provider, now, LIMIT).unwrap();
+            assert_eq!(login.nonce(), "original-member-nonce");
+            assert_eq!(login.client_data().get().trim(), text);
+        }
+    }
+    for json in [
+        r#"{"Nonce":"original-member-nonce","nonce":"different"}"#,
+        r#"{"nonce":"original-member-nonce","NONCE":"original-member-nonce"}"#,
+        r#"{"Nonce":"first","Nonce":"second"}"#,
+    ] {
+        let request = encode_authenticated_request(
+            &client,
+            &token,
+            &RawValue::from_string(json.into()).unwrap(),
+            LIMIT,
+        )
+        .unwrap();
+        assert!(
+            verify_authenticated_request(&request, &provider, now, LIMIT).is_err(),
+            "ambiguous signed nonce was admitted"
+        );
+    }
+    let request = encode_authenticated_request(&client, &token, &metadata(), LIMIT).unwrap();
+    for envelope in [
+        format!(r#"{{"AuthenticationType":0,"authenticationtype":0,"Token":"{token}"}}"#),
+        format!(r#"{{"AuthenticationType":0,"Token":"{token}","token":"{token}"}}"#),
+    ] {
+        assert!(
+            verify_authenticated_request(
+                &replace_envelope(&request, envelope.as_bytes()),
+                &provider,
+                now,
+                LIMIT
+            )
+            .is_err(),
+            "ambiguous outer identity field was admitted"
+        );
+    }
+}
+
+/// Includes public formatting and every nested source, matching ordinary caller diagnostic handling.
+fn diagnostic(error: &LoginError) -> String {
+    let mut result = format!("{error} {error:?}");
+    let mut source = std::error::Error::source(error);
+    while let Some(error) = source {
+        result.push_str(&format!(" {error} {error:?}"));
+        source = error.source();
+    }
+    result
+}
+
+#[test]
+fn accepting_peer_json_diagnostics_never_retain_sensitive_values() {
+    let issuer = key(3);
+    let client = key(4);
+    let provider = Provider {
+        key: *issuer.verifying_key(),
+        calls: Cell::new(0),
+    };
+    let token = credential(&issuer, &client);
+    let now = UNIX_EPOCH + Duration::from_secs(1000);
+    let marker = "synthetic-sensitive-login-value-7319";
+    let request = encode_authenticated_request(&client, &token, &metadata(), LIMIT).unwrap();
+    let envelope = serde_json::to_vec(&json!({"AuthenticationType":marker,"Token":token})).unwrap();
+    let changed = replace_envelope(&request, &envelope);
+    let error = verify_authenticated_request(&changed, &provider, now, LIMIT)
+        .err()
+        .expect("wrong field type must still fail");
+    assert!(
+        !diagnostic(&error).contains(marker),
+        "outer Login error retained peer input"
+    );
+
+    // The existing shared parser also handles incoming server tokens; both public directions must redact.
+    let header = URL_SAFE_NO_PAD.encode(
+        serde_json::to_vec(&json!({"alg":"ES384","crit":marker,
+        "x5u":STANDARD.encode(client.verifying_key().to_public_key_der().unwrap().as_bytes())}))
+        .unwrap(),
+    );
+    let input = format!("{header}.{}", URL_SAFE_NO_PAD.encode(metadata().get()));
+    let signature: Signature = client.sign(input.as_bytes());
+    let malformed = format!("{input}.{}", URL_SAFE_NO_PAD.encode(signature.to_bytes()));
+    let envelope = serde_json::to_vec(&json!({"AuthenticationType":0,"Token":token})).unwrap();
+    let mut changed = Vec::new();
+    changed.extend_from_slice(&(envelope.len() as i32).to_le_bytes());
+    changed.extend_from_slice(&envelope);
+    changed.extend_from_slice(&(malformed.len() as i32).to_le_bytes());
+    changed.extend_from_slice(malformed.as_bytes());
+    let error = verify_authenticated_request(&changed, &provider, now, LIMIT)
+        .err()
+        .expect("wrong critical header type must still fail");
+    assert!(
+        !diagnostic(&error).contains(marker),
+        "client header error retained peer input"
+    );
+    let error = crate::login::finish_key_exchange(&client, &malformed, LIMIT)
+        .err()
+        .expect("wrong server header type must still fail");
+    assert!(
+        !diagnostic(&error).contains(marker),
+        "shared server header error retained peer input"
+    );
+}
