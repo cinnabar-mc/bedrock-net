@@ -132,8 +132,13 @@ impl Peer {
     }
 }
 
+// Closing a socket immediately makes its ephemeral port eligible for another test.
+// Keep network fixtures apart so release witnesses cannot observe each other's binds.
+static NETWORK_FIXTURES: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
 #[tokio::test]
 async fn go_peer_connects_when_a_smaller_probe_is_required_after_the_initial_grant() {
+    let _sockets = NETWORK_FIXTURES.lock().await;
     let Some(peer) = Peer::start(0).await else {
         return;
     };
@@ -239,6 +244,7 @@ async fn go_peer_connects_when_a_smaller_probe_is_required_after_the_initial_gra
 
 #[tokio::test]
 async fn go_peer_preserves_message_boundaries_fragmentation_and_fifo() {
+    let _sockets = NETWORK_FIXTURES.lock().await;
     let Some(peer) = Peer::start(0).await else {
         return;
     };
@@ -273,6 +279,7 @@ async fn go_peer_preserves_message_boundaries_fragmentation_and_fifo() {
 
 #[tokio::test]
 async fn go_peer_exchanges_fragmented_messages_over_ipv6_and_mapped_ipv4() {
+    let _sockets = NETWORK_FIXTURES.lock().await;
     for ipv6 in [true, false] {
         if ipv6 {
             match UdpSocket::bind("[::1]:0").await {
@@ -318,6 +325,7 @@ async fn go_peer_exchanges_fragmented_messages_over_ipv6_and_mapped_ipv4() {
 
 #[tokio::test]
 async fn go_peer_acceptance_preserves_early_packets_within_configured_handshake_limits() {
+    let _sockets = NETWORK_FIXTURES.lock().await;
     for (message_limit, terminal) in [(2, false), (1, false), (2, true)] {
         let Some(mut peer) = Peer::start(0).await else {
             return;
@@ -406,6 +414,7 @@ async fn go_peer_acceptance_preserves_early_packets_within_configured_handshake_
 
 #[tokio::test]
 async fn go_peer_messages_are_drained_before_its_disconnect() {
+    let _sockets = NETWORK_FIXTURES.lock().await;
     let Some(peer) = Peer::start(2).await else {
         return;
     };
@@ -439,6 +448,7 @@ async fn go_peer_messages_are_drained_before_its_disconnect() {
 
 #[tokio::test]
 async fn go_peer_recovers_a_lost_datagram_without_duplicate_delivery() {
+    let _sockets = NETWORK_FIXTURES.lock().await;
     let Some(peer) = Peer::start(3).await else {
         return;
     };
@@ -478,6 +488,7 @@ async fn go_peer_recovers_a_lost_datagram_without_duplicate_delivery() {
 
 #[tokio::test]
 async fn go_peer_recovers_loss_during_a_burst_larger_than_its_ordered_window() {
+    let _sockets = NETWORK_FIXTURES.lock().await;
     const MESSAGES: u32 = 3000;
     let Some(peer) = Peer::start(MESSAGES as usize).await else {
         return;
@@ -512,6 +523,7 @@ async fn go_peer_recovers_loss_during_a_burst_larger_than_its_ordered_window() {
 
 #[tokio::test]
 async fn go_peer_acknowledgements_release_send_capacity_without_consuming_messages() {
+    let _sockets = NETWORK_FIXTURES.lock().await;
     let Some(peer) = Peer::start(0).await else {
         return;
     };
@@ -573,6 +585,7 @@ async fn go_peer_acknowledgements_release_send_capacity_without_consuming_messag
 
 #[tokio::test]
 async fn initial_port_refusal_retries_until_the_handshake_deadline() {
+    let _sockets = NETWORK_FIXTURES.lock().await;
     let address = {
         let unused = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
         unused.local_addr().unwrap()
@@ -598,6 +611,7 @@ async fn initial_port_refusal_retries_until_the_handshake_deadline() {
 
 #[tokio::test]
 async fn cancelling_a_partial_handshake_releases_its_socket() {
+    let _sockets = NETWORK_FIXTURES.lock().await;
     let server = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
     let mut connecting = Box::pin(RakNetConnection::connect(
         server.local_addr().unwrap(),
@@ -615,6 +629,7 @@ async fn cancelling_a_partial_handshake_releases_its_socket() {
 
 #[tokio::test]
 async fn handshake_deadline_releases_its_socket_without_detaching_work() {
+    let _sockets = NETWORK_FIXTURES.lock().await;
     let server = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
     let mut connecting = Box::pin(RakNetConnection::connect(
         server.local_addr().unwrap(),
