@@ -2,7 +2,7 @@ use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 
 use ::raknet::prelude::{
     RakClient, RakClientConfig, RakClientInput, RakClientOutput, RakSessionConfig, Sans,
-    is_mtu_probe_size_error,
+    canonical_socket_addr, is_mtu_probe_size_error,
 };
 use tokio::net::UdpSocket;
 use tokio::time::{Instant, sleep_until, timeout_at};
@@ -50,6 +50,7 @@ impl RakNetConnection {
         options: RakNetOptions,
         config: RakClientConfig,
     ) -> Result<Self, RakNetError> {
+        let peer = canonical_socket_addr(peer);
         let local_ip = if peer.is_ipv6() {
             IpAddr::V6(Ipv6Addr::UNSPECIFIED)
         } else {
@@ -59,7 +60,11 @@ impl RakNetConnection {
         socket.connect(peer).await?;
         let local = socket.local_addr()?;
         let mut client = RakClient::new(config);
-        client.handle(RakClientInput::Connect(peer, std::time::SystemTime::now()))?;
+        client.handle(RakClientInput::Connect {
+            remote: peer,
+            local,
+            now: std::time::SystemTime::now(),
+        })?;
         let mut buffer = vec![0; UDP_BUFFER_BYTES];
         let mut next_tick = Instant::now();
         loop {
