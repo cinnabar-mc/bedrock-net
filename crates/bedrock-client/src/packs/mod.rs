@@ -167,13 +167,7 @@ impl PackNegotiation {
             .downloads
             .get_mut(&id)
             .ok_or_else(|| invalid("preloaded pack was not advertised"))?;
-        if download.complete.is_some() || archive.len() as u64 > download.size {
-            return Err(invalid(
-                "preloaded archive exceeds its offer or repeats completion",
-            ));
-        }
-        download.complete = Some(Completion::Archive(Arc::new(archive)));
-        Ok(())
+        self.budget.preload(download, archive)
     }
 
     /// Starts in-band negotiation exactly once, preserving original offer order.

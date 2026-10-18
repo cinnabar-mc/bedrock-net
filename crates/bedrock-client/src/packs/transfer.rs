@@ -65,6 +65,34 @@ impl Budget {
         )
     }
 
+    /// Commits actual preload retention and releases its entire in-band reservation.
+    pub(super) fn preload(
+        &mut self,
+        download: &mut Download,
+        archive: Vec<u8>,
+    ) -> Result<(), PackError> {
+        let size = archive.len() as u64;
+        if download.complete.is_some() || size > download.size {
+            return Err(invalid(
+                "preloaded archive exceeds its offer or repeats completion",
+            ));
+        }
+        let retained = self
+            .retained
+            .checked_sub(download.size)
+            .and_then(|total| total.checked_add(size))
+            .ok_or_else(|| invalid("pack admission accounting is invalid"))?;
+        let transferred = self
+            .transferred
+            .checked_sub(download.size)
+            .ok_or_else(|| invalid("pack transfer accounting is invalid"))?;
+        self.retained = retained;
+        self.transferred = transferred;
+        download.size = size;
+        download.complete = Some(Completion::Archive(Arc::new(archive)));
+        Ok(())
+    }
+
     /// Consumes a bounded transfer even when its updated size prevents application admission.
     pub(super) fn begin(
         &mut self,
