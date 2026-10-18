@@ -1,6 +1,15 @@
 bedrock-net
 Copyright 2026 Cinnabar contributors
 
+The bedrock-client and bedrock-packs crates extract resource-pack negotiation,
+archive handoff and text handling from cinnabar-mc/cinnabar. These extracted
+implementations retain the PolyForm Noncommercial License 1.0.0 reproduced in
+LICENSE-CINNABAR; they are not covered by the root crate's MIT/Apache license
+choice. Their Cargo manifests identify that retained license explicitly.
+The built-in resource-pack identity catalog follows the public Gophertunnel
+behavior reference named below. Its MIT notice is retained in
+LICENSE-MIT-gophertunnel.
+
 The batch codec is an original Rust implementation informed by public code in:
 
 - bedrock-crustaceans/bedrock-rs (Apache-2.0), commit
@@ -24,6 +33,7 @@ ClientData metadata schema, under the Apache-2.0 commit identified above.
 These dependencies are not vendored here.
 
 The optional Login helpers use the same public Rust and Go references for
-line-terminated token JSON, token-only offline requests, and server key exchange.
+line-terminated token JSON, token-only offline requests, server key exchange and
+authenticated player identity projection, including the XUID-derived UUID.
 P-384 signatures, public-key parsing and ECDH use RustCrypto p384. The synthetic
 Login oracle shares tools/go-oracle's existing Gophertunnel pin.

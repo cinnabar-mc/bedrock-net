@@ -1,9 +1,12 @@
 # Repository guidance
 
-Keep this library independent of Cinnabar, rendering engines and generated
-packet models. Protocolgen owns packet schemas and body codecs; this repository
-owns transport messages and sessions. Introduce crate boundaries only when
-components have meaningful independent consumers.
+Keep the workspace independent of Cinnabar and rendering engines. The
+`bedrock-net` foundation accepts encoded packet bytes; `bedrock-client` owns
+client and accepting negotiation using protocolgen's generated packet models and codecs.
+`bedrock-packs` owns reusable pack text and archive handoff, independently of
+packet models or runtimes. Do not define replacement gameplay packet schemas.
+Introduce crate boundaries only when components have meaningful independent
+consumers.
 
 Preserve observed compatibility fixes from the pinned behavior baseline. Read
 the relevant implementation before changing wire behavior. Do not claim vanilla

@@ -17,6 +17,17 @@ jobs:
         run: |
           python3 - <<'PY'
           import os, tomllib
+          sources = {}
+          with open("Cargo.lock", "rb") as lock:
+              for package in tomllib.load(lock)["package"]:
+                  source = package.get("source", "")
+                  if source.startswith("git+"):
+                      location = source.removeprefix("git+").split("#", 1)[0]
+                      repository = location.split("?", 1)[0]
+                      sources.setdefault(repository, set()).add(source)
+          duplicated = [repository for repository, revisions in sources.items() if len(revisions) != 1]
+          if duplicated:
+              raise SystemExit("Multiple Git identities: " + ", ".join(sorted(duplicated)))
           with open("Cargo.toml", "rb") as manifest, open(os.environ["GITHUB_OUTPUT"], "a") as output:
               print("version=" + tomllib.load(manifest)["workspace"]["package"]["rust-version"], file=output)
           PY
@@ -43,8 +54,8 @@ jobs:
       - working-directory: tools/go-oracle
         run: go build -o ../../target/login-check.exe ./cmd/login-check
       - run: cargo fmt --all --check
-      - run: cargo test --locked -p bedrock-net
-      - run: cargo test --locked -p bedrock-net --features raknet,login
+      - run: cargo test --locked --workspace
+      - run: cargo test --locked -p bedrock-net --all-features
         env:
           BEDROCK_NET_RAKNET_PEER: ${{ github.workspace }}/target/raknet-peer.exe
           BEDROCK_NET_LOGIN_ORACLE: ${{ github.workspace }}/target/login-check.exe

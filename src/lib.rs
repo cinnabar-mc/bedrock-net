@@ -6,6 +6,8 @@ pub mod encryption;
 mod error;
 #[cfg(feature = "login")]
 pub mod login;
+#[cfg(feature = "messaging")]
+pub mod messaging;
 #[cfg(feature = "raknet")]
 pub mod raknet;
 
