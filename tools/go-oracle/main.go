@@ -33,6 +33,30 @@ func run() error {
 		if err := emit(fmt.Sprintf("GO_BATCH_%d", algorithm.EncodeCompression()), wire.Bytes()); err != nil {
 			return err
 		}
+		wire.Reset()
+		encoder.EnableCompression(algorithm, 0)
+		withEmpty := [][]byte{{}, packets[0], {}, packets[1], {}}
+		if err := encoder.Encode(withEmpty); err != nil {
+			return fmt.Errorf("encode empty-entry oracle batch: %w", err)
+		}
+		decoder := packet.NewDecoder(bytes.NewReader(wire.Bytes()))
+		decoder.DisableBatchPacketLimit()
+		decoder.EnableCompression(algorithm, 0)
+		decoded, err := decoder.Decode()
+		if err != nil {
+			return fmt.Errorf("decode empty-entry oracle batch: %w", err)
+		}
+		if len(decoded) != len(packets) {
+			return fmt.Errorf("empty-entry oracle changed packet count")
+		}
+		for index, value := range decoded {
+			if !bytes.Equal(value, packets[index]) {
+				return fmt.Errorf("empty-entry oracle changed packet order or contents")
+			}
+		}
+		if err := emit(fmt.Sprintf("GO_BATCH_EMPTY_%d", algorithm.EncodeCompression()), wire.Bytes()); err != nil {
+			return err
+		}
 	}
 	var key [32]byte
 	for index := range key {
