@@ -450,9 +450,10 @@ fn accepting_peer_json_diagnostics_never_retain_sensitive_values() {
         !diagnostic(&error).contains(marker),
         "client header error retained peer input"
     );
-    let error = crate::login::finish_key_exchange(&client, &malformed, LIMIT)
-        .err()
-        .expect("wrong server header type must still fail");
+    let error = match crate::login::finish_key_exchange(&client, &malformed, LIMIT) {
+        Err(error) => error,
+        Ok(_) => panic!("wrong server header type must still fail"),
+    };
     assert!(
         !diagnostic(&error).contains(marker),
         "shared server header error retained peer input"
