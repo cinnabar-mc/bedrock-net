@@ -1,8 +1,8 @@
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 
 use ::raknet::prelude::{
-    RakClient, RakClientConfig, RakClientInput, RakClientOutput, RakSessionConfig, Sans,
-    canonical_socket_addr, is_mtu_probe_size_error, is_transient_udp_read_error,
+    ClientGuid, RakClient, RakClientConfig, RakClientInput, RakClientOutput, RakSessionConfig,
+    Sans, canonical_socket_addr, is_mtu_probe_size_error, is_transient_udp_read_error,
 };
 use tokio::net::UdpSocket;
 use tokio::time::{Instant, sleep_until, timeout_at};
@@ -18,7 +18,7 @@ impl RakNetConnection {
     /// future closes the socket and drops all partial handshake state.
     ///
     /// # Errors
-    /// Returns invalid option, socket, handshake or overall timeout errors.
+    /// Returns invalid option, socket, identity generation, handshake or overall timeout errors.
     pub async fn connect(peer: SocketAddr, options: RakNetOptions) -> Result<Self, RakNetError> {
         if options.receive_buffer_bytes == 0 || options.receive_buffer_messages == 0 {
             return Err(RakNetError::InvalidOption(
@@ -63,10 +63,12 @@ impl RakNetConnection {
         let socket = UdpSocket::bind(SocketAddr::new(local_ip, 0)).await?;
         socket.connect(peer).await?;
         let local = socket.local_addr()?;
+        let guid = ClientGuid::generate()?;
         let mut client = RakClient::new(config);
         client.handle(RakClientInput::Connect {
             remote: peer,
             local,
+            guid,
             now: std::time::SystemTime::now(),
         })?;
         let mut buffer = vec![0; UDP_BUFFER_BYTES];

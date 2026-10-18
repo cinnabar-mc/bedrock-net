@@ -15,6 +15,21 @@ use tokio::process::{Child, Command};
 use tokio::task::JoinHandle;
 use tokio::time::timeout;
 
+/// Reads a relay datagram, tolerating ICMP errors from endpoints closed during teardown.
+/// Callers bound the exchange with a timeout or abort the owned relay task.
+async fn relay_recv(socket: &UdpSocket, buffer: &mut [u8]) -> std::io::Result<(usize, SocketAddr)> {
+    loop {
+        match socket.recv_from(buffer).await {
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    std::io::ErrorKind::ConnectionReset | std::io::ErrorKind::ConnectionRefused
+                ) => {}
+            result => return result,
+        }
+    }
+}
+
 /// Owns a loopback fixture process, which is killed by its exact child handle on test failure.
 struct Peer {
     child: Child,
@@ -42,7 +57,7 @@ impl LossRelay {
             let mut client = None;
             let mut buffer = [0; 65536];
             loop {
-                let (length, from) = socket.recv_from(&mut buffer).await.unwrap();
+                let (length, from) = relay_recv(&socket, &mut buffer).await.unwrap();
                 let target = if from == peer {
                     client.expect("client sent the first handshake datagram")
                 } else {
@@ -132,6 +147,7 @@ async fn go_peer_connects_when_a_smaller_probe_is_required_after_the_initial_gra
     let payload_limit = path_mtu - headers;
     let mut blocked_request_two = false;
     let mut smaller_probe_arrived = false;
+    let mut client_guid = None;
     let exchange = async {
         let mut connection = RakNetConnection::connect(
             relay_address,
@@ -154,7 +170,7 @@ async fn go_peer_connects_when_a_smaller_probe_is_required_after_the_initial_gra
             let mut initial_probe = true;
             let mut buffer = [0; 65536];
             loop {
-                let (length, from) = socket.recv_from(&mut buffer).await.unwrap();
+                let (length, from) = relay_recv(&socket, &mut buffer).await.unwrap();
                 let target = if from == peer_address {
                     client.expect("client sent the first handshake datagram")
                 } else {
@@ -171,6 +187,14 @@ async fn go_peer_connects_when_a_smaller_probe_is_required_after_the_initial_gra
                         }
                     }
                     if packet.first() == Some(&0x07) {
+                        let guid =
+                            u64::from_be_bytes(packet[packet.len() - 8..].try_into().unwrap());
+                        assert_eq!(guid >> 62, 0b10, "generated client identity type bits");
+                        assert_eq!(
+                            *client_guid.get_or_insert(guid),
+                            guid,
+                            "retry identity changed"
+                        );
                         // Request 2 ends in its big-endian MTU and eight-byte GUID.
                         let mtu_at = packet.len() - 10;
                         let grant =
@@ -206,6 +230,10 @@ async fn go_peer_connects_when_a_smaller_probe_is_required_after_the_initial_gra
     assert!(
         smaller_probe_arrived,
         "discovery continued after the initial grant"
+    );
+    assert!(
+        client_guid.is_some(),
+        "observed a client identity on the wire"
     );
 }
 
@@ -345,7 +373,7 @@ async fn go_peer_acceptance_preserves_early_packets_within_configured_handshake_
             loop {
                 tokio::select! {
                     _ = &mut exchange => break,
-                    received = socket.recv_from(&mut buffer) => {
+                    received = relay_recv(&socket, &mut buffer) => {
                         let (length, from) = received.unwrap();
                         let to = if from == peer_address { client.unwrap() } else { client = Some(from); peer_address };
                         if from == peer_address && !injected && length > 14 && buffer[0] & 0xe0 == 0x80 {
