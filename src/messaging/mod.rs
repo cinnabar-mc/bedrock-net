@@ -7,6 +7,7 @@
 
 mod driver;
 mod incoming;
+mod retirement;
 mod socket;
 
 use bedrock_services::signaling::{
@@ -19,6 +20,7 @@ use nethernet_tokio::{
     CallerSignaling, CallerSignalingConfig, ClientIceConfig, ConnectionConfig, NetherClient,
     Session,
 };
+use retirement::SessionRetirement;
 use std::{
     net::{Ipv4Addr, SocketAddr},
     time::Instant,
@@ -63,6 +65,7 @@ pub enum Error {
 /// It has no Debug implementation because the signaling owner retains sensitive SDP.
 pub struct MessagingConnection {
     client: NetherClient,
+    retirement: SessionRetirement,
     driver: Driver,
     receive: ReceiveState,
 }
@@ -162,6 +165,7 @@ impl MessagingConnection {
                 .run(NetherClient::connect_with(caller, peer.to_string(), config))
                 .await?
                 .map_err(|_| Error::Transport)?;
+            let retirement = SessionRetirement::new(&client);
             if let Some(error) = driver.failure() {
                 let _ = client.close().await;
                 return Err(error);
@@ -174,6 +178,7 @@ impl MessagingConnection {
             driver.established();
             Ok(Self {
                 client,
+                retirement,
                 driver,
                 receive: ReceiveState::Open,
             })
@@ -187,7 +192,7 @@ impl MessagingConnection {
 
     /// Clones the existing transport handle; recv or maintain must continue driving this owner.
     pub fn session(&self) -> Session {
-        self.client.session()
+        self.retirement.session()
     }
 
     /// Drives service/control/signaling while application receive capacity is unavailable.
