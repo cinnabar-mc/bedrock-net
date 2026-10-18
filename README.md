@@ -11,7 +11,7 @@ runtime integration kept outside the pure protocol owners.
 | Crate | Responsibility |
 | --- | --- |
 | [`bedrock-net`](src/lib.rs) | Encoded packet batches, compression, directional ciphers and optional Login/transport helpers. |
-| [`bedrock-client`](crates/bedrock-client) | Caller-driven generated-packet client negotiation, pack transfer, startup and accepting Login. |
+| [`bedrock-client`](crates/bedrock-client) | Caller-driven generated-packet client negotiation, pack transfer, startup and accepting session continuations. |
 | [`bedrock-packs`](crates/bedrock-packs) | Pack text decoding, owned archive handoffs and content-key lifetime. |
 | [`bedrock-probe`](examples/client) | Standalone settings/offline-Login probe showing concrete transport integration. |
 
@@ -66,7 +66,9 @@ explicit library policy, adjustable for an application's pack-transfer budget.
 | Client Login | `ClientHandshake` → `ClientSettings` → `ClientLoginReady` → `ClientLogin` |
 | Client packs | `ClientPackOffer` → `ClientPacks` → `PackComplete` |
 | Client startup | `SpawnNegotiation` → `SpawnReady` → initialization acknowledgment |
-| Accepting Login | `ServerHandshake` → settings/verification/authorization/exchange owners → `AcceptedLogin<Grant>` |
+| Accepting Login | `ServerHandshake` → settings/verification/authorization/exchange owners → `ServerPacksReady<Grant>` or Login-only `AcceptedLogin<Grant>` |
+| Accepting packs | `ServerPacks<Grant>` → owned chunk read/write continuations → `ServerWorldReady<Grant>` |
+| Accepting startup | `ServerSpawning<Grant>` → `ServerInitialized<Grant>` → `AcceptedSession<Grant>` |
 
 The original proof key, negotiated data and pending effects move with these
 owners. A settings owner cannot create Login; transfer has no preload method;
@@ -78,8 +80,14 @@ The application dispatches returned packets in order, installs compression and
 ciphers on its retained connection, and preserves unrelated packets in a bounded
 FIFO. A pure continuation cannot prove that a real socket flushed or that a
 world authorized a player. Accepting Login requires a provider `LoginVerifier`
-and an explicit application authorization callback. Its current handoff ends
-before server pack advertisement/delivery and world attachment.
+and an explicit application authorization callback. Pack delivery retains the
+original memory archive or adapter-owned external source through sequential
+read/write continuations. Startup requires the actual caller-selected world
+packet definitions; completion does not attach that world to a player.
+
+Accepting pack/world continuations are implemented, with their regression and
+cross-language qualification still pending. No accepting listener or running-world
+bridge is provided. The Login-only handoff remains available independently.
 
 See the [integration guide](docs/integration.md) for packet routing, cipher
 ordering, pack/startup handoffs and owner-preserving error/close handling. The
@@ -138,9 +146,9 @@ interoperability checks use the loopback-only helper in
 Packet negotiation is tied to the generated protocol revision in the workspace
 manifest. Deterministic regressions and synthetic peers do not establish full
 vanilla, real-account, WAN, device or server compatibility. Accepting offline,
-guest and legacy-chain Login, server pack delivery and a running-world bridge
-are not supplied by the current accepting API. The library's startup observer
-also leaves world loading, presentation and ongoing play to its caller.
+guest and legacy-chain Login and a running-world bridge are not supplied by the
+current accepting API. The library's startup observer also leaves world loading,
+presentation and ongoing play to its caller.
 
 The root crate offers MIT or Apache-2.0. Extracted `bedrock-client` and
 `bedrock-packs` code retains its separately identified

@@ -135,8 +135,10 @@ pack completion, account authority or world readiness.
 
 ## Accepting Login
 
-The current accepting API stops at `AcceptedLogin<Grant>`, before server pack
-advertisement/delivery, world attachment or spawn. See the detailed
+The Login-only handoff yields `AcceptedLogin<Grant>`. Optional `start_packs`
+continues through owned chunk read/write and caller-selected startup data; its
+regression and cross-language qualification remain pending. This section covers
+the Login boundary, without an accepting listener or world attachment. See the detailed
 [accepting capability contract](../crates/bedrock-client/README.md) and
 [server API](../crates/bedrock-client/src/server/lifecycle.rs).
 

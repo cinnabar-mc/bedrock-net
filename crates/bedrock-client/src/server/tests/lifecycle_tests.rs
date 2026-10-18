@@ -2,7 +2,7 @@
 
 use super::{CREDENTIAL, Provider};
 use crate::{
-    handshake::{ClientHandshake, HandshakeOptions, LoginEvent, SettingsEvent},
+    handshake::{ClientHandshake, ClientLogin, HandshakeOptions, LoginEvent, SettingsEvent},
     server::{
         ServerAcknowledgmentEvent, ServerApprovalEvent, ServerHandshake, ServerHandshakeOptions,
         ServerLoginEvent, ServerPacksReady, ServerSettingsEvent,
@@ -21,13 +21,21 @@ use std::{
 };
 
 /// Explicit fixture authority data; never a HostedApproval or real membership claim.
-struct Grant {
+pub(super) struct Grant {
     xuid: String,
     nonce: String,
 }
 
 /// Retains actual settings/Login/cipher boundaries, optional encryption and original authority.
-fn ready(encrypted: bool) -> (ServerPacksReady<Grant>, Provider, Instant, SystemTime) {
+pub(super) fn ready_with_client(
+    encrypted: bool,
+) -> (
+    ServerPacksReady<Grant>,
+    ClientLogin,
+    Provider,
+    Instant,
+    SystemTime,
+) {
     let now = Instant::now();
     let utc = SystemTime::UNIX_EPOCH + Duration::from_secs(1000);
     let key = Arc::new(SigningKey::from_slice(&[4; 48]).unwrap());
@@ -93,13 +101,13 @@ fn ready(encrypted: bool) -> (ServerPacksReady<Grant>, Provider, Instant, System
             })
         })
         .unwrap();
-    let server = match approved
+    let (server, client) = match approved
         .accept(&provider, encrypted.then_some(&[7; 16]), now, utc)
         .unwrap()
     {
         ServerApprovalEvent::Ready(server) => {
             assert!(!encrypted);
-            server
+            (server, client)
         }
         ServerApprovalEvent::KeyExchange(exchange) => {
             assert!(encrypted);
@@ -109,7 +117,7 @@ fn ready(encrypted: bool) -> (ServerPacksReady<Grant>, Provider, Instant, System
             else {
                 panic!("client did not verify the original server exchange");
             };
-            let (_client, ciphers, response) = client.into_parts();
+            let (client, ciphers, response) = client.into_parts();
             let (server, ciphers_server) = exchange.flushed(now).unwrap();
             let (mut outgoing, mut incoming) = *ciphers_server;
             let (mut client_outgoing, mut client_incoming) = *ciphers.unwrap();
@@ -143,9 +151,15 @@ fn ready(encrypted: bool) -> (ServerPacksReady<Grant>, Provider, Instant, System
             else {
                 panic!("actual encrypted acknowledgment did not complete Login");
             };
-            server
+            (server, client)
         }
     };
+    (server, client, provider, now, utc)
+}
+
+/// Keeps existing lifecycle controls on the same public negotiation fixture.
+fn ready(encrypted: bool) -> (ServerPacksReady<Grant>, Provider, Instant, SystemTime) {
+    let (server, _client, provider, now, utc) = ready_with_client(encrypted);
     (server, provider, now, utc)
 }
 

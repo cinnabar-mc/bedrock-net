@@ -84,7 +84,7 @@ Accepting Login uses its own consumed capabilities:
 | `ApprovedLogin<Grant>` | Revalidate and create the sole exchange | Pending exchange or `ServerPacksReady<Grant>` |
 | `PendingServerKeyExchange<Grant>` | Flush plaintext; transfer exact cipher streams | `ServerAcknowledgment<Grant>` |
 | `ServerAcknowledgment<Grant>` | Observe actual encrypted acknowledgment | `ServerPacksReady<Grant>` |
-| `ServerPacksReady<Grant>` | Revalidate and consume the original Login/grant | `AcceptedLogin<Grant>` |
+| `ServerPacksReady<Grant>` | Revalidate original Login/grant; stop or start actual pack delivery | `AcceptedLogin<Grant>` or `ServerPacks<Grant>` |
 
 Supply one server key, original absolute deadline, any caller-verified transport
 peer key and required `bedrock_net::login::LoginVerifier`. The verifier uses the
@@ -113,9 +113,59 @@ Approved marker constructor exists.
 The original deadline never restarts. Provider identity/key/presentation are
 revalidated at exchange, acknowledgment and final handoff. `ServerTransitionError`
 returns the retained owner/cause for retirement; it never resets a failed owner.
-No LoginSuccess or pack advertisement is emitted by this accepting milestone.
-Prepare the actual world and exact pack snapshot before any later advertisement.
+The Login-only `finish` emits no LoginSuccess or pack advertisement.
+Prepare the actual world and exact pack snapshot before calling `start_packs`.
 `AcceptedLogin` proves consumed Login completion, not world attachment/spawn.
 The caller preserves decoded siblings, handles terminal packets immediately and
-closes on failed transitions. No accepting listener, pack delivery or running-world
-bridge is provided by this API.
+closes on failed transitions. No accepting listener or running-world bridge is
+provided by this API.
+
+
+Accepting pack delivery and startup continue through owned capabilities. Their
+regression and cross-language qualification remain pending:
+
+| Owner | Available work | Next owner |
+| --- | --- | --- |
+| `ServerPacks<Grant>` | Observe actual download/stack input | Send effects, pending read/write or `ServerWorldReady<Grant>` |
+| `PendingServerChunkRead<Grant>` | Read only the bounded original source range | `PendingServerChunk<Grant>` |
+| `PendingServerChunk<Grant>` | Send/flush its exact packet once | Original `ServerPacks<Grant>` |
+| `ServerWorldReady<Grant>` | Supply actual selected-world definitions | `ServerSpawning<Grant>` |
+| `ServerSpawning<Grant>` | Observe radius and original runtime-ID initialization | `ServerInitialized<Grant>` |
+| `ServerInitialized<Grant>` | Final provider/grant handoff | `AcceptedSession<Grant>` |
+
+`ServerPacksReady::start_packs` validates a `ServerPackSnapshot` before emitting
+LoginSuccess and its original offer. The snapshot contains exact offer/stack
+metadata plus original `ServerPackContent` archives in offer order. Memory content
+shares immutable compressed bytes; external content asserts prevalidated size/SHA
+and keeps the actual immutable file/source lease in the adapter. The core performs
+no filesystem access or archive loading. Supply the bounded range from the same
+lease when `ReadChunk` owns the continuation; it checks exact length and the full
+external SHA before emitting the final fragment. It never requires disk archives
+to be retained wholly in RAM.
+
+The original sequential chunk/flush contract applies to both storage kinds. A
+pending read or write owns the entire session, so it cannot consume another peer
+packet. Keep already decoded pipelined siblings in the adapter's existing bounded
+FIFO until the exact original chunk flush completes. No request queue or arbitrary
+`chunk_flushed` marker exists. Unrelated and terminal input is returned intact.
+Delivery defaults/cap and chunk indexing are checked against the actual pinned Go
+owner by the optional oracle built in CI; this is an identified Go compatibility
+check, not vanilla evidence. There is no added pacing delay.
+
+Only the actual final stack acknowledgment permits `ServerWorldReady::start_world`.
+`ServerWorld` requires original generated StartGame/items/creative data and the
+selected world's radius policy; it has no default world constructor. Exact
+runtime-ID initialization creates the sole final handoff owner. Provider
+revalidation remains at advertisement, world startup and final transfer; the
+original deadline never restarts. Retain and recheck the real caller grant at
+actual writes/attachment after waits. `ServerSessionTransitionError::into_parts`
+retains the failed continuation/output; a failed protocol owner stays sealed.
+Local snapshot-validation errors before advertisement retain original Login
+readiness for a corrected local snapshot.
+
+`AcceptedSession` carries original authenticated player/nonce, caller grant and
+observed cache/radius. It proves protocol completion only, not admission to a
+running world. The bidirectional synthetic tests exercise generated framing,
+original memory/file bytes, stack order/subpack/content key and startup with the
+existing client owners. An accepting listener, real hosted authority and world
+attachment remain separate integration work; this API alone is not usable hosting.
