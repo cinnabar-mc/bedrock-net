@@ -7,7 +7,8 @@ use nethernet_tokio::{CallerSignalingDriver, CallerSignalingError};
 use std::{collections::VecDeque, time::Instant};
 use uuid::Uuid;
 
-const MAX_SIGNALS: usize = signaling::MAX_BATCH_MESSAGES * signaling::MAX_BATCH_MESSAGES;
+/// Largest retained envelope count, derived from the SDK's nested callback batch bounds.
+pub(super) const MAX_SIGNALS: usize = signaling::MAX_BATCH_MESSAGES * signaling::MAX_BATCH_MESSAGES;
 
 pub(super) struct Incoming {
     pub(super) signal: ReceivedSignal,

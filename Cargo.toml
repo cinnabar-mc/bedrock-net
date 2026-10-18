@@ -52,6 +52,7 @@ uuid = { version = "1", features = ["v4"], optional = true }
 [dev-dependencies]
 serde_json = "1"
 tokio = { version = "1", features = ["rt", "macros", "net", "time", "test-util", "process", "io-util"] }
+tokio-websockets = { version = "0.13", default-features = false, features = ["client", "server", "aws_lc_rs", "getrandom"] }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

@@ -14,6 +14,8 @@ use std::{
 };
 use uuid::Uuid;
 
+mod race;
+
 pub(super) struct Driver {
     socket: MessagingSocket,
     caller: CallerSignalingDriver,
@@ -181,13 +183,19 @@ impl Driver {
             };
             tokio::select! {
                 biased;
-                event = socket_step(&mut self.socket, self.peer, receipt, self.outgoing.as_mut()) => Step::Socket(event),
-                admitted = async {
-                    match waiting {
-                        Some(Some(wait)) => wait.await,
-                        _ => pending().await,
+                progress = race::step(
+                    socket_step(&mut self.socket, self.peer, receipt, self.outgoing.as_mut()),
+                    async {
+                        match waiting {
+                            Some(Some(wait)) => wait.await,
+                            _ => pending().await,
+                        }
                     }
-                } => Step::Admitted(admitted),
+                ) => if let Some(event) = progress.socket {
+                    Step::Socket(event)
+                } else {
+                    Step::Admitted(progress.admitted.expect("ready service step"))
+                },
                 request = async {
                     if has_outgoing { pending().await } else { self.caller.recv().await }
                 } => Step::Outgoing(request),
@@ -276,5 +284,7 @@ impl Drop for Driver {
     }
 }
 
+#[cfg(test)]
+mod fairness_tests;
 #[cfg(test)]
 mod tests;
