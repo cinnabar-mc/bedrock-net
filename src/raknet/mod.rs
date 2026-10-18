@@ -162,9 +162,9 @@ impl RakNetConnection {
             RakPriority::Normal,
             std::time::SystemTime::now(),
         ));
-        if let Err(error) = self.complete_engine_call(result) {
+        if let Err(error) = result {
             self.end(RakNetError::Closed);
-            return Err(error);
+            return Err(error.into());
         }
         Ok(())
     }
@@ -229,9 +229,9 @@ impl RakNetConnection {
             .session
             .as_mut()
             .map_or(Ok(()), |session| session.tick(std::time::SystemTime::now()));
-        if let Err(error) = self.complete_engine_call(result) {
+        if let Err(error) = result {
             self.end(RakNetError::Closed);
-            return Err(error);
+            return Err(error.into());
         }
         let result = if let Some(deadline) = self.close_deadline {
             match tokio::time::timeout_at(deadline, self.flush_datagrams()).await {
@@ -319,9 +319,9 @@ impl RakNetConnection {
                 .checked_add(self.options.close_timeout)
                 .ok_or(RakNetError::InvalidOption("close timeout is too large"))?;
             let result = session.handle(RakSessionInput::Disconnect(std::time::SystemTime::now()));
-            if let Err(error) = self.complete_engine_call(result) {
+            if let Err(error) = result {
                 self.end(RakNetError::Closed);
-                return Err(error);
+                return Err(error.into());
             }
             self.close_deadline = Some(deadline);
         }
@@ -371,25 +371,7 @@ impl RakNetConnection {
             .as_mut()
             .ok_or(RakNetError::Closed)?
             .handle(input);
-        self.complete_engine_call(result)
-    }
-
-    /// Retains the completed prefix only when an engine call fails before outputs can be polled.
-    fn complete_engine_call(
-        &mut self,
-        result: Result<(), RakSessionError>,
-    ) -> Result<(), RakNetError> {
-        if let Err(error) = result {
-            while let Some(output) = self.session.as_mut().and_then(|session| session.poll()) {
-                match output {
-                    RakSessionOutput::Packet(message) => self.retain_message(message)?,
-                    RakSessionOutput::Disconnected(..) => break,
-                    RakSessionOutput::Datagram(..) | RakSessionOutput::Wait(..) => {}
-                }
-            }
-            return Err(error.into());
-        }
-        Ok(())
+        result.map_err(Into::into)
     }
 
     /// Processes engine outputs in order, stopping before the next asynchronous socket send.
@@ -409,6 +391,7 @@ impl RakNetConnection {
                         .ok_or(RakNetError::InvalidOption("engine timer is too large"))?;
                 }
                 RakSessionOutput::Disconnected(_, reason) => {
+                    self.session = None;
                     self.end(RakNetError::Disconnected(reason));
                     return Ok(());
                 }
@@ -417,16 +400,28 @@ impl RakNetConnection {
         Ok(())
     }
 
-    /// Releases protocol and socket resources, preserving only already-retained messages.
+    /// Retains the completed output prefix, then releases protocol and socket resources.
     fn end(&mut self, error: RakNetError) {
-        if self.session.take().is_some() {
-            self.failure = Some(error);
+        self.failure.get_or_insert(error);
+        if let Some(mut session) = self.session.take() {
+            while let Some(output) = session.poll() {
+                match output {
+                    RakSessionOutput::Packet(message) => {
+                        if let Err(error) = self.retain_message(message) {
+                            self.failure = Some(error);
+                            break;
+                        }
+                    }
+                    RakSessionOutput::Disconnected(..) => break,
+                    RakSessionOutput::Datagram(..) | RakSessionOutput::Wait(..) => {}
+                }
+            }
         }
         self.socket = None;
         self.pending_datagram = None;
     }
 
-    /// Retains one completed message without exceeding either application queue bound.
+    /// Admits one message; rejection discards the engine's remainder to preserve a FIFO prefix.
     fn retain_message(&mut self, message: Box<[u8]>) -> Result<(), RakNetError> {
         if self.incoming.len() >= self.options.receive_buffer_messages
             || message.len()
@@ -435,6 +430,7 @@ impl RakNetConnection {
                     .receive_buffer_bytes
                     .saturating_sub(self.incoming_bytes)
         {
+            self.session = None;
             return Err(RakNetError::ReceiveBufferExceeded);
         }
         self.incoming_bytes += message.len();

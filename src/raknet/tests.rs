@@ -110,7 +110,7 @@ async fn completed_message_precedes_a_later_frame_error_in_the_same_datagram() {
 
 #[tokio::test(start_paused = true)]
 async fn cancelled_close_keeps_its_deadline_when_recv_resumes_driving() {
-    let (mut connection, _peer, _sender) = connected_pair().await;
+    let (mut connection, _peer, mut sender) = connected_pair().await;
     connection.options.close_timeout = Duration::from_millis(100);
     connection
         .queue_send(Bytes::from_static(&[0xfe, 1]))
@@ -122,6 +122,27 @@ async fn cancelled_close_keeps_its_deadline_when_recv_resumes_driving() {
     })
     .await;
     drop(closing);
+    // Model a completed input whose outputs have not yet been collected when close expires.
+    let now = std::time::SystemTime::now();
+    sender
+        .handle(RakSessionInput::Send(
+            Box::new([0xfe, 2]),
+            RakReliability::ReliableOrdered,
+            RakPriority::Normal,
+            now,
+        ))
+        .unwrap();
+    sender.tick(now).unwrap();
+    while let Some(output) = sender.poll() {
+        if let RakSessionOutput::Datagram(datagram, _) = output {
+            connection
+                .session
+                .as_mut()
+                .unwrap()
+                .handle(RakSessionInput::Datagram(datagram, now))
+                .unwrap();
+        }
+    }
     tokio::time::advance(Duration::from_millis(101)).await;
     let mut receiving = Box::pin(connection.recv());
     let result = poll_fn(|cx| match receiving.as_mut().poll(cx) {
@@ -129,10 +150,11 @@ async fn cancelled_close_keeps_its_deadline_when_recv_resumes_driving() {
         Poll::Pending => panic!("expired close deadline retained the socket"),
     })
     .await;
+    assert_eq!(result.unwrap(), Bytes::from_static(&[0xfe, 2]));
+    drop(receiving);
     assert!(matches!(
-        result,
+        connection.recv().await,
         Err(RakNetError::Disconnected(DisconnectReason::Requested))
     ));
-    drop(receiving);
     UdpSocket::bind(connection.local_addr()).await.unwrap();
 }
