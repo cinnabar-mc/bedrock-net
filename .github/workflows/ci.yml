@@ -43,7 +43,7 @@ jobs:
       - working-directory: tools/go-oracle
         run: go build -o ../../target/login-check.exe ./cmd/login-check
       - run: cargo fmt --all --check
-      - run: cargo test --locked -p bedrock-net
+      - run: cargo test --locked --workspace
       - run: cargo test --locked -p bedrock-net --features raknet,login
         env:
           BEDROCK_NET_RAKNET_PEER: ${{ github.workspace }}/target/raknet-peer.exe
