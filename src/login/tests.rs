@@ -65,7 +65,7 @@ struct Oracle {
 }
 
 #[test]
-fn go_verifies_the_request_and_agrees_on_a_shared_secret_with_a_leading_zero() {
+fn go_verifies_both_login_modes_with_the_same_connection_key() {
     let Some(binary) = std::env::var_os("BEDROCK_NET_LOGIN_ORACLE") else {
         eprintln!(
             "missing fixture: BEDROCK_NET_LOGIN_ORACLE; build tools/go-oracle/cmd/login-check"
@@ -76,69 +76,80 @@ fn go_verifies_the_request_and_agrees_on_a_shared_secret_with_a_leading_zero() {
     let server = key(197);
     let now = UNIX_EPOCH + Duration::from_secs(10_000);
     let client_data = RawValue::from_string(CLIENT_DATA.into()).unwrap();
-    let request = encode_offline_request(&client, &identity(), &client_data, now, LIMIT).unwrap();
-    let input = serde_json::to_vec(&json!({
-        "request": STANDARD.encode(&request),
-        "client_scalar": STANDARD.encode(client.to_bytes()),
-        "server_scalar": STANDARD.encode(server.to_bytes()),
-        "salt": STANDARD.encode((0_u8..16).collect::<Vec<_>>()),
-    }))
-    .unwrap();
-    let mut child = Command::new(binary)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .expect("start the synthetic Login oracle");
-    let written = child.stdin.take().unwrap().write_all(&input);
-    let output = child.wait_with_output().expect("reap the Login oracle");
-    written.expect("write the oracle request");
-    assert!(
-        output.status.success(),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    let oracle: Oracle = serde_json::from_slice(&output.stdout).unwrap();
-    assert!(
-        oracle.leading_zero,
-        "the fixture must protect the full-width ECDH secret"
-    );
-    assert_eq!(oracle.name, identity().display_name);
-    assert_eq!(oracle.uuid, UUID);
-    assert_eq!(oracle.auth_claims["aud"], MULTIPLAYER_AUDIENCE);
-    assert_eq!(oracle.auth_claims["exp"], 10_000 + OFFLINE_VALIDITY_SECONDS);
-    assert_eq!(oracle.auth_claims["nbf"], 10_000 - OFFLINE_VALIDITY_SECONDS);
-    for name in ["ipt", "mid", "tid", "xid"] {
-        assert_eq!(oracle.auth_claims[name], "");
-    }
-    assert_eq!(
-        STANDARD.decode(oracle.client_json).unwrap(),
-        format!("{CLIENT_DATA}\n").as_bytes()
-    );
-    let session_key: [u8; 32] = STANDARD
-        .decode(oracle.session_key)
-        .unwrap()
-        .try_into()
+    let offline = encode_offline_request(&client, &identity(), &client_data, now, LIMIT).unwrap();
+    let length = u32::from_le_bytes(offline[..4].try_into().unwrap()) as usize;
+    let envelope: Value = serde_json::from_slice(&offline[4..4 + length]).unwrap();
+    let token = envelope["Token"].as_str().unwrap();
+    for authenticated in [false, true] {
+        let request = if authenticated {
+            encode_authenticated_request(&client, token, &client_data, LIMIT).unwrap()
+        } else {
+            offline.clone()
+        };
+        let input = serde_json::to_vec(&json!({
+            "request": STANDARD.encode(&request),
+            "authentication_type": if authenticated { 0 } else { 2 },
+            "client_scalar": STANDARD.encode(client.to_bytes()),
+            "server_scalar": STANDARD.encode(server.to_bytes()),
+            "salt": STANDARD.encode((0_u8..16).collect::<Vec<_>>()),
+        }))
         .unwrap();
-    let (mut outgoing, mut incoming) =
-        finish_key_exchange(&client, &oracle.server_token, LIMIT).unwrap();
-    let body = Bytes::from_static(b"native Login key exchange");
-    assert_eq!(
-        BatchDecryptor::new(session_key)
-            .decrypt(outgoing.encrypt(body.clone()).unwrap())
-            .unwrap(),
-        body
-    );
-    assert_eq!(
-        incoming
-            .decrypt(
-                BatchEncryptor::new(session_key)
-                    .encrypt(body.clone())
-                    .unwrap()
-            )
-            .unwrap(),
-        body
-    );
+        let mut child = Command::new(&binary)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("start the synthetic Login oracle");
+        let written = child.stdin.take().unwrap().write_all(&input);
+        let output = child.wait_with_output().expect("reap the Login oracle");
+        written.expect("write the oracle request");
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let oracle: Oracle = serde_json::from_slice(&output.stdout).unwrap();
+        assert!(
+            oracle.leading_zero,
+            "the fixture must protect the full-width ECDH secret"
+        );
+        assert_eq!(oracle.name, identity().display_name);
+        assert_eq!(oracle.uuid, UUID);
+        assert_eq!(oracle.auth_claims["aud"], MULTIPLAYER_AUDIENCE);
+        assert_eq!(oracle.auth_claims["exp"], 10_000 + OFFLINE_VALIDITY_SECONDS);
+        assert_eq!(oracle.auth_claims["nbf"], 10_000 - OFFLINE_VALIDITY_SECONDS);
+        for name in ["ipt", "mid", "tid", "xid"] {
+            assert_eq!(oracle.auth_claims[name], "");
+        }
+        assert_eq!(
+            STANDARD.decode(oracle.client_json).unwrap(),
+            format!("{CLIENT_DATA}\n").as_bytes()
+        );
+        let session_key: [u8; 32] = STANDARD
+            .decode(oracle.session_key)
+            .unwrap()
+            .try_into()
+            .unwrap();
+        let (mut outgoing, mut incoming) =
+            finish_key_exchange(&client, &oracle.server_token, LIMIT).unwrap();
+        let body = Bytes::from_static(b"native Login key exchange");
+        assert_eq!(
+            BatchDecryptor::new(session_key)
+                .decrypt(outgoing.encrypt(body.clone()).unwrap())
+                .unwrap(),
+            body
+        );
+        assert_eq!(
+            incoming
+                .decrypt(
+                    BatchEncryptor::new(session_key)
+                        .encrypt(body.clone())
+                        .unwrap()
+                )
+                .unwrap(),
+            body
+        );
+    }
 }
 
 #[test]
@@ -203,6 +214,25 @@ fn request_limits_are_exact_and_utc_validity_handles_pre_epoch_seconds() {
     let length = u32::from_le_bytes(request[..4].try_into().unwrap()) as usize;
     let envelope: Value = serde_json::from_slice(&request[4..4 + length]).unwrap();
     let token = envelope["Token"].as_str().unwrap();
+    let authenticated = encode_authenticated_request(&client, token, &client_data, LIMIT).unwrap();
+    assert_eq!(
+        encode_authenticated_request(&client, token, &client_data, authenticated.len()).unwrap(),
+        authenticated
+    );
+    for limit in [0, token.len() - 1, authenticated.len() - 1] {
+        assert!(matches!(
+            encode_authenticated_request(&client, token, &client_data, limit),
+            Err(LoginError::LimitExceeded { .. })
+        ));
+    }
+    assert!(matches!(
+        encode_authenticated_request(&client, "", &client_data, LIMIT),
+        Err(LoginError::EmptyAuthenticationToken)
+    ));
+    assert!(matches!(
+        encode_authenticated_request(&client, token, &non_object, LIMIT),
+        Err(LoginError::InvalidClientData)
+    ));
     let payload = token.split('.').nth(1).unwrap();
     let claims: Value = serde_json::from_slice(&URL_SAFE_NO_PAD.decode(payload).unwrap()).unwrap();
     assert_eq!(claims["exp"], OFFLINE_VALIDITY_SECONDS - 1);

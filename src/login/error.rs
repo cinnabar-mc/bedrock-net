@@ -19,6 +19,9 @@ pub enum LoginError {
     /// Client data is valid JSON but is not an object.
     #[error("login client data must be a JSON object")]
     InvalidClientData,
+    /// Authenticated Login requires a nonempty previously acquired credential.
+    #[error("login authentication token is empty")]
+    EmptyAuthenticationToken,
     /// JSON could not be encoded or decoded.
     #[error("invalid login JSON")]
     Json(#[source] serde_json::Error),
