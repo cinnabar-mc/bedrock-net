@@ -105,29 +105,37 @@ async fn connected_pair() -> (RakNetConnection, UdpSocket, RakSession<Establishe
                 }
             }
         }
-        if !moved && receiver.is_some() && sender.is_some() {
-            assert_eq!(receiver.as_ref().unwrap().outbound_bytes(), 0);
-            assert_eq!(sender.as_ref().unwrap().outbound_bytes(), 0);
-            return (
-                RakNetConnection {
-                    engine: Box::new(Engine {
-                        socket: Some(socket),
-                        local,
-                        peer: address,
-                        session: Some(SessionSlot::Established(receiver.unwrap())),
-                        options: RakNetOptions::default(),
-                        incoming: VecDeque::new(),
-                        incoming_bytes: 0,
-                        pending_datagram: None,
-                        receive_buffer: vec![0; UDP_BUFFER_BYTES],
-                        next_tick: Instant::now(),
-                        close_deadline: None,
-                        failure: None,
-                    }),
-                },
-                peer,
-                sender.unwrap(),
-            );
+        if !moved {
+            match (receiver, sender) {
+                (Some(receiver), Some(sender)) => {
+                    assert_eq!(receiver.outbound_bytes(), 0);
+                    assert_eq!(sender.outbound_bytes(), 0);
+                    return (
+                        RakNetConnection {
+                            engine: Box::new(Engine {
+                                socket: Some(socket),
+                                local,
+                                peer: address,
+                                session: Some(SessionSlot::Established(receiver)),
+                                options: RakNetOptions::default(),
+                                incoming: VecDeque::new(),
+                                incoming_bytes: 0,
+                                pending_datagram: None,
+                                receive_buffer: vec![0; UDP_BUFFER_BYTES],
+                                next_tick: Instant::now(),
+                                close_deadline: None,
+                                failure: None,
+                            }),
+                        },
+                        peer,
+                        sender,
+                    );
+                }
+                (partial_receiver, partial_sender) => {
+                    receiver = partial_receiver;
+                    sender = partial_sender;
+                }
+            }
         }
     }
     panic!("public negotiation did not complete within the controlled work bound");
