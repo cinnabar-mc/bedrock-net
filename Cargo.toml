@@ -19,14 +19,19 @@ publish = false
 
 [features]
 default = []
+login = ["dep:base64", "dep:p384", "dep:serde", "dep:serde_json", "sha2/zeroize"]
 raknet = ["dep:raknet", "dep:tokio"]
 
 [dependencies]
 aes = { version = "0.9", features = ["zeroize"] }
+base64 = { version = "0.22", optional = true }
 bytes = "1"
 ctr = { version = "0.10", features = ["zeroize"] }
 flate2 = "1"
+p384 = { version = "0.14", default-features = false, features = ["std", "ecdsa", "ecdh", "pkcs8"], optional = true }
 raknet = { git = "https://github.com/cinnabar-mc/raknet", rev = "e570810c8942b783644da4484a2ab1e33adb7089", optional = true }
+serde = { version = "1", features = ["derive"], optional = true }
+serde_json = { version = "1", features = ["raw_value"], optional = true }
 sha2 = "0.11"
 snap = "1"
 subtle = "2"
