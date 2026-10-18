@@ -1,0 +1,32 @@
+[workspace]
+members = ["."]
+resolver = "3"
+
+[package]
+name = "bedrock-net"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+license = "MIT OR Apache-2.0"
+description = "Native Rust transport and session foundations for Minecraft Bedrock"
+repository = "https://github.com/cinnabar-mc/bedrock-net"
+readme = "README.md"
+publish = false
+
+[dependencies]
+bytes = "1"
+flate2 = "1"
+snap = "1"
+thiserror = "2"
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+missing_docs = "warn"
+
+[workspace.lints.clippy]
+correctness = "deny"
+suspicious = "warn"
+perf = "warn"
+
+[lints]
+workspace = true

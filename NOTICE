@@ -1,0 +1,13 @@
+bedrock-net
+Copyright 2026 Cinnabar contributors
+
+The batch codec is an original Rust implementation informed by public code in:
+
+- bedrock-crustaceans/bedrock-rs (Apache-2.0), commit
+  ab7bb9521af078d4094c86da8b127d5f53cf0d31.
+- HashimTheArab/gophertunnel (MIT), commit 81e65c54fb21, including its
+  declared-compression, batch-drop and outgoing packet-limit fixes.
+- CloudburstMC/Protocol (Apache-2.0) and PrismarineJS/bedrock-protocol (MIT).
+
+No source files from those projects are included. Their licenses continue to
+apply to their respective projects. Dependencies carry their own licenses.
