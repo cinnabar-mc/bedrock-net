@@ -4,7 +4,7 @@ Native Rust networking foundations for Minecraft Bedrock, developed for
 [Cinnabar](https://github.com/cinnabar-mc/cinnabar) and reusable by other clients.
 
 The workspace separates byte-oriented transport/batch processing in `bedrock-net`,
-generated-packet client negotiation in [bedrock-client](crates/bedrock-client),
+generated-packet client and accepting negotiation in [bedrock-client](crates/bedrock-client),
 and reusable pack text/archive ownership in [bedrock-packs](crates/bedrock-packs).
 The client crate owns generated-packet Login, verified key-exchange transitions,
 bounded resource-pack negotiation, in-band integrity, final stack ordering and
@@ -66,6 +66,21 @@ acquired multiplayer credential without changing it. Acquire that credential for
 the same connection key through an account service such as
 [bedrock-services](https://github.com/cinnabar-mc/bedrock-services); account I/O
 stays outside this library.
+
+The accepting Login helper requires a caller-owned `LoginVerifier` using trusted
+provider policy. It verifies client metadata with that provider's bound proof key;
+it never authenticates an XUID from raw JWT claims or an untrusted header key.
+The verifier can retain signed name, canonical UUID and PlayFab identifiers with
+`TrustedIdentity::with_player_identity`; `AuthenticatedLogin::player_identity`
+borrows them and revalidation rejects changes. Missing presentation stays absent.
+Recognized outer Login and nonce fields accept Go's field casing; ambiguous
+aliases are rejected without rewriting signed metadata. Peer JSON diagnostics
+retain no input values. JWT claim and JWS header names keep their original policy.
+`bedrock_client::server::ServerHandshake` adds generated-packet accepting transitions
+with explicit compression/cipher boundaries and an original caller deadline.
+It pauses for application authorization and ends before pack preparation.
+Legacy/offline/guest accepting Login, server pack delivery and world bridging remain
+unimplemented. See the [packet lifecycle contract](crates/bedrock-client/README.md).
 
 Enable the `raknet` feature for `raknet::RakNetConnection`, a Tokio driver over a
 pinned [bedrock-crustaceans/raknet](https://github.com/bedrock-crustaceans/raknet)

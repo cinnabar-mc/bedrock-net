@@ -2,7 +2,7 @@
 
 Keep the workspace independent of Cinnabar and rendering engines. The
 `bedrock-net` foundation accepts encoded packet bytes; `bedrock-client` owns
-client negotiation using protocolgen's generated packet models and codecs.
+client and accepting negotiation using protocolgen's generated packet models and codecs.
 `bedrock-packs` owns reusable pack text and archive handoff, independently of
 packet models or runtimes. Do not define replacement gameplay packet schemas.
 Introduce crate boundaries only when components have meaningful independent

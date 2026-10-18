@@ -1,6 +1,6 @@
 # bedrock-client
 
-Caller-driven Bedrock client negotiation using protocolgen's generated packets.
+Caller-driven Bedrock client and accepting negotiation using protocolgen's generated packets.
 The cores create no runtime, socket, HTTP client, task, thread or clock. A caller
 can drive many sessions from a shared event loop or use its preferred I/O edge.
 
@@ -60,3 +60,28 @@ caller responsibilities. These owners do not claim live-server qualification.
 Packet schemas and codecs remain in protocolgen. The extracted Cinnabar
 implementation retains its [PolyForm Noncommercial license](../../LICENSE-CINNABAR);
 the spawn adaptation preserves [Jolyne's MIT notice](LICENSE-AXOLOTL).
+
+`server::ServerHandshake` provides the accepting network/Login half, ending before
+pack preparation. Supply one server key, an absolute caller deadline, any verified
+transport peer key and a required `bedrock_net::login::LoginVerifier`. Reuse the
+existing configured provider verification owner; it must authenticate signature,
+issuer, audience, dates, XUID and `cpk`. There is no default or permissive verifier.
+Modern authenticated Login is supported; legacy chains, offline and guest admission
+remain unimplemented.
+
+Send and flush `NetworkSettings` uncompressed before installing compression and
+calling `compression_installed`. `LoginVerified` pauses for application admission:
+check the authenticated player's XUID and original signed nonce against the current
+hosted session, world opening and host account binding. Then call `accept`. When
+batch encryption is enabled, supply fresh caller-owned sixteen-byte salt, send and
+flush the returned server token in plaintext, install both streams, then call
+`encryption_installed` before reading the encrypted acknowledgment. Transports that
+already encrypt the application stream can explicitly skip the extra batch cipher.
+
+At `ReadyForPacks`, `finish` transfers the verified Login after revalidation. Prepare
+the actual world connection and exact pack snapshot before sending LoginSuccess or
+ResourcePacksInfo; recheck the original application approval after every wait before
+the final handoff. Client metadata remains player-controlled despite its signature.
+This module does not publish a world, implement server pack chunk delivery or bridge
+a peer to a running world. The caller retains packet siblings, handles terminal
+packets immediately, bounds admission/cleanup and closes on failed transitions.

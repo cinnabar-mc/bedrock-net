@@ -3,6 +3,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"crypto/ecdh"
 	"crypto/ecdsa"
 	"crypto/elliptic"
@@ -26,6 +27,7 @@ import (
 const maxInputBytes = 1024 * 1024
 
 type request struct {
+	IdentityToken      string `json:"identity_token"`
 	AuthenticationType *uint8 `json:"authentication_type"`
 	ConnectionRequest  []byte `json:"request"`
 	ClientScalar       []byte `json:"client_scalar"`
@@ -71,6 +73,12 @@ func run() error {
 	var extra any
 	if err := decoder.Decode(&extra); err != io.EOF {
 		return errors.New("trailing fixture input")
+	}
+	if input.IdentityToken != "" {
+		if input.AuthenticationType != nil || len(input.ConnectionRequest) != 0 || len(input.ClientScalar) != 0 || len(input.ServerScalar) != 0 || len(input.Salt) != 0 {
+			return errors.New("mixed identity and handshake fixtures")
+		}
+		return projectIdentity(input.IdentityToken)
 	}
 	rest := input.ConnectionRequest
 	envelope, err := takeField(&rest)
@@ -173,6 +181,22 @@ func run() error {
 		SessionKey: key[:], LeadingZero: shared[0] == 0,
 		Name: identity.DisplayName, UUID: identity.Identity,
 	})
+}
+
+// projectIdentity compares only the pinned Go claim projection, without asserting issuer trust.
+// Rust supplies one synthetic token; its separate accepting tests verify actual provider signatures.
+func projectIdentity(token string) error {
+	identity, err := login.ParseTokenIdentityData(context.Background(), token, nil)
+	if err != nil {
+		return fmt.Errorf("project synthetic identity: %w", err)
+	}
+	return json.NewEncoder(os.Stdout).Encode(struct {
+		XUID           string `json:"xuid"`
+		Name           string `json:"name"`
+		UUID           string `json:"uuid"`
+		PlayFabID      string `json:"playfab_id"`
+		PlayFabTitleID string `json:"playfab_title_id"`
+	}{identity.XUID, identity.DisplayName, identity.Identity, identity.PlayFabID, identity.PlayFabTitleID})
 }
 
 // takeField checks a little-endian field length before slicing the request.
