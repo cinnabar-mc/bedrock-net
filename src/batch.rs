@@ -16,6 +16,16 @@ pub enum BatchHeader {
     NetherNet,
 }
 
+impl BatchHeader {
+    /// Returns the transport marker excluded from encrypted batch bodies.
+    pub const fn marker(self) -> Option<u8> {
+        match self {
+            Self::RakNet => Some(RAKNET_BATCH_HEADER),
+            Self::NetherNet => None,
+        }
+    }
+}
+
 /// Resource ceilings applied before packets are exposed to the caller.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct BatchLimits {

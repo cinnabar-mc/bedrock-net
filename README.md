@@ -44,7 +44,14 @@ the handshake. Encrypt the compressed body after removing any transport marker;
 decrypt and verify before decompressing. Retain outgoing ciphertext in send order,
 and bound incoming wire bytes before decryption. Integrity failures invalidate the
 direction. A compression drop still consumes the encrypted batch's stream state.
-Key exchange and authentication are separate, pending work.
+Enable `login` for offline request encoding and server key exchange. The caller
+owns its P-384 signing key, UTC time, identity claims and validated client-data
+JSON. The helpers retain raw client data, sign line-terminated JSON and produce
+the opaque connection request used by protocolgen. Server tokens are bounded,
+verified with their DER key and used to derive the full-width ECDH session key.
+`finish_key_exchange` returns independent outgoing/incoming ciphers. Its
+self-contained signature establishes key possession; endpoint trust remains
+with the transport/application. Account authentication is still pending.
 
 Enable the `raknet` feature for `raknet::RakNetConnection`, a Tokio driver over a
 pinned [bedrock-crustaceans/raknet](https://github.com/bedrock-crustaceans/raknet)
@@ -82,18 +89,31 @@ For Go transport interoperability checks, build the loopback-only helper under
 `tools/raknet-peer` and set `BEDROCK_NET_RAKNET_PEER` to that executable before
 running `cargo test --locked -p bedrock-net --features raknet`.
 
-This is an incremental implementation. Production NetherNet integration, login,
-services and broader server validation are still pending. The existing Cinnabar Go
-backend remains the production implementation.
+This is an incremental implementation. Production NetherNet integration, the
+full Login/session lifecycle, services and broader server validation are still
+pending. The existing Cinnabar Go backend remains the production implementation.
 
 The standalone `bedrock-probe` workspace binary composes generated protocolgen
 packets with the native batch codec. Run
-`cargo run -p bedrock-probe -- <raknet|nethernet> IP:PORT` to request network
-settings and close the connection. The NetherNet path uses HTTP signaling and a
-self-signed client identity. Its transport adapter is being evaluated for later
-library integration; account authentication and the rest of login are pending.
-This probe has exchanged settings with a local offline BDS 1.26.52.3; it does not
-exercise login or subsequent compressed traffic.
+`cargo run -p bedrock-probe -- <raknet|nethernet|nethernet-lan> IP:PORT` to request
+network settings and close. Add `--offline-login` to send a synthetic self-signed
+Login and stop after acceptance and the resource-pack offer. The probe retains
+packets across phase changes and handles optional application encryption; it
+does not negotiate or download packs. RakNet uses Minecraft batch ciphers after
+key exchange. NetherNet verifies the server handshake and uses its DTLS
+transport without adding Minecraft batch ciphers.
+
+The `nethernet` path uses HTTP signaling and a self-signed client identity.
+`nethernet-lan` directs discovery to an explicit IPv4 loopback fixture, requires
+advertised self-signed admission and a nonce, and copies that nonce into Login
+metadata. It does not scan the LAN. The transport adapter is being evaluated for
+later library integration; account authentication and the full startup/session
+API are pending. The LAN probe has completed settings, offline Login and a
+compressed pack offer against an isolated BDS 1.26.52.3 using synthetic Android
+metadata and an original skin. Other metadata/platforms and broader server
+compatibility remain unverified. The helper tests independently verify request
+signatures and key agreement with the pinned Go implementation.
+
 The root library remains the default workspace member, so these version-specific
 and transport evaluation dependencies stay outside its normal build.
 

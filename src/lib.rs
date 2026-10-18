@@ -4,6 +4,8 @@ mod batch;
 mod compression;
 pub mod encryption;
 mod error;
+#[cfg(feature = "login")]
+pub mod login;
 #[cfg(feature = "raknet")]
 pub mod raknet;
 
