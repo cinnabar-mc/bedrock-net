@@ -34,6 +34,8 @@ impl RakNetConnection {
         }
         let config = RakClientConfig {
             max_mtu_size: options.max_mtu,
+            max_handshake_bytes: options.receive_buffer_bytes,
+            max_handshake_messages: options.receive_buffer_messages,
             conn_attempt_timeout: options.connect_timeout,
             ..RakClientConfig::default()
         };
