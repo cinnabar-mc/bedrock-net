@@ -22,5 +22,8 @@ serde_json = { version = "1", features = ["raw_value"] }
 tokio = { version = "1", features = ["rt", "macros", "time"] }
 uuid = "1"
 
+[dev-dependencies]
+raknet.workspace = true
+
 [lints]
 workspace = true
