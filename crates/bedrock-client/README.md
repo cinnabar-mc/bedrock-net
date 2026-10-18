@@ -9,6 +9,8 @@ key. Borrow `key()` for identity-aware transport admission; the same owner signs
 Login and verifies the server exchange. Signed transports that retain the key can
 pass an `Arc<SigningKey>` shared with their signing identity; owned keys also move
 directly into the constructor. Both forms use one underlying key allocation.
+The pure key operations use P384's allocation support without selecting a system
+entropy backend; key generation and its platform RNG remain caller-owned.
 Start negotiation, then apply each effect:
 
 1. Send `start()` without compression.
