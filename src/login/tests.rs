@@ -187,7 +187,8 @@ fn request_limits_are_exact_and_utc_validity_handles_pre_epoch_seconds() {
         encode_offline_request(&client, &identity(), &non_object, UNIX_EPOCH, LIMIT),
         Err(LoginError::InvalidClientData)
     ));
-    let now = UNIX_EPOCH - Duration::from_nanos(1);
+    // Windows SystemTime stores 100 ns intervals; keep the fraction representable.
+    let now = UNIX_EPOCH - Duration::from_micros(1);
     let request = encode_offline_request(&client, &identity(), &client_data, now, LIMIT).unwrap();
     assert_eq!(
         encode_offline_request(&client, &identity(), &client_data, now, request.len()).unwrap(),
