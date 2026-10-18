@@ -2,10 +2,11 @@
 
 use super::{LoginError, jwt};
 use p384::ecdsa::VerifyingKey;
-use serde::Deserialize;
 use serde_json::value::RawValue;
-use std::{borrow::Cow, time::SystemTime};
+use std::time::SystemTime;
 use zeroize::Zeroizing;
+
+mod fields;
 
 /// Pure authority for the configured multiplayer provider, never a client-selected issuer/key.
 ///
@@ -88,7 +89,9 @@ impl AuthenticatedLogin {
         verifier: &impl LoginVerifier,
         now: SystemTime,
     ) -> Result<(), LoginError> {
-        let identity = verifier.verify(&self.credential, now)?;
+        let identity = verifier
+            .verify(&self.credential, now)
+            .map_err(LoginError::redact_peer)?;
         if identity.xuid != self.identity.xuid || identity.public_key != self.identity.public_key {
             return Err(LoginError::IdentityChanged);
         }
@@ -123,14 +126,8 @@ pub fn verify_authenticated_request(
     if !rest.is_empty() {
         return Err(LoginError::InvalidLength);
     }
-    #[derive(Deserialize)]
-    struct Envelope<'a> {
-        #[serde(rename = "AuthenticationType")]
-        mode: Option<u8>,
-        #[serde(rename = "Token", borrow)]
-        token: Option<Cow<'a, str>>,
-    }
-    let envelope: Envelope<'_> = serde_json::from_slice(envelope).map_err(LoginError::Json)?;
+    let envelope: fields::Envelope =
+        serde_json::from_slice(envelope).map_err(|_| LoginError::MalformedJson)?;
     if envelope.mode != Some(0) {
         return Err(LoginError::UnsupportedAuthentication);
     }
@@ -138,20 +135,19 @@ pub fn verify_authenticated_request(
         .token
         .filter(|token| !token.is_empty())
         .ok_or(LoginError::EmptyAuthenticationToken)?;
-    let identity = verifier.verify(&token, now)?;
+    let identity = verifier
+        .verify(&token, now)
+        .map_err(LoginError::redact_peer)?;
     let client = std::str::from_utf8(client).map_err(|_| LoginError::MalformedToken)?;
     let payload = jwt::verify_client(client, &identity.public_key, max_request_bytes)?;
-    let client_data: Box<RawValue> = serde_json::from_slice(&payload).map_err(LoginError::Json)?;
+    let client_data: Box<RawValue> =
+        serde_json::from_slice(&payload).map_err(|_| LoginError::MalformedJson)?;
     super::validate_client_data(&client_data, max_request_bytes)?;
-    #[derive(Deserialize)]
-    struct Metadata {
-        #[serde(rename = "Nonce", default)]
-        nonce: String,
-    }
-    let metadata: Metadata = serde_json::from_str(client_data.get()).map_err(LoginError::Json)?;
+    let metadata: fields::Metadata =
+        serde_json::from_str(client_data.get()).map_err(|_| LoginError::MalformedJson)?;
     Ok(AuthenticatedLogin {
         identity,
-        credential: Zeroizing::new(token.into_owned()),
+        credential: Zeroizing::new(token),
         client_data,
         nonce: Zeroizing::new(metadata.nonce),
     })

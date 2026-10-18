@@ -31,9 +31,13 @@ pub enum LoginError {
     /// Revalidation changed the original provider-authenticated account or proof key.
     #[error("login identity changed before admission")]
     IdentityChanged,
-    /// JSON could not be encoded or decoded.
+    /// Local JSON could not be encoded. Peer decoding uses the redacted [`Self::MalformedJson`].
     #[error("invalid login JSON")]
     Json(#[source] serde_json::Error),
+    /// Peer JSON is malformed or has an invalid/ambiguous recognized field.
+    /// No raw serde diagnostic retains input values in Debug or the source chain.
+    #[error("invalid login JSON")]
+    MalformedJson,
     /// A server token is not a compact JWS.
     #[error("invalid server handshake token framing")]
     MalformedToken,
@@ -49,4 +53,14 @@ pub enum LoginError {
     /// A signature could not be created, parsed or verified.
     #[error("invalid login signature")]
     Signature(#[source] p384::ecdsa::Error),
+}
+
+impl LoginError {
+    /// Removes value-bearing JSON causes returned by an external verifier at the peer boundary.
+    pub(super) fn redact_peer(self) -> Self {
+        match self {
+            Self::Json(_) => Self::MalformedJson,
+            error => error,
+        }
+    }
 }

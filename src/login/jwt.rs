@@ -109,7 +109,8 @@ pub(super) fn verify_server(token: &str, limit: usize) -> Result<(PublicKey, Vec
         .map_err(LoginError::Base64)?;
     let public = PublicKey::from_public_key_der(&der).map_err(LoginError::PublicKey)?;
     parsed.verify(&VerifyingKey::from(public))?;
-    let claims: SaltClaims = serde_json::from_slice(&parsed.payload).map_err(LoginError::Json)?;
+    let claims: SaltClaims =
+        serde_json::from_slice(&parsed.payload).map_err(|_| LoginError::MalformedJson)?;
     let salt = STANDARD_NO_PAD
         .decode(claims.salt.unwrap_or_default().trim_end_matches('='))
         .map_err(LoginError::Base64)?;
@@ -148,7 +149,7 @@ impl<'a> Parsed<'a> {
         }
         let header: TokenHeader =
             serde_json::from_slice(&URL_SAFE_NO_PAD.decode(header).map_err(LoginError::Base64)?)
-                .map_err(LoginError::Json)?;
+                .map_err(|_| LoginError::MalformedJson)?;
         if header.alg != "ES384" || header.crit.iter().flatten().any(|name| name != "b64") {
             return Err(LoginError::UnsupportedHeader);
         }
