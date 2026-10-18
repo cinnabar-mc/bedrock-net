@@ -210,6 +210,7 @@ dependencies = [
  "ctr 0.10.1",
  "flate2",
  "futures",
+ "md-5 0.11.0",
  "nethernet",
  "nethernet-tokio",
  "p384",
@@ -269,7 +270,7 @@ dependencies = [
 [[package]]
 name = "bedrock-services"
 version = "0.1.0"
-source = "git+https://github.com/cinnabar-mc/bedrock-services?rev=cbc8c6847f5d3eab8f8b0b8bc352624c4f816ea7#cbc8c6847f5d3eab8f8b0b8bc352624c4f816ea7"
+source = "git+https://github.com/cinnabar-mc/bedrock-services?rev=ed91feb92858190a19f80dbdb2a4b626b1d14c79#ed91feb92858190a19f80dbdb2a4b626b1d14c79"
 dependencies = [
  "base64 0.22.1",
  "futures-util",
@@ -1626,7 +1627,7 @@ checksum = "bc0287524726960e07b119cebd01678f852f147742ae0d925e6a520dca956126"
 [[package]]
 name = "nethernet"
 version = "0.0.1"
-source = "git+https://github.com/cinnabar-mc/nethernet?rev=46bffc13d2c48ca78957cd02b66c1cb9ec11025f#46bffc13d2c48ca78957cd02b66c1cb9ec11025f"
+source = "git+https://github.com/cinnabar-mc/nethernet?rev=ee64e50e30a15bbe5ffbaf2938d3e8b111e63094#ee64e50e30a15bbe5ffbaf2938d3e8b111e63094"
 dependencies = [
  "aes 0.9.3",
  "base64 0.23.1",
@@ -1650,7 +1651,7 @@ dependencies = [
 [[package]]
 name = "nethernet-tokio"
 version = "0.2.0"
-source = "git+https://github.com/cinnabar-mc/nethernet?rev=46bffc13d2c48ca78957cd02b66c1cb9ec11025f#46bffc13d2c48ca78957cd02b66c1cb9ec11025f"
+source = "git+https://github.com/cinnabar-mc/nethernet?rev=ee64e50e30a15bbe5ffbaf2938d3e8b111e63094#ee64e50e30a15bbe5ffbaf2938d3e8b111e63094"
 dependencies = [
  "bytes",
  "futures",
@@ -2001,7 +2002,7 @@ checksum = "f8dcc9c7d52a811697d2151c701e0d08956f92b0e24136cf4cf27b57a6a0d9bf"
 [[package]]
 name = "raknet"
 version = "0.1.0"
-source = "git+https://github.com/cinnabar-mc/raknet?rev=64c50dda0e1dc21409b0f42f746d66786697a86b#64c50dda0e1dc21409b0f42f746d66786697a86b"
+source = "git+https://github.com/cinnabar-mc/raknet?rev=e8d8c5b31722a1e230e52ade0a4e101756bb5d1d#e8d8c5b31722a1e230e52ade0a4e101756bb5d1d"
 dependencies = [
  "byteorder",
  "facet",

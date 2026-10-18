@@ -17,6 +17,17 @@ jobs:
         run: |
           python3 - <<'PY'
           import os, tomllib
+          sources = {}
+          with open("Cargo.lock", "rb") as lock:
+              for package in tomllib.load(lock)["package"]:
+                  source = package.get("source", "")
+                  if source.startswith("git+"):
+                      location, revision = source.removeprefix("git+").split("#", 1)
+                      repository = location.split("?", 1)[0]
+                      sources.setdefault(repository, set()).add(revision)
+          duplicated = [repository for repository, revisions in sources.items() if len(revisions) != 1]
+          if duplicated:
+              raise SystemExit("Multiple Git identities: " + ", ".join(sorted(duplicated)))
           with open("Cargo.toml", "rb") as manifest, open(os.environ["GITHUB_OUTPUT"], "a") as output:
               print("version=" + tomllib.load(manifest)["workspace"]["package"]["rust-version"], file=output)
           PY
