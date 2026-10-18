@@ -6,7 +6,10 @@ can drive many sessions from a shared event loop or use its preferred I/O edge.
 
 `handshake::ClientHandshake` takes ownership of the caller's connection proof
 key. Borrow `key()` for identity-aware transport admission; the same owner signs
-Login and verifies the server exchange. Start negotiation, then apply each effect:
+Login and verifies the server exchange. Signed transports that retain the key can
+pass an `Arc<SigningKey>` shared with their signing identity; owned keys also move
+directly into the constructor. Both forms use one underlying key allocation.
+Start negotiation, then apply each effect:
 
 1. Send `start()` without compression.
 2. On `Compression`, install the settings on the retained batch codec. Build

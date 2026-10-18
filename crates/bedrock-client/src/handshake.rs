@@ -1,6 +1,6 @@
 //! Network negotiation and key exchange, driven one generated packet at a time.
 
-use std::time::SystemTime;
+use std::{sync::Arc, time::SystemTime};
 
 use bedrock_net::{
     CompressionAlgorithm, CompressionSettings,
@@ -114,7 +114,7 @@ enum Phase {
 /// The caller owns transport I/O, endpoint/account trust, client-data schema,
 /// UTC, deadline, cancellation and bounded buffering of unread packet siblings.
 pub struct ClientHandshake {
-    key: SigningKey,
+    key: Arc<SigningKey>,
     options: HandshakeOptions,
     phase: Phase,
     key_exchanged: bool,
@@ -122,16 +122,20 @@ pub struct ClientHandshake {
 }
 
 impl ClientHandshake {
-    /// Retains the already acquired connection proof key without generating another.
+    /// Retains the acquired proof key or shares its existing allocation with signed transport.
+    /// No private key material is cloned and no replacement identity is generated.
     ///
     /// # Errors
     /// Rejects a zero Login/token byte budget before retaining the key.
-    pub fn new(key: SigningKey, options: HandshakeOptions) -> Result<Self, HandshakeError> {
+    pub fn new(
+        key: impl Into<Arc<SigningKey>>,
+        options: HandshakeOptions,
+    ) -> Result<Self, HandshakeError> {
         if options.max_login_bytes == 0 {
             return Err(HandshakeError::InvalidLimit);
         }
         Ok(Self {
-            key,
+            key: key.into(),
             options,
             phase: Phase::Initial,
             key_exchanged: false,
