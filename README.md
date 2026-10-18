@@ -62,8 +62,11 @@ tunnels or VPNs; invalid caps fail before socket creation. Probe size failures
 advance discovery, and Request 1 discovery continues independently while Request 2
 retries. Initial MTU negotiation tolerates up to ten recognized transient UDP
 read errors across both offline phases; other errors remain fatal and the overall
-handshake deadline still applies. These deterministic transitions still need validation on real network
-paths and devices. `wait_send_capacity` services ACKs when the outgoing byte
+handshake deadline still applies. Application packets received during reliable
+setup stay in a FIFO bounded by the same receive options and transfer into the
+established session. A coalesced peer close follows its completed packet prefix.
+These deterministic transitions still need validation on real network paths and
+devices. `wait_send_capacity` services ACKs when the outgoing byte
 budget is full, retaining inbound messages for the next `recv`. Complete earlier
 messages drain before terminal errors.
 
