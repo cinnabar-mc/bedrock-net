@@ -1,3 +1,4 @@
+use std::future::Future;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 
 use ::raknet::prelude::{
@@ -50,22 +51,7 @@ impl RakNetConnection {
         let deadline = Instant::now()
             .checked_add(options.connect_timeout)
             .ok_or(RakNetError::InvalidOption("connect timeout is too large"))?;
-        let result = timeout_at(deadline, Self::handshake(peer, options, config))
-            .await
-            .map_err(|_| RakNetError::ConnectTimeout)?;
-        // The engine can observe the shared deadline before Tokio polls its timer.
-        if Instant::now() >= deadline
-            && matches!(
-                &result,
-                Err(RakNetError::Handshake(
-                    ::raknet::prelude::RakClientError::ConnectionFailed
-                ))
-            )
-        {
-            Err(RakNetError::ConnectTimeout)
-        } else {
-            result
-        }
+        finish_connect(deadline, Self::handshake(peer, options, config)).await
     }
 
     /// Drives the pinned engine until it transfers the connected protocol state.
@@ -175,5 +161,28 @@ impl RakNetConnection {
             };
             client.handle(input)?;
         }
+    }
+}
+
+/// Transfers the actual negotiated owner through the attempt's original absolute deadline.
+pub(super) async fn finish_connect(
+    deadline: Instant,
+    connecting: impl Future<Output = Result<RakNetConnection, RakNetError>>,
+) -> Result<RakNetConnection, RakNetError> {
+    let result = timeout_at(deadline, connecting)
+        .await
+        .map_err(|_| RakNetError::ConnectTimeout)?;
+    // The engine can observe the shared deadline before Tokio polls its timer.
+    if Instant::now() >= deadline
+        && matches!(
+            &result,
+            Err(RakNetError::Handshake(
+                ::raknet::prelude::RakClientError::ConnectionFailed
+            ))
+        )
+    {
+        Err(RakNetError::ConnectTimeout)
+    } else {
+        result
     }
 }

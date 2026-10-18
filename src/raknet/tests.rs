@@ -261,3 +261,31 @@ async fn cancelled_close_keeps_its_deadline_when_recv_resumes_driving() {
     };
     UdpSocket::bind(closed.local_addr()).await.unwrap();
 }
+
+/// Uses a genuinely negotiated owner and bound socket, not a readiness flag surrogate.
+#[tokio::test(start_paused = true)]
+async fn ready_connection_cannot_escape_original_connect_deadline() {
+    for delayed in [false, true] {
+        let (connection, _peer, _session) = connected_pair().await;
+        let local = connection.local_addr();
+        let deadline = Instant::now() + Duration::from_millis(10);
+        let ready = std::future::ready(Ok(connection));
+        if delayed {
+            tokio::time::advance(Duration::from_millis(11)).await;
+        }
+        let result = connect::finish_connect(deadline, ready).await;
+        if delayed {
+            assert!(
+                matches!(result, Err(RakNetError::ConnectTimeout)),
+                "ready connection escaped the original connect deadline"
+            );
+        } else {
+            let connection = result.expect("timely ready connection remains admitted");
+            assert_eq!(connection.local_addr(), local);
+            drop(connection);
+        }
+        UdpSocket::bind(local)
+            .await
+            .expect("expired or dropped connection releases its socket");
+    }
+}
