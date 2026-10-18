@@ -2,12 +2,14 @@ use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 
 use ::raknet::prelude::{
     RakClient, RakClientConfig, RakClientInput, RakClientOutput, RakSessionConfig, Sans,
-    canonical_socket_addr, is_mtu_probe_size_error,
+    canonical_socket_addr, is_mtu_probe_size_error, is_transient_udp_read_error,
 };
 use tokio::net::UdpSocket;
 use tokio::time::{Instant, sleep_until, timeout_at};
 
 use super::{RakNetConnection, RakNetError, RakNetOptions, UDP_BUFFER_BYTES};
+
+const MAX_INITIAL_READ_ERRORS: usize = 10;
 
 impl RakNetConnection {
     /// Completes a transport handshake, spawning no background tasks.
@@ -67,6 +69,7 @@ impl RakNetConnection {
         })?;
         let mut buffer = vec![0; UDP_BUFFER_BYTES];
         let mut next_tick = Instant::now();
+        let mut initial_read_errors = 0;
         loop {
             while let Some(output) = client.poll() {
                 match output {
@@ -129,8 +132,16 @@ impl RakNetConnection {
             }
             let input = tokio::select! {
                 received = socket.recv(&mut buffer) => {
-                    let length = received?;
-                    RakClientInput::Datagram(buffer[..length].into(), peer, std::time::SystemTime::now())
+                    match received {
+                        Ok(length) => RakClientInput::Datagram(buffer[..length].into(), peer, std::time::SystemTime::now()),
+                        Err(error) if client.is_offline_negotiating()
+                            && initial_read_errors < MAX_INITIAL_READ_ERRORS
+                            && is_transient_udp_read_error(&error) => {
+                                initial_read_errors += 1;
+                                RakClientInput::Update(std::time::SystemTime::now())
+                            }
+                        Err(error) => return Err(error.into()),
+                    }
                 }
                 _ = sleep_until(next_tick) => RakClientInput::Update(std::time::SystemTime::now()),
             };
