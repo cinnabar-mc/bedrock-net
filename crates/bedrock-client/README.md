@@ -1,65 +1,77 @@
 # bedrock-client
 
-Caller-driven Bedrock client and accepting negotiation using protocolgen's generated packets.
-The cores create no runtime, socket, HTTP client, task, thread or clock. A caller
-can drive many sessions from a shared event loop or use its preferred I/O edge.
+Caller-driven Bedrock negotiation over protocolgen's generated packets. The pure
+owners create no runtime, socket, HTTP client, task, thread or clock. Applications
+own actual I/O, deadlines, cancellation, account/world authority and presentation.
 
-`handshake::ClientHandshake` takes ownership of the caller's connection proof
-key. Borrow `key()` for identity-aware transport admission; the same owner signs
-Login and verifies the server exchange. Signed transports that retain the key can
-pass an `Arc<SigningKey>` shared with their signing identity; owned keys also move
-directly into the constructor. Both forms use one underlying key allocation.
-The pure key operations use P384's allocation support without selecting a system
-entropy backend; key generation and its platform RNG remain caller-owned.
-Start negotiation, then apply each effect:
+The public client capabilities are consumed at each handoff:
 
-1. Send `start()` without compression.
-2. On `Compression`, install the settings on the retained batch codec. Build
-   application metadata, then call `login_offline` or `login_authenticated` and
-   send that generated Login. UTC is explicit for offline signing. Account
-   verification and credential deadline checks remain with the caller.
-3. On `KeyExchange`, install both directional ciphers before encoding or sending
-   the acknowledgment. A transport already providing application encryption can
-   disable the additional batch cipher; the server token is still verified.
-4. Send `Send` responses immediately. On `Packs`, send the optional cache status
-   before starting the returned `packs::PackNegotiation`.
+| Owner | Available work | Next owner |
+| --- | --- | --- |
+| `ClientHandshake` | Retain the original proof key; start once | `ClientSettings` |
+| `ClientSettings` | Observe actual settings; preserve unrelated input | `ClientLoginReady` |
+| `ClientLoginReady` | Format one offline or acquired-credential Login | `ClientLogin` |
+| `ClientLogin` | Observe post-Login controls and verified exchange | `ClientPackOffer` |
+| `ClientPackOffer` | Supply validated cache/CDN preloads; start once | `ClientPacks` |
+| `ClientPacks` | Transfer packs and handle late Login controls | `PackComplete` |
+| `SpawnNegotiation` | Observe first definitions, radius and PlayerSpawn | `SpawnReady` |
+| `SpawnReady` | Consume one presentation-ready initialization | Generated acknowledgment |
 
-Retain decoded siblings in their original FIFO across codec transitions. Retain
-the same ciphers for the connection and never discard ciphertext after advancing
-the outgoing stream. The byte-oriented codec and directional ciphers remain in
-`bedrock-net`; this crate does not add a second transport or batch implementation.
+`ClientHandshake::new` accepts the caller's owned signing key or an existing
+`Arc<SigningKey>`. The same underlying key signs Login and verifies the server
+exchange; signed transports share that allocation without copying private key
+material. Key generation and its platform entropy source remain caller-owned.
 
-`packs::PackNegotiation` accepts optional caller-validated cache/CDN archives
-before `start`, produces bounded chunk requests, verifies in-band SHA-256, and
-returns owned archives in final server-selected stack order. Route its unhandled
-packets through the retained handshake to handle late LoginSuccess or server key
-exchange. Retain its returned startup packets, including early PlayerSpawn, in
-the caller's bounded FIFO for the spawn owner. Cache writers must release shared
-archive references before the final stack. Handle Disconnect and Transfer at the
-application boundary.
+`start` returns the uncompressed request and settings owner. `SettingsEvent::Ready`
+returns actual negotiated compression and Login readiness. Install compression on
+the same retained codec before constructing/sending Login. Formatting errors retain
+Login readiness through `LoginPreparationError::into_parts`; no Login was dispatched.
+The authenticated formatter preserves the acquired token but does not verify its
+issuer/account/proof/expiry. The account owner checks those again immediately before
+actual transport admission, including any capacity wait.
 
-After packs, drive `spawn::SpawnNegotiation` with a caller-selected
-`RequestChunkRadius`. It emits that request exactly once after StartGame, hands
-the first StartGame and item registry to application preparation as soon as both
-arrive, and waits for the radius response and PlayerSpawn. Retain each returned
-`deferred` packet in a bounded FIFO ahead of unread input. Terminal Disconnect or
-Transfer packets require immediate caller handling. After `ready`, enter play;
-call `finish_loading` once presentation is ready and send the initialization
-acknowledgment. Loading-screen notifications, rendering limits and preparation
-scheduling remain application policy.
+A `ClientKeyExchange` owns the verified streams, acknowledgment and continuation.
+Move them with `into_parts`, install both directions, then send the acknowledgment
+before reading through the continuation. Transports that already encrypt the
+application stream omit the additional ciphers but still verify the server token.
+This is an explicit adapter contract, not a claim that a pure packet owner proved
+a real socket operation. Retain the same ciphers throughout the connection and
+never discard outgoing ciphertext after advancing the stream.
 
-Raw packet readers can pass only non-prerequisite IDs to `receive_deferred`
-and retain their original bytes. This preserves lazy play decoding, including
-terrain data, while the core remains the owner of startup terrain classification.
-StartGame, ItemRegistry, PlayStatus and ChunkRadiusUpdated require their actual
-decoded bodies through `receive`.
+The pack handoff retains the original late Login/key-exchange owner. Cache status
+is sent at most once before transfer. `ClientPackOffer` admits caller-validated
+preloads, then its consuming `start` removes preload permission. `ClientPacks`
+handles both resource packets and late Login controls; it returns startup and
+terminal input unchanged. The standalone `PackOffer`→`PackNegotiation` API reuses
+the same bounded transfer implementation when no Login control is needed.
 
-Deadlines, cancellation, malformed-wire handling, endpoint and account trust,
-credential persistence, cache/CDN I/O, deferred byte bounds and ongoing play are
-caller responsibilities. These owners do not claim live-server qualification.
-Packet schemas and codecs remain in protocolgen. The extracted Cinnabar
-implementation retains its [PolyForm Noncommercial license](../../LICENSE-CINNABAR);
-the spawn adaptation preserves [Jolyne's MIT notice](LICENSE-AXOLOTL).
+Actual final-stack processing creates `PackComplete`, which has no public
+constructor. Send its original stack acknowledgment before entering startup.
+`start_spawn` transfers the exact ordered archives and configures the startup
+observer. `into_parts` supports callers stopping at the pack boundary. Ordinary
+`ResourcePackHandoff`/archive inputs are data, not constructors for protocol
+completion. Cache writers release shared archive references before the final stack.
+
+Startup returns the first StartGame/item registry as soon as both arrive and
+requests the caller-selected radius once. Preserve returned `deferred` packets
+in the caller's bounded FIFO ahead of unread input; handle Disconnect, Transfer
+and non-spawn PlayStatus promptly. Only actual radius/PlayerSpawn prerequisites
+produce the non-cloneable `SpawnReady`. Retain it until presentation completes,
+then consume `finish_loading` once. Loading-screen policy remains application-owned.
+
+External Go/prepared handoff adapters may configure `SpawnNegotiation::new` directly.
+That creates only a prerequisite observer and claims no Login, pack or world
+authority; the actual incoming prerequisites must still produce readiness.
+`receive_deferred` accepts only unrelated raw packet IDs, retaining a terrain fact
+while the caller keeps original bytes. StartGame, ItemRegistry, PlayStatus and
+ChunkRadiusUpdated require decoded bodies. Packet schemas/codecs remain in
+protocolgen; the byte codec and directional ciphers remain in `bedrock-net`.
+
+Malformed-wire handling, endpoint trust, credential persistence, cache/CDN I/O,
+deferred byte bounds and ongoing play stay with callers. These APIs do not claim
+live-server qualification. The extracted Cinnabar implementation retains its
+[PolyForm Noncommercial license](../../LICENSE-CINNABAR); the spawn adaptation
+preserves [Jolyne's MIT notice](LICENSE-AXOLOTL).
 
 `server::ServerHandshake` provides the accepting network/Login half, ending before
 pack preparation. Supply one server key, an absolute caller deadline, any verified

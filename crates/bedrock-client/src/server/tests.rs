@@ -1,5 +1,5 @@
 use super::*;
-use crate::handshake::{ClientHandshake, HandshakeEvent, HandshakeOptions};
+use crate::handshake::{ClientHandshake, ClientLogin, HandshakeOptions, LoginEvent, SettingsEvent};
 use bedrock_net::login::TrustedIdentity;
 use bytes::Bytes;
 use serde_json::value::RawValue;
@@ -30,15 +30,7 @@ impl LoginVerifier for Provider {
 }
 
 /// Drives actual generated client/server negotiation to the explicit application-approval boundary.
-fn pending(
-    encrypted: bool,
-) -> (
-    ServerHandshake,
-    ClientHandshake,
-    Provider,
-    Instant,
-    SystemTime,
-) {
+fn pending(encrypted: bool) -> (ServerHandshake, ClientLogin, Provider, Instant, SystemTime) {
     let now = Instant::now();
     let utc = SystemTime::UNIX_EPOCH + Duration::from_secs(1000);
     let client_key = Arc::new(SigningKey::from_slice(&[4; 48]).unwrap());
@@ -60,7 +52,7 @@ fn pending(
     )
     .unwrap();
     assert!(std::ptr::eq(server.key(), server_key.as_ref()));
-    let mut client = ClientHandshake::new(
+    let client = ClientHandshake::new(
         Arc::clone(&client_key),
         HandshakeOptions {
             batch_encryption: encrypted,
@@ -69,23 +61,26 @@ fn pending(
     )
     .unwrap();
     assert!(std::ptr::eq(client.key(), client_key.as_ref()));
+    let (client, request) = client.start().unwrap();
     let ServerHandshakeEvent::NetworkSettings {
         packet,
         compression,
-    } = server
-        .receive(client.start().unwrap().into(), &provider, now, utc)
-        .unwrap()
+    } = server.receive(request.into(), &provider, now, utc).unwrap()
     else {
         panic!("missing uncompressed settings boundary")
     };
-    let HandshakeEvent::Compression(selected) = client.receive(packet.into()).unwrap() else {
+    let SettingsEvent::Ready {
+        login: client,
+        compression: selected,
+    } = client.receive(packet.into()).unwrap()
+    else {
         panic!("client did not install settings")
     };
     assert_eq!(compression, selected);
     server.compression_installed(now).unwrap();
     let metadata =
         RawValue::from_string("{\"Nonce\":\"original-nonce\",\"XUID\":\"999\"}".into()).unwrap();
-    let mut login = client.login_authenticated(CREDENTIAL, &metadata).unwrap();
+    let (client, mut login) = client.login_authenticated(CREDENTIAL, &metadata).unwrap();
     // The actual negotiated RequestNetworkSettings version supersedes this Login field.
     login.client_network_version = wire::I32BE(0);
     assert!(matches!(
@@ -100,7 +95,7 @@ fn pending(
 #[test]
 fn accepting_generated_handshake_preserves_cipher_order_and_pack_boundary() {
     for encrypted in [true, false] {
-        let (mut server, mut client, provider, now, utc) = pending(encrypted);
+        let (mut server, client, provider, now, utc) = pending(encrypted);
         let event = server
             .accept(&provider, encrypted.then_some(&[7; 16]), now, utc)
             .unwrap();
@@ -109,14 +104,11 @@ fn accepting_generated_handshake_preserves_cipher_order_and_pack_boundary() {
                 panic!("missing plaintext exchange")
             };
             let (mut outgoing, mut incoming) = *ciphers;
-            let HandshakeEvent::KeyExchange {
-                ciphers: Some(ciphers),
-                response,
-            } = client.receive(packet.into()).unwrap()
-            else {
+            let LoginEvent::KeyExchange(exchange) = client.receive(packet.into()).unwrap() else {
                 panic!("client did not verify the signed exchange")
             };
-            let (mut client_outgoing, mut client_incoming) = *ciphers;
+            let (_client, ciphers, response) = exchange.into_parts();
+            let (mut client_outgoing, mut client_incoming) = *ciphers.unwrap();
             // The next packet uses the streams only after the server's plaintext token was handed off.
             server.encryption_installed(now).unwrap();
             let encrypted_ack = client_outgoing

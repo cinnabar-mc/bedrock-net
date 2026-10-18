@@ -355,7 +355,7 @@ fn public_negotiation_preserves_preloads_request_order_and_final_stack_ownership
     let data = b"abc";
     let mut offered = offer(streamed, data.len());
     offered.content_key = "synthetic-key".into();
-    let mut negotiation = PackNegotiation::new(
+    let mut negotiation = PackOffer::new(
         packets::ResourcePacksInfo {
             resource_pack_required: true,
             resource_packs: vec![offer(cached, 2), offered],
@@ -376,7 +376,7 @@ fn public_negotiation_preserves_preloads_request_order_and_final_stack_ownership
     );
     negotiation.supply_preloaded(cached, vec![9, 8]).unwrap();
     let name = format!("{streamed}_1.0.0");
-    let response = negotiation.start().unwrap();
+    let (mut negotiation, response) = negotiation.start().unwrap();
     let ResourcePackClientResponseData::Downloading {
         downloading_packs, ..
     } = response.response
@@ -385,12 +385,6 @@ fn public_negotiation_preserves_preloads_request_order_and_final_stack_ownership
     };
     let expected_name: wire::Str = name.clone().into();
     assert_eq!(downloading_packs, [expected_name]);
-    assert!(negotiation.start().is_err());
-    assert!(
-        negotiation
-            .supply_preloaded(streamed, data.to_vec())
-            .is_err()
-    );
 
     let unrelated = packets::Packet::from(packets::ClientCacheStatus {
         is_cache_supported: true,
@@ -467,11 +461,10 @@ fn public_negotiation_preserves_preloads_request_order_and_final_stack_ownership
             .collect(),
         ..Default::default()
     };
-    let PackEvent::Finished { response, handoff } =
-        negotiation.receive(stack.clone().into()).unwrap()
-    else {
+    let PackEvent::Finished(complete) = negotiation.receive(stack.clone().into()).unwrap() else {
         panic!("the completed stack must transfer archive ownership");
     };
+    let (response, handoff) = complete.into_parts();
     assert!(matches!(
         response.response,
         ResourcePackClientResponseData::ResourcePackStackFinished { .. }
@@ -502,7 +495,7 @@ fn smaller_preloads_release_memory_and_in_band_transfer_reservations() {
     let data = b"ab";
     // Exercise both retention and transfer admission with the same three-byte stack.
     for transfer_limit in [10, 20] {
-        let mut negotiation = PackNegotiation::new(
+        let mut negotiation = PackOffer::new(
             packets::ResourcePacksInfo {
                 resource_pack_required: true,
                 resource_packs: vec![offer(cached, 9), offer(streamed, 1)],
@@ -517,7 +510,7 @@ fn smaller_preloads_release_memory_and_in_band_transfer_reservations() {
         )
         .unwrap();
         negotiation.supply_preloaded(cached, vec![7]).unwrap();
-        negotiation.start().unwrap();
+        let (mut negotiation, _) = negotiation.start().unwrap();
         let name: wire::Str = format!("{streamed}_1.0.0").into();
         let requests = sends(
             negotiation
@@ -556,12 +549,13 @@ fn smaller_preloads_release_memory_and_in_band_transfer_reservations() {
                 .collect(),
             ..Default::default()
         };
-        let PackEvent::Finished { handoff, .. } = negotiation
+        let PackEvent::Finished(complete) = negotiation
             .receive(stack.into())
             .expect("the required stack retains only three bytes")
         else {
             panic!("the completed required stack must be handed off");
         };
+        let (_, handoff) = complete.into_parts();
         let archives = handoff.into_archives();
         assert_eq!(archives.len(), 2);
         assert_eq!(archives[0].archive, [7]);
@@ -581,7 +575,7 @@ fn required_builtin_selection_survives_a_downloaded_version_mismatch() {
     let make = |offered_version: &str, offer_required| {
         let mut offered = offer(id, 2);
         offered.pack_id_version.pack_version.version = offered_version.into();
-        let mut client = PackNegotiation::new(
+        let mut client = PackOffer::new(
             packets::ResourcePacksInfo {
                 resource_pack_required: offer_required,
                 resource_packs: vec![offered],
@@ -591,8 +585,7 @@ fn required_builtin_selection_survives_a_downloaded_version_mismatch() {
         )
         .unwrap();
         client.supply_preloaded(id, vec![7, 8]).unwrap();
-        client.start().unwrap();
-        client
+        client.start().unwrap().0
     };
     let stack = |selected_version: &str, required| packets::ResourcePackStack {
         texture_pack_required: required,
@@ -605,9 +598,10 @@ fn required_builtin_selection_survives_a_downloaded_version_mismatch() {
     };
     for (offer_required, stack_required) in [(true, false), (false, true), (true, true)] {
         let mut client = make(&downloaded_version, offer_required);
-        let PackEvent::Finished { handoff, .. } = client.receive(stack(version, stack_required).into())
+        let PackEvent::Finished(complete) = client.receive(stack(version, stack_required).into())
             .expect("a selected catalogued built-in remains available despite another downloaded version")
         else { panic!("required built-in stack did not finish"); };
+        let (_, handoff) = complete.into_parts();
         assert!(handoff.required());
         assert!(
             handoff.is_empty(),
@@ -615,12 +609,13 @@ fn required_builtin_selection_survives_a_downloaded_version_mismatch() {
         );
     }
     let mut override_client = make(version, true);
-    let PackEvent::Finished { handoff, .. } = override_client
+    let PackEvent::Finished(complete) = override_client
         .receive(stack(version, false).into())
         .unwrap()
     else {
         panic!("matching downloaded override did not finish");
     };
+    let (_, handoff) = complete.into_parts();
     assert_eq!(handoff.into_archives()[0].archive, [7, 8]);
     let mut unavailable = make(&downloaded_version, true);
     assert!(

@@ -82,14 +82,116 @@ pub enum PackEvent {
     /// Generated responses and chunk requests to send in their existing order.
     Send(Vec<packets::Packet>),
     /// The final stack acknowledgment and server-ordered archive ownership.
-    Finished {
-        /// Send this acknowledgment before entering the next client phase.
-        response: packets::ResourcePackClientResponse,
-        /// Archives and keys for the caller's admission/application layer.
-        handoff: ResourcePackHandoff,
-    },
+    Finished(PackComplete),
     /// A packet belonging to another client phase, returned without interpretation.
     Unhandled(Box<packets::Packet>),
+}
+
+/// Admitted offers whose optional caller-validated preloads are still open.
+/// No transfer can receive chunks until `start` consumes this owner.
+#[must_use]
+pub struct PackOffer {
+    transfer: Transfer,
+}
+
+impl PackOffer {
+    /// Validates bounds and retains first usable offers without interpreting URLs or keys.
+    pub fn new(
+        offer: packets::ResourcePacksInfo,
+        limits: PackTransferLimits,
+    ) -> Result<Self, PackError> {
+        Ok(Self {
+            transfer: Transfer::new(offer, limits)?,
+        })
+    }
+
+    /// Borrows admitted metadata in original offer order for caller cache/CDN lookup.
+    pub fn offers(&self) -> impl Iterator<Item = &PackInfoData> {
+        self.transfer.offers()
+    }
+
+    /// Installs caller-validated original bytes; a failure preserves in-band fallback.
+    /// Manifest/identity validation remains the caller's responsibility.
+    pub fn supply_preloaded(&mut self, id: uuid::Uuid, archive: Vec<u8>) -> Result<(), PackError> {
+        self.transfer.supply_preloaded(id, archive)
+    }
+
+    /// Consumes the preload capability and returns the original initial response.
+    ///
+    /// ```compile_fail
+    /// fn preload_after_start(offer: bedrock_client::packs::PackOffer, id: uuid::Uuid) {
+    ///     let (mut transfer, _) = offer.start().unwrap();
+    ///     transfer.supply_preloaded(id, Vec::new()).unwrap();
+    /// }
+    /// ```
+    pub fn start(
+        mut self,
+    ) -> Result<(PackNegotiation, packets::ResourcePackClientResponse), PackError> {
+        let response = self.transfer.start()?;
+        Ok((
+            PackNegotiation {
+                transfer: self.transfer,
+            },
+            response,
+        ))
+    }
+}
+
+/// Active bounded transfer. Only `PackOffer::start` can create this owner.
+#[must_use]
+pub struct PackNegotiation {
+    transfer: Transfer,
+}
+
+impl PackNegotiation {
+    /// Borrows original offers for caller-owned cache bookkeeping.
+    pub fn offers(&self) -> impl Iterator<Item = &PackInfoData> {
+        self.transfer.offers()
+    }
+
+    /// Shares completed original bytes with a bounded cache write.
+    /// Release all shared references before processing the final stack.
+    pub fn completed_archive(&self, id: uuid::Uuid) -> Option<Arc<Vec<u8>>> {
+        self.transfer.completed_archive(id)
+    }
+
+    /// Advances the existing transfer and returns unrelated packets intact.
+    /// Any received-packet error permanently ends this owner.
+    pub fn receive(&mut self, packet: packets::Packet) -> Result<PackEvent, PackError> {
+        self.transfer.receive(packet)
+    }
+}
+
+/// Owned result of actual final-stack processing, not a constructible data DTO.
+#[must_use = "send the original stack acknowledgment before entering startup"]
+pub struct PackComplete {
+    response: packets::ResourcePackClientResponse,
+    handoff: ResourcePackHandoff,
+}
+
+impl PackComplete {
+    /// Consumes completed packs into a configured startup observer and original handoff data.
+    /// The caller sends the stack acknowledgment before processing startup traffic.
+    pub fn start_spawn(
+        self,
+        radius: packets::RequestChunkRadius,
+    ) -> Result<
+        (
+            crate::spawn::SpawnNegotiation,
+            packets::ResourcePackClientResponse,
+            ResourcePackHandoff,
+        ),
+        crate::spawn::SpawnError,
+    > {
+        let startup = crate::spawn::SpawnNegotiation::new(radius)?;
+        Ok((startup, self.response, self.handoff))
+    }
+
+    /// Transfers the exact acknowledgment and archives for actual adapter dispatch/application.
+    /// The returned handoff is data, and cannot itself construct another completion capability.
+    pub fn into_parts(self) -> (packets::ResourcePackClientResponse, ResourcePackHandoff) {
+        (self.response, self.handoff)
+    }
 }
 
 enum Phase {
@@ -104,7 +206,7 @@ enum Phase {
 /// Cache and CDN I/O remain with the caller. Supply validated preloads before
 /// `start`, then retain this same owner while processing generated packets. A
 /// received-packet error is terminal; drop this owner and the enclosing join.
-pub struct PackNegotiation {
+struct Transfer {
     downloads: BTreeMap<uuid::Uuid, Download>,
     offer_order: Vec<uuid::Uuid>,
     budget: Budget,
@@ -113,14 +215,14 @@ pub struct PackNegotiation {
     phase: Phase,
 }
 
-impl PackNegotiation {
+impl Transfer {
     /// Admits bounded first offers without interpreting their URLs or content keys.
     ///
     /// # Errors
     /// Returns `InvalidLimits` for unusable caller configuration. Invalid,
     /// duplicate or oversized offers are skipped and logged; final required
     /// stack selection decides whether those omissions prevent joining.
-    pub fn new(
+    fn new(
         offer: packets::ResourcePacksInfo,
         limits: PackTransferLimits,
     ) -> Result<Self, PackError> {
@@ -144,7 +246,7 @@ impl PackNegotiation {
     }
 
     /// Borrows admitted metadata in offer order for caller-owned cache/CDN lookup.
-    pub fn offers(&self) -> impl Iterator<Item = &PackInfoData> {
+    fn offers(&self) -> impl Iterator<Item = &PackInfoData> {
         self.offer_order
             .iter()
             .filter_map(|id| self.downloads.get(id).map(|download| &download.offer))
@@ -159,7 +261,7 @@ impl PackNegotiation {
     /// # Errors
     /// Rejects unknown identities, repeated preloads, excess bytes, or use after
     /// `start`. The source allocation must not exceed the advertised byte size.
-    pub fn supply_preloaded(&mut self, id: uuid::Uuid, archive: Vec<u8>) -> Result<(), PackError> {
+    fn supply_preloaded(&mut self, id: uuid::Uuid, archive: Vec<u8>) -> Result<(), PackError> {
         if !matches!(self.phase, Phase::Preloading) {
             return Err(PackError::InvalidState);
         }
@@ -174,7 +276,7 @@ impl PackNegotiation {
     ///
     /// # Errors
     /// Returns `InvalidState` if preloading has already ended.
-    pub fn start(&mut self) -> Result<packets::ResourcePackClientResponse, PackError> {
+    fn start(&mut self) -> Result<packets::ResourcePackClientResponse, PackError> {
         if !matches!(self.phase, Phase::Preloading) {
             return Err(PackError::InvalidState);
         }
@@ -199,7 +301,7 @@ impl PackNegotiation {
 
     /// Shares completed original bytes with a bounded caller-owned cache write.
     /// All such references must be dropped before receiving the final stack.
-    pub fn completed_archive(&self, id: uuid::Uuid) -> Option<Arc<Vec<u8>>> {
+    fn completed_archive(&self, id: uuid::Uuid) -> Option<Arc<Vec<u8>>> {
         match &self.downloads.get(&id)?.complete {
             Some(Completion::Archive(bytes)) => Some(Arc::clone(bytes)),
             _ => None,
@@ -212,7 +314,7 @@ impl PackNegotiation {
     /// Rejects out-of-phase resource packets, unsolicited/inconsistent chunks,
     /// hash failures, premature stacks or an unavailable required stack entry.
     /// A received-packet error permanently ends this negotiation.
-    pub fn receive(&mut self, packet: packets::Packet) -> Result<PackEvent, PackError> {
+    fn receive(&mut self, packet: packets::Packet) -> Result<PackEvent, PackError> {
         if !matches!(self.phase, Phase::Downloading) {
             return Err(PackError::InvalidState);
         }
@@ -285,14 +387,14 @@ impl PackNegotiation {
                     self.limits,
                 )?;
                 self.phase = Phase::Complete;
-                Ok(PackEvent::Finished {
+                Ok(PackEvent::Finished(PackComplete {
                     response: packets::ResourcePackClientResponse {
                         response: ResourcePackClientResponseData::ResourcePackStackFinished {
                             response_type: "resourcepackstackfinished".into(),
                         },
                     },
                     handoff,
-                })
+                }))
             }
             other => Ok(PackEvent::Unhandled(Box::new(other))),
         }
