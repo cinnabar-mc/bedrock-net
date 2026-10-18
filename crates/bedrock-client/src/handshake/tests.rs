@@ -139,7 +139,7 @@ fn pack_offer_and_login_success_in_either_order_emit_one_cache_status() {
         statuses.extend(sent);
         assert_eq!(statuses.len(), 1);
         assert!(
-            matches!(&statuses[0], packets::Packet::ClientCacheStatus(status) if status.enabled)
+            matches!(&statuses[0], packets::Packet::ClientCacheStatus(status) if status.is_cache_supported)
         );
         negotiation.start().unwrap();
         assert!(matches!(

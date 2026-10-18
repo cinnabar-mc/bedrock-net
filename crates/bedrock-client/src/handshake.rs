@@ -316,7 +316,7 @@ impl ClientHandshake {
             None
         } else {
             Some(packets::ClientCacheStatus {
-                enabled: self.options.blob_cache,
+                is_cache_supported: self.options.blob_cache,
             })
         }
     }
