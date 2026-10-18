@@ -67,9 +67,11 @@ fn settings_login_and_verified_exchange_use_one_key_and_one_transition() {
         assert_eq!(request.client_network_version.0, PROTOCOL_VERSION);
         let token = exchange_token(&request);
         let event = client
-            .receive(packets::Packet::ServerToEngine(packets::ServerToEngine {
-                handshake_web_token: token.clone().into(),
-            }))
+            .receive(packets::Packet::ServerToClientHandshake(
+                packets::ServerToClientHandshake {
+                    handshake_web_token: token.clone().into(),
+                },
+            ))
             .unwrap();
         let EngineEvent::KeyExchange {
             ciphers,
@@ -80,9 +82,11 @@ fn settings_login_and_verified_exchange_use_one_key_and_one_transition() {
         };
         assert_eq!(ciphers.is_some(), batch_encryption);
         assert!(matches!(
-            client.receive(packets::Packet::ServerToEngine(packets::ServerToEngine {
-                handshake_web_token: token.into(),
-            })),
+            client.receive(packets::Packet::ServerToClientHandshake(
+                packets::ServerToClientHandshake {
+                    handshake_web_token: token.into(),
+                }
+            )),
             Err(HandshakeError::RepeatedKeyExchange)
         ));
         assert!(matches!(
@@ -121,9 +125,11 @@ fn pack_offer_and_login_success_in_either_order_emit_one_cache_status() {
         statuses.extend(cache_status.map(packets::Packet::ClientCacheStatus));
         assert!(matches!(
             client
-                .receive(packets::Packet::ServerToEngine(packets::ServerToEngine {
-                    handshake_web_token: exchange_token(&signed_login).into(),
-                }))
+                .receive(packets::Packet::ServerToClientHandshake(
+                    packets::ServerToClientHandshake {
+                        handshake_web_token: exchange_token(&signed_login).into(),
+                    }
+                ))
                 .unwrap(),
             EngineEvent::KeyExchange {
                 ciphers: Some(_),
@@ -153,9 +159,11 @@ fn failed_exchange_is_terminal_even_when_transport_already_encrypts() {
     let mut client = handshake(false);
     login(&mut client);
     assert!(matches!(
-        client.receive(packets::Packet::ServerToEngine(packets::ServerToEngine {
-            handshake_web_token: "untrusted".into(),
-        })),
+        client.receive(packets::Packet::ServerToClientHandshake(
+            packets::ServerToClientHandshake {
+                handshake_web_token: "untrusted".into(),
+            }
+        )),
         Err(HandshakeError::Login(_))
     ));
     assert!(matches!(
@@ -194,9 +202,11 @@ fn deferred_spawn_neither_sends_cache_status_nor_consumes_the_verified_exchange(
     );
     assert!(matches!(
         client
-            .receive(packets::Packet::ServerToEngine(packets::ServerToEngine {
-                handshake_web_token: exchange_token(&signed_login).into(),
-            },))
+            .receive(packets::Packet::ServerToClientHandshake(
+                packets::ServerToClientHandshake {
+                    handshake_web_token: exchange_token(&signed_login).into(),
+                },
+            ))
             .unwrap(),
         EngineEvent::KeyExchange {
             ciphers: Some(_),
