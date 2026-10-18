@@ -30,6 +30,57 @@ async fn relay_recv(socket: &UdpSocket, buffer: &mut [u8]) -> std::io::Result<(u
     }
 }
 
+/// Finds the fixture's unsplit reliable ordered acceptance and preserves all other frames.
+fn inject_early_packets(datagram: &[u8], terminal: bool) -> Option<Vec<u8>> {
+    if datagram.len() < 4 || datagram[0] & 0xe0 != 0x80 {
+        return None;
+    }
+    let mut offset = 4;
+    while let Some(header) = datagram.get(offset..offset + 10) {
+        // The pinned Go fixture sends its connected controls with this one frame shape.
+        if header[0] != (::raknet::prelude::RakReliability::ReliableOrdered as u8) << 5 {
+            return None;
+        }
+        let payload_len = usize::from(u16::from_be_bytes([header[1], header[2]])).div_ceil(8);
+        let body = offset + 10;
+        let end = body + payload_len;
+        let payload = datagram.get(body..end)?;
+        if payload.first() == Some(&0x10) {
+            let mut bytes = Vec::from(&datagram[..offset]);
+            bytes.extend_from_slice(&[0, 0, 16, 0xfe, 1]);
+            bytes.extend_from_slice(&datagram[offset..end]);
+            bytes.extend_from_slice(&[0, 0, 16, 0xfe, 2]);
+            if terminal {
+                bytes.extend_from_slice(&[0, 0, 8, 0x15]);
+            }
+            bytes.extend_from_slice(&datagram[end..]);
+            return Some(bytes);
+        }
+        offset = end;
+    }
+    None
+}
+
+#[test]
+fn early_injection_selects_acceptance_after_an_earlier_control_frame() {
+    let control = [0x60, 0, 72, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+    let acceptance = [0x60, 0, 24, 1, 0, 0, 1, 0, 0, 0, 0x10, 0x41, 0x42];
+    let header = [0x84, 7, 0, 0];
+    let ping_only = [header.as_slice(), &control].concat();
+    assert!(inject_early_packets(&ping_only, false).is_none());
+    let datagram = [header.as_slice(), &control, &acceptance, &control].concat();
+    let expected = [
+        header.as_slice(),
+        &control,
+        &[0, 0, 16, 0xfe, 1],
+        &acceptance,
+        &[0, 0, 16, 0xfe, 2],
+        &control,
+    ]
+    .concat();
+    assert_eq!(inject_early_packets(&datagram, false).unwrap(), expected);
+}
+
 /// Owns a loopback fixture process, which is killed by its exact child handle on test failure.
 struct Peer {
     child: Child,
@@ -384,23 +435,13 @@ async fn go_peer_acceptance_preserves_early_packets_within_configured_handshake_
                     received = relay_recv(&socket, &mut buffer) => {
                         let (length, from) = received.unwrap();
                         let to = if from == peer_address { client.unwrap() } else { client = Some(from); peer_address };
-                        if from == peer_address && !injected && length > 14 && buffer[0] & 0xe0 == 0x80 {
-                            // The pinned Go peer's first data frame is its unsplit reliable ordered acceptance.
-                            assert_eq!(buffer[4], (::raknet::prelude::RakReliability::ReliableOrdered as u8) << 5);
-                            assert_eq!(buffer[14], 0x10, "fixture must inject around ConnectionRequestAccepted");
-                            // Two complete unreliable frames leave the Go peer's reliable indices unchanged.
-                            let mut bytes = Vec::from(&buffer[..4]);
-                            bytes.extend_from_slice(&[0, 0, 16, 0xfe, 1]);
-                            bytes.extend_from_slice(&buffer[4..length]);
-                            bytes.extend_from_slice(&[0, 0, 16, 0xfe, 2]);
-                            if terminal {
-                                bytes.extend_from_slice(&[0, 0, 8, 0x15]);
-                            }
+                        if from == peer_address && !injected
+                            && let Some(bytes) = inject_early_packets(&buffer[..length], terminal) {
                             socket.send_to(&bytes, to).await.unwrap();
                             injected = true;
-                        } else {
-                            socket.send_to(&buffer[..length], to).await.unwrap();
+                            continue;
                         }
+                        socket.send_to(&buffer[..length], to).await.unwrap();
                     }
                 }
             }
