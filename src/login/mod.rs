@@ -7,6 +7,7 @@
 
 mod accepting;
 mod error;
+mod identity;
 mod jwt;
 pub use accepting::{
     AuthenticatedLogin, LoginVerifier, TrustedIdentity, verify_authenticated_request,
@@ -27,6 +28,7 @@ use zeroize::Zeroizing;
 use crate::encryption::{BatchDecryptor, BatchEncryptor};
 
 pub use error::LoginError;
+pub use identity::PlayerIdentity;
 
 const OFFLINE_VALIDITY_SECONDS: i64 = 6 * 60 * 60;
 const MULTIPLAYER_AUDIENCE: &str = "api://auth-minecraft-services/multiplayer";

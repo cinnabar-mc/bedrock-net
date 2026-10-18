@@ -70,6 +70,9 @@ stays outside this library.
 The accepting Login helper requires a caller-owned `LoginVerifier` using trusted
 provider policy. It verifies client metadata with that provider's bound proof key;
 it never authenticates an XUID from raw JWT claims or an untrusted header key.
+The verifier can retain signed name, canonical UUID and PlayFab identifiers with
+`TrustedIdentity::with_player_identity`; `AuthenticatedLogin::player_identity`
+borrows them and revalidation rejects changes. Missing presentation stays absent.
 Recognized outer Login and nonce fields accept Go's field casing; ambiguous
 aliases are rejected without rewriting signed metadata. Peer JSON diagnostics
 retain no input values. JWT claim and JWS header names keep their original policy.

@@ -33,6 +33,7 @@ ClientData metadata schema, under the Apache-2.0 commit identified above.
 These dependencies are not vendored here.
 
 The optional Login helpers use the same public Rust and Go references for
-line-terminated token JSON, token-only offline requests, and server key exchange.
+line-terminated token JSON, token-only offline requests, server key exchange and
+authenticated player identity projection, including the XUID-derived UUID.
 P-384 signatures, public-key parsing and ECDH use RustCrypto p384. The synthetic
 Login oracle shares tools/go-oracle's existing Gophertunnel pin.

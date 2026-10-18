@@ -23,7 +23,7 @@ publish = false
 
 [features]
 default = []
-login = ["dep:base64", "dep:p384", "dep:serde", "dep:serde_json", "sha2/zeroize"]
+login = ["dep:base64", "dep:md-5", "dep:p384", "dep:serde", "dep:serde_json", "dep:uuid", "sha2/zeroize"]
 raknet = ["dep:raknet", "dep:tokio"]
 messaging = ["dep:bedrock-services", "dep:futures", "dep:nethernet", "dep:nethernet-tokio", "dep:tokio", "dep:uuid"]
 
@@ -37,6 +37,7 @@ nethernet = { git = "https://github.com/cinnabar-mc/nethernet", rev = "46bffc13d
 nethernet-tokio = { git = "https://github.com/cinnabar-mc/nethernet", rev = "46bffc13d2c48ca78957cd02b66c1cb9ec11025f", optional = true }
 ctr = { version = "0.10", features = ["zeroize"] }
 flate2 = "1"
+md-5 = { version = "0.11", optional = true }
 p384 = { workspace = true, optional = true }
 raknet = { git = "https://github.com/cinnabar-mc/raknet", rev = "64c50dda0e1dc21409b0f42f746d66786697a86b", optional = true }
 serde = { version = "1", features = ["derive"], optional = true }

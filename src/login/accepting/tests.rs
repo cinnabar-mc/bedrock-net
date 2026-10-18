@@ -83,6 +83,82 @@ fn metadata() -> Box<RawValue> {
     RawValue::from_string("{\"Nonce\":\"original-member-nonce\",\"XUID\":\"999\"}".into()).unwrap()
 }
 
+/// Provider presentation survives signed client spoofing and cannot change during revalidation.
+#[test]
+fn accepting_login_retains_provider_player_identity_across_revalidation() {
+    struct Presentation {
+        provider: Provider,
+        changed: Cell<u8>,
+    }
+    impl LoginVerifier for Presentation {
+        fn verify(&self, token: &str, now: SystemTime) -> Result<TrustedIdentity, LoginError> {
+            let identity = self.provider.verify(token, now)?;
+            if self.changed.get() == 5 {
+                return Ok(identity);
+            }
+            identity.with_player_identity(
+                if self.changed.get() == 1 {
+                    "Changed"
+                } else {
+                    "Verified"
+                }
+                .into(),
+                (self.changed.get() == 2).then_some("00000000-0000-4000-8000-000000000011"),
+                if self.changed.get() == 3 {
+                    "changed-master"
+                } else {
+                    "original-master"
+                }
+                .into(),
+                if self.changed.get() == 4 {
+                    "changed-title"
+                } else {
+                    "original-title"
+                }
+                .into(),
+            )
+        }
+    }
+    let issuer = key(3);
+    let client = key(4);
+    let provider = Presentation {
+        provider: Provider {
+            key: *issuer.verifying_key(),
+            calls: Cell::new(0),
+        },
+        changed: Cell::new(0),
+    };
+    let metadata = RawValue::from_string(r#"{"Nonce":"original-member-nonce","ThirdPartyName":"Spoofed","SelfSignedId":"00000000-0000-4000-8000-000000000099","PlayFabId":"spoofed-master"}"#.into()).unwrap();
+    let request =
+        encode_authenticated_request(&client, &credential(&issuer, &client), &metadata, LIMIT)
+            .unwrap();
+    let now = UNIX_EPOCH + Duration::from_secs(1000);
+    let login = verify_authenticated_request(&request, &provider, now, LIMIT).unwrap();
+    let player = login
+        .player_identity()
+        .expect("the trusted verifier supplied presentation");
+    assert_eq!(player.display_name(), "Verified");
+    assert_eq!(player.playfab_id(), "original-master");
+    assert_eq!(player.playfab_title_id(), "original-title");
+    assert_eq!(player.uuid().get_version_num(), 3);
+    assert_eq!(login.client_data().get().trim(), metadata.get());
+    assert!(login.revalidate(&provider, now).is_ok());
+    for changed in 1..=5 {
+        provider.changed.set(changed);
+        assert!(matches!(
+            login.revalidate(&provider, now),
+            Err(LoginError::IdentityChanged)
+        ));
+    }
+    assert!(
+        verify_authenticated_request(&request, &provider.provider, now, LIMIT)
+            .unwrap()
+            .player_identity()
+            .is_none(),
+        "a narrow verifier must not fabricate presentation"
+    );
+}
+
 #[test]
 fn accepting_login_requires_provider_and_bound_client_signatures() {
     let issuer = key(3);

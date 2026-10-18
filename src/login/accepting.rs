@@ -1,6 +1,6 @@
 //! Authenticated accepting Login, with issuer policy supplied by its existing caller owner.
 
-use super::{LoginError, jwt};
+use super::{LoginError, PlayerIdentity, jwt};
 use p384::ecdsa::VerifyingKey;
 use serde_json::value::RawValue;
 use std::time::SystemTime;
@@ -28,6 +28,7 @@ pub trait LoginVerifier {
 pub struct TrustedIdentity {
     xuid: String,
     public_key: VerifyingKey,
+    player: Option<PlayerIdentity>,
 }
 
 impl TrustedIdentity {
@@ -35,6 +36,7 @@ impl TrustedIdentity {
     ///
     /// This constructor does not authenticate claims; only a trusted
     /// [`LoginVerifier`] may use it after completing its configured provider policy.
+    /// Presentation remains absent until [`Self::with_player_identity`] records it.
     ///
     /// # Errors
     /// Rejects an empty or non-int64 XUID before retaining it.
@@ -42,7 +44,36 @@ impl TrustedIdentity {
         if xuid.is_empty() || xuid.parse::<i64>().is_err() {
             return Err(LoginError::Authentication);
         }
-        Ok(Self { xuid, public_key })
+        Ok(Self {
+            xuid,
+            public_key,
+            player: None,
+        })
+    }
+
+    /// Retains provider-verified presentation using this identity's original XUID.
+    ///
+    /// This asserts already verified claims; it does not authenticate them. Names
+    /// and PlayFab fields must come from the same provider credential as this
+    /// XUID/key, never client metadata. Missing/empty legacy UUID derives from XUID.
+    ///
+    /// # Errors
+    /// Rejects an empty name or malformed/nil legacy UUID without returning an identity.
+    pub fn with_player_identity(
+        mut self,
+        display_name: String,
+        legacy_uuid: Option<&str>,
+        playfab_id: String,
+        playfab_title_id: String,
+    ) -> Result<Self, LoginError> {
+        self.player = Some(PlayerIdentity::new(
+            &self.xuid,
+            display_name,
+            legacy_uuid,
+            playfab_id,
+            playfab_title_id,
+        )?);
+        Ok(self)
     }
 }
 
@@ -70,6 +101,12 @@ impl AuthenticatedLogin {
         &self.identity.public_key
     }
 
+    /// Borrows authenticated presentation if the trusted verifier supplied it.
+    /// A world consumer requiring a name/UUID must reject None, without client-data fallback.
+    pub fn player_identity(&self) -> Option<&PlayerIdentity> {
+        self.identity.player.as_ref()
+    }
+
     /// Borrows the original client-signed JSON; application metadata validation remains caller-owned.
     pub fn client_data(&self) -> &RawValue {
         &self.client_data
@@ -83,7 +120,8 @@ impl AuthenticatedLogin {
     /// Rechecks the exact original credential after any application approval/capacity wait.
     ///
     /// # Errors
-    /// Rejects expiry/provider failure or any changed authenticated XUID/key. No fallback or retry occurs.
+    /// Rejects expiry/provider failure or changed authenticated account, key or presentation.
+    /// No fallback or retry occurs.
     pub fn revalidate(
         &self,
         verifier: &impl LoginVerifier,
@@ -92,7 +130,10 @@ impl AuthenticatedLogin {
         let identity = verifier
             .verify(&self.credential, now)
             .map_err(LoginError::redact_peer)?;
-        if identity.xuid != self.identity.xuid || identity.public_key != self.identity.public_key {
+        if identity.xuid != self.identity.xuid
+            || identity.public_key != self.identity.public_key
+            || identity.player != self.identity.player
+        {
             return Err(LoginError::IdentityChanged);
         }
         Ok(())

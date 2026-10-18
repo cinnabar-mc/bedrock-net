@@ -28,7 +28,7 @@ pub enum LoginError {
     /// The configured provider rejected this credential or returned an invalid identity.
     #[error("login provider authentication failed")]
     Authentication,
-    /// Revalidation changed the original provider-authenticated account or proof key.
+    /// Revalidation changed the original provider-authenticated account, proof or presentation.
     #[error("login identity changed before admission")]
     IdentityChanged,
     /// Local JSON could not be encoded. Peer decoding uses the redacted [`Self::MalformedJson`].
