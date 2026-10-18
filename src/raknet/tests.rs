@@ -4,12 +4,15 @@ use std::future::{Future, poll_fn};
 use std::net::Ipv4Addr;
 use std::task::Poll;
 
-use ::raknet::prelude::{RakClock, RakSessionId};
+use ::raknet::prelude::{
+    ClientGuid, RakClient, RakClientInput, RakClientOutput, RakClock, RakServer, RakServerConfig,
+    RakServerInput, RakServerOutput,
+};
 
 use super::*;
 
-/// Creates an established driver and owned local peer without a handshake.
-async fn connected_pair() -> (RakNetConnection, UdpSocket, RakSession) {
+/// Establishes both core owners through public negotiation before attaching real UDP sockets.
+async fn connected_pair() -> (RakNetConnection, UdpSocket, RakSession<Established>) {
     let peer = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
     let socket = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
     let local = socket.local_addr().unwrap();
@@ -17,57 +20,132 @@ async fn connected_pair() -> (RakNetConnection, UdpSocket, RakSession) {
     socket.connect(address).await.unwrap();
     peer.connect(local).await.unwrap();
     let now = Instant::now().into_std();
-    let receiver = RakSession::new(
-        RakSessionId(1),
-        address,
-        1,
-        1492,
-        now,
-        RakClock::new(now),
-        Default::default(),
-    );
-    let sender = RakSession::new(
-        RakSessionId(2),
-        local,
-        2,
-        1492,
-        now,
-        RakClock::new(now),
-        Default::default(),
-    );
-    (
-        RakNetConnection {
-            socket: Some(socket),
-            local,
-            peer: address,
-            session: Some(Box::new(receiver)),
-            options: RakNetOptions::default(),
-            incoming: VecDeque::new(),
-            incoming_bytes: 0,
-            pending_datagram: None,
-            receive_buffer: vec![0; UDP_BUFFER_BYTES],
-            next_tick: Instant::now(),
-            close_deadline: None,
-            failure: None,
-        },
-        peer,
-        sender,
-    )
+    let mut client = RakClient::new(RakClientConfig::default(), RakClock::new(now))
+        .unwrap()
+        .connect(address, local, ClientGuid::from_raw(1 << 63), now)
+        .unwrap();
+    let mut server =
+        RakServer::new(RakServerConfig::default(), address, RakClock::new(now), now).unwrap();
+    let mut receiver: Option<RakSession<Established>> = None;
+    let mut sender: Option<RakSession<Established>> = None;
+    for _ in 0..128 {
+        let mut moved = false;
+        while let Some(output) = client.poll() {
+            match output {
+                RakClientOutput::MtuProbe { id, datagram, .. } => {
+                    client
+                        .handle(RakClientInput::MtuProbeResult {
+                            id,
+                            now,
+                            elapsed: Duration::ZERO,
+                            too_large: false,
+                        })
+                        .unwrap();
+                    server
+                        .handle(RakServerInput::Datagram(datagram, local, now))
+                        .unwrap();
+                    moved = true;
+                }
+                RakClientOutput::SocketDatagram(bytes, _) => {
+                    server
+                        .handle(RakServerInput::Datagram(bytes, local, now))
+                        .unwrap();
+                    moved = true;
+                }
+                RakClientOutput::SessionConnected(session) => receiver = Some(session),
+                RakClientOutput::SessionDatagram(bytes) => {
+                    receiver
+                        .as_mut()
+                        .unwrap()
+                        .handle(RakSessionInput::Datagram(bytes, now))
+                        .unwrap();
+                }
+                RakClientOutput::SessionClosing(_) => panic!("fresh client negotiation closed"),
+                RakClientOutput::Wait(_) | RakClientOutput::Pong { .. } => {}
+            }
+        }
+        while let Some(output) = server.poll() {
+            match output {
+                RakServerOutput::SocketDatagram(bytes, _) => {
+                    client
+                        .handle(RakClientInput::Datagram(bytes, address, now))
+                        .unwrap();
+                    moved = true;
+                }
+                RakServerOutput::SessionDatagram(bytes, _) => {
+                    sender
+                        .as_mut()
+                        .unwrap()
+                        .handle(RakSessionInput::Datagram(bytes, now))
+                        .unwrap();
+                }
+                RakServerOutput::SessionConnected(session) => sender = Some(session),
+                RakServerOutput::SessionClosing(_) => panic!("fresh server negotiation closed"),
+            }
+        }
+        if let Some(session) = &mut receiver {
+            session.tick(now).unwrap();
+            while let Some(output) = session.poll() {
+                if let RakSessionOutput::Datagram(bytes, _) = output {
+                    server
+                        .handle(RakServerInput::Datagram(bytes, local, now))
+                        .unwrap();
+                    moved = true;
+                }
+            }
+        }
+        if let Some(session) = &mut sender {
+            session.tick(now).unwrap();
+            while let Some(output) = session.poll() {
+                if let RakSessionOutput::Datagram(bytes, _) = output {
+                    client
+                        .handle(RakClientInput::Datagram(bytes, address, now))
+                        .unwrap();
+                    moved = true;
+                }
+            }
+        }
+        if !moved && receiver.is_some() && sender.is_some() {
+            assert_eq!(receiver.as_ref().unwrap().outbound_bytes(), 0);
+            assert_eq!(sender.as_ref().unwrap().outbound_bytes(), 0);
+            return (
+                RakNetConnection {
+                    engine: Box::new(Engine {
+                        socket: Some(socket),
+                        local,
+                        peer: address,
+                        session: Some(SessionSlot::Established(receiver.unwrap())),
+                        options: RakNetOptions::default(),
+                        incoming: VecDeque::new(),
+                        incoming_bytes: 0,
+                        pending_datagram: None,
+                        receive_buffer: vec![0; UDP_BUFFER_BYTES],
+                        next_tick: Instant::now(),
+                        close_deadline: None,
+                        failure: None,
+                    }),
+                },
+                peer,
+                sender.unwrap(),
+            );
+        }
+    }
+    panic!("public negotiation did not complete within the controlled work bound");
 }
 
 #[tokio::test]
 async fn receive_overflow_returns_only_the_prefix_before_the_rejected_message() {
     let (mut connection, peer, mut sender) = connected_pair().await;
-    connection.options.receive_buffer_bytes = 64;
+    connection.engine.options.receive_buffer_bytes = 64;
     let now = Instant::now().into_std();
     for message in [vec![0xfe, 1], vec![0xfe; 63], vec![0xfe, 3]] {
         sender
-            .handle(RakSessionInput::Send(
+            .send(
                 message.into_boxed_slice(),
                 RakReliability::ReliableOrdered,
                 RakPriority::Normal,
                 now,
-            ))
+            )
             .unwrap();
     }
     sender.tick(now).unwrap();
@@ -96,12 +174,12 @@ async fn completed_message_precedes_a_later_frame_error_in_the_same_datagram() {
     let now = Instant::now().into_std();
     for message in [Box::from([0xfe, 42].as_slice()), Box::from([0].as_slice())] {
         sender
-            .handle(RakSessionInput::Send(
+            .send(
                 message,
                 RakReliability::ReliableOrdered,
                 RakPriority::Normal,
                 now,
-            ))
+            )
             .unwrap();
     }
     sender.tick(now).unwrap();
@@ -128,11 +206,12 @@ async fn completed_message_precedes_a_later_frame_error_in_the_same_datagram() {
 #[tokio::test(start_paused = true)]
 async fn cancelled_close_keeps_its_deadline_when_recv_resumes_driving() {
     let (mut connection, _peer, mut sender) = connected_pair().await;
-    connection.options.close_timeout = Duration::from_millis(100);
+    connection.engine.options.close_timeout = Duration::from_millis(100);
     connection
         .queue_send(Bytes::from_static(&[0xfe, 1]))
         .unwrap();
-    let mut closing = Box::pin(connection.close());
+    let mut connection = connection.begin_close().unwrap();
+    let mut closing = Box::pin(connection.finish_close());
     poll_fn(|cx| {
         assert!(closing.as_mut().poll(cx).is_pending());
         Poll::Ready(())
@@ -142,17 +221,18 @@ async fn cancelled_close_keeps_its_deadline_when_recv_resumes_driving() {
     // Model a completed input whose outputs have not yet been collected when close expires.
     let now = Instant::now().into_std();
     sender
-        .handle(RakSessionInput::Send(
+        .send(
             Box::new([0xfe, 2]),
             RakReliability::ReliableOrdered,
             RakPriority::Normal,
             now,
-        ))
+        )
         .unwrap();
     sender.tick(now).unwrap();
     while let Some(output) = sender.poll() {
         if let RakSessionOutput::Datagram(datagram, _) = output {
             connection
+                .engine
                 .session
                 .as_mut()
                 .unwrap()
@@ -169,9 +249,15 @@ async fn cancelled_close_keeps_its_deadline_when_recv_resumes_driving() {
     .await;
     assert_eq!(result.unwrap(), Bytes::from_static(&[0xfe, 2]));
     drop(receiving);
+    let Err(mut connection) = connection.try_finish() else {
+        panic!("close completion discarded the unobserved terminal");
+    };
     assert!(matches!(
         connection.recv().await,
         Err(RakNetError::Disconnected(DisconnectReason::Requested))
     ));
-    UdpSocket::bind(connection.local_addr()).await.unwrap();
+    let Ok(closed) = connection.try_finish() else {
+        panic!("drained local retirement did not finish");
+    };
+    UdpSocket::bind(closed.local_addr()).await.unwrap();
 }

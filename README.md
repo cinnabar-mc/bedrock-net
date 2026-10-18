@@ -112,7 +112,13 @@ established session. A coalesced peer close follows its completed packet prefix.
 These deterministic transitions still need validation on real network paths and
 devices. `wait_send_capacity` services ACKs when the outgoing byte
 budget is full, retaining inbound messages for the next `recv`. Complete earlier
-messages drain before terminal errors.
+messages drain before terminal errors. Local close consumes the established owner
+with `begin_close(self)`. Its `ClosingRakNetConnection` has no send capability;
+borrowed `finish_close`/`recv` waits keep the same original close deadline, pending
+datagram and accepted FIFO when cancelled. A failed transition returns that closing
+owner through `RakNetCloseError::into_parts`. `try_finish` yields a capability-free
+`ClosedRakNetConnection` only after socket release and FIFO/terminal observation.
+This is local retirement, not a remote delivery acknowledgment.
 
 Cargo.toml declares the minimum Rust version required by the pinned transport dependency.
 The driver selects the socket family after normalizing mapped IPv4 endpoints and

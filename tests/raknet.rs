@@ -213,7 +213,8 @@ async fn go_peer_observes_client_uptime_instead_of_unix_time() {
             (0..year_ms).contains(&uptime_ms),
             "advertised uptime: {uptime_ms} ms"
         );
-        connection.close().await.unwrap();
+        let mut closing = connection.begin_close().unwrap();
+        closing.finish_close().await.unwrap();
         peer.finish().await;
     };
     timeout(Duration::from_secs(20), exchange).await.unwrap();
@@ -249,7 +250,8 @@ async fn go_peer_connects_when_a_smaller_probe_is_required_after_the_initial_gra
         let message = Bytes::from(vec![0xfe; 4096]);
         connection.queue_send(message.clone()).unwrap();
         assert_eq!(connection.recv().await.unwrap(), message);
-        connection.close().await.unwrap();
+        let mut closing = connection.begin_close().unwrap();
+        closing.finish_close().await.unwrap();
         peer.finish().await;
     };
     {
@@ -353,7 +355,8 @@ async fn go_peer_preserves_message_boundaries_fragmentation_and_fifo() {
             .unwrap();
         assert_eq!(received, message);
     }
-    connection.close().await.unwrap();
+    let mut closing = connection.begin_close().unwrap();
+    closing.finish_close().await.unwrap();
     // Close releases the socket even while the connection value remains alive.
     let rebound = UdpSocket::bind(local).await.unwrap();
     drop(rebound);
@@ -401,7 +404,8 @@ async fn go_peer_exchanges_fragmented_messages_over_ipv6_and_mapped_ipv4() {
                 .unwrap(),
             message
         );
-        connection.close().await.unwrap();
+        let mut closing = connection.begin_close().unwrap();
+        closing.finish_close().await.unwrap();
         peer.finish().await;
     }
 }
@@ -453,7 +457,8 @@ async fn go_peer_acceptance_preserves_early_packets_within_configured_handshake_
             let echoed = Bytes::from_static(&[0xfe, 3]);
             connection.queue_send(echoed.clone()).unwrap();
             assert_eq!(connection.recv().await.unwrap(), echoed);
-            connection.close().await.unwrap();
+            let mut closing = connection.begin_close().unwrap();
+            closing.finish_close().await.unwrap();
             peer.finish().await;
         };
         tokio::pin!(exchange);
@@ -652,7 +657,8 @@ async fn go_peer_acknowledgements_release_send_capacity_without_consuming_messag
             message
         );
     }
-    connection.close().await.unwrap();
+    let mut closing = connection.begin_close().unwrap();
+    closing.finish_close().await.unwrap();
     peer.finish().await;
 }
 

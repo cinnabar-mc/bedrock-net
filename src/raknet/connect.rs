@@ -1,14 +1,14 @@
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 
 use ::raknet::prelude::{
-    ClientGuid, RakClient, RakClientConfig, RakClientInput, RakClientOutput, RakClock,
-    RakSessionConfig, Sans, canonical_socket_addr, is_mtu_probe_size_error,
+    ClientGuid, RakClient, RakClientConfig, RakClientError, RakClientInput, RakClientOutput,
+    RakClock, RakSessionConfig, Sans, canonical_socket_addr, is_mtu_probe_size_error,
     is_transient_udp_read_error,
 };
 use tokio::net::UdpSocket;
 use tokio::time::{Instant, sleep_until, timeout_at};
 
-use super::{RakNetConnection, RakNetError, RakNetOptions, UDP_BUFFER_BYTES};
+use super::{Engine, RakNetConnection, RakNetError, RakNetOptions, SessionSlot, UDP_BUFFER_BYTES};
 
 const MAX_INITIAL_READ_ERRORS: usize = 10;
 
@@ -84,13 +84,12 @@ impl RakNetConnection {
         socket.connect(peer).await?;
         let local = socket.local_addr()?;
         let guid = ClientGuid::generate()?;
-        let mut client = RakClient::new(config, endpoint_clock());
-        client.handle(RakClientInput::Connect {
-            remote: peer,
-            local,
-            guid,
-            now: Instant::now().into_std(),
-        })?;
+        let mut client = RakClient::new(config, endpoint_clock())?
+            .connect(peer, local, guid, Instant::now().into_std())
+            .map_err(|error| {
+                let (_, cause) = error.into_parts();
+                RakNetError::Handshake(cause)
+            })?;
         let mut buffer = vec![0; UDP_BUFFER_BYTES];
         let mut next_tick = Instant::now();
         let mut initial_read_errors = 0;
@@ -137,19 +136,24 @@ impl RakNetConnection {
                     }
                     RakClientOutput::SessionConnected(session) => {
                         return Ok(Self {
-                            socket: Some(socket),
-                            local,
-                            peer,
-                            session: Some(session),
-                            options,
-                            incoming: Default::default(),
-                            incoming_bytes: 0,
-                            pending_datagram: None,
-                            receive_buffer: buffer,
-                            next_tick: Instant::now(),
-                            close_deadline: None,
-                            failure: None,
+                            engine: Box::new(Engine {
+                                socket: Some(socket),
+                                local,
+                                peer,
+                                session: Some(SessionSlot::Established(session)),
+                                options,
+                                incoming: Default::default(),
+                                incoming_bytes: 0,
+                                pending_datagram: None,
+                                receive_buffer: buffer,
+                                next_tick: Instant::now(),
+                                close_deadline: None,
+                                failure: None,
+                            }),
                         });
+                    }
+                    RakClientOutput::SessionClosing(_) => {
+                        return Err(RakClientError::ConnectionFailed.into());
                     }
                     RakClientOutput::SessionDatagram(_) | RakClientOutput::Pong { .. } => {}
                 }

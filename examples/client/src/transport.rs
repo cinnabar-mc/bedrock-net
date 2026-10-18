@@ -216,7 +216,10 @@ impl Transport {
     /// Completes normal close; dropping the owner also releases cancellation state.
     pub(super) async fn close(self) -> Result<(), Box<dyn Error>> {
         match self {
-            Self::RakNet { mut connection, .. } => connection.close().await?,
+            Self::RakNet { connection, .. } => {
+                let mut closing = connection.begin_close()?;
+                closing.finish_close().await?;
+            }
             Self::NetherNet { connection, .. } | Self::NetherNetLan { connection, .. } => {
                 let mut retired = connection.close();
                 while retired.reliable.recv().await?.is_some() {}

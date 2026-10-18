@@ -6,6 +6,11 @@
 //! its socket immediately.
 
 mod connect;
+mod lifecycle;
+
+pub use lifecycle::{
+    ClosedRakNetConnection, ClosingRakNetConnection, RakNetCloseError, RakNetConnection,
+};
 
 #[cfg(test)]
 mod tests;
@@ -15,8 +20,8 @@ use std::net::SocketAddr;
 use std::time::Duration;
 
 use ::raknet::prelude::{
-    RakClientConfig, RakClientError, RakPriority, RakReliability, RakSession, RakSessionConfig,
-    RakSessionError, RakSessionInput, RakSessionOutput, RakSessionState, Sans,
+    Closing, Established, RakClientConfig, RakClientError, RakPriority, RakReliability, RakSession,
+    RakSessionConfig, RakSessionError, RakSessionInput, RakSessionOutput, RakSessionState, Sans,
 };
 use bytes::Bytes;
 use tokio::net::UdpSocket;
@@ -108,16 +113,68 @@ pub enum RakNetError {
     Closed,
 }
 
-/// Owns one socket, protocol session and FIFO of complete received messages.
-///
-/// Queue messages synchronously, then poll `flush` or `recv` to drive I/O. This
-/// allows a session loop to select `recv` against its outgoing command channel
-/// without detaching tasks or losing protocol state when a future is cancelled.
-pub struct RakNetConnection {
+/// A single core owner whose local send capability cannot be recovered after close.
+enum SessionSlot {
+    Established(RakSession<Established>),
+    Closing(RakSession<Closing>),
+}
+
+impl SessionSlot {
+    /// Observes liveness without changing the local phase.
+    fn state(&self) -> RakSessionState {
+        match self {
+            Self::Established(session) => session.state(),
+            Self::Closing(session) => session.state(),
+        }
+    }
+
+    /// Reads the original negotiated complete-message limit.
+    fn max_message_len(&self) -> usize {
+        match self {
+            Self::Established(session) => session.max_message_len(),
+            Self::Closing(session) => session.max_message_len(),
+        }
+    }
+
+    /// Reads the original retained outgoing byte count.
+    fn outbound_bytes(&self) -> usize {
+        match self {
+            Self::Established(session) => session.outbound_bytes(),
+            Self::Closing(session) => session.outbound_bytes(),
+        }
+    }
+
+    /// Drives the same engine's explicit flush cadence.
+    fn tick(&mut self, now: std::time::Instant) -> Result<(), RakSessionError> {
+        match self {
+            Self::Established(session) => session.tick(now),
+            Self::Closing(session) => session.tick(now),
+        }
+    }
+
+    /// Delivers transport input in either local phase; application Send is unavailable.
+    fn handle(&mut self, input: RakSessionInput) -> Result<(), RakSessionError> {
+        match self {
+            Self::Established(session) => session.handle(input),
+            Self::Closing(session) => session.handle(input),
+        }
+    }
+
+    /// Drains the original core output FIFO without copying it.
+    fn poll(&mut self) -> Option<RakSessionOutput> {
+        match self {
+            Self::Established(session) => session.poll(),
+            Self::Closing(session) => session.poll(),
+        }
+    }
+}
+
+/// One retained protocol/socket/FIFO owner across public capability transitions.
+struct Engine {
     socket: Option<UdpSocket>,
     local: SocketAddr,
     peer: SocketAddr,
-    session: Option<Box<RakSession>>,
+    session: Option<SessionSlot>,
     options: RakNetOptions,
     incoming: VecDeque<Bytes>,
     incoming_bytes: usize,
@@ -128,7 +185,7 @@ pub struct RakNetConnection {
     failure: Option<RakNetError>,
 }
 
-impl RakNetConnection {
+impl Engine {
     /// Returns the bound local address, including after close for diagnostics.
     pub fn local_addr(&self) -> SocketAddr {
         self.local
@@ -163,12 +220,15 @@ impl RakNetConnection {
             return Err(RakNetError::SendBufferFull);
         }
         let session = self.session.as_mut().ok_or(RakNetError::Closed)?;
-        let result = session.handle(RakSessionInput::Send(
+        let SessionSlot::Established(session) = session else {
+            return Err(RakNetError::Closed);
+        };
+        let result = session.send(
             message.as_ref().into(),
             RakReliability::ReliableOrdered,
             RakPriority::Normal,
             Instant::now().into_std(),
-        ));
+        );
         if let Err(error) = result {
             self.end(RakNetError::Closed);
             return Err(error.into());
@@ -201,7 +261,7 @@ impl RakNetConnection {
     /// Validates message size and checks the remaining outgoing byte budget.
     fn has_send_capacity(&self, message_bytes: usize) -> Result<bool, RakNetError> {
         let session = self.session.as_ref().ok_or(RakNetError::Closed)?;
-        if session.get_state() != RakSessionState::Connected {
+        if session.state() != RakSessionState::Connected {
             return Err(RakNetError::Closed);
         }
         if message_bytes == 0 {
@@ -309,29 +369,32 @@ impl RakNetConnection {
         }
     }
 
-    /// Drains reliable outgoing state until closed or the configured close deadline.
-    ///
-    /// On completion the socket is released. Previously received messages remain
-    /// readable through `recv`. Dropping this future retains closing state; dropping
-    /// the connection itself releases the socket immediately.
-    ///
-    /// # Errors
-    /// Returns an I/O, capacity or protocol failure encountered during close.
-    pub async fn close(&mut self) -> Result<(), RakNetError> {
-        let Some(session) = self.session.as_mut() else {
+    /// Retires local admission before returning the same drainable protocol owner.
+    fn begin_close(&mut self) -> Result<(), RakNetError> {
+        if self.session.is_none() {
             return Ok(());
-        };
-        if self.close_deadline.is_none() {
-            let deadline = Instant::now()
-                .checked_add(self.options.close_timeout)
-                .ok_or(RakNetError::InvalidOption("close timeout is too large"))?;
-            let result = session.handle(RakSessionInput::Disconnect(Instant::now().into_std()));
-            if let Err(error) = result {
-                self.end(RakNetError::Closed);
-                return Err(error.into());
-            }
-            self.close_deadline = Some(deadline);
         }
+        let Some(deadline) = Instant::now().checked_add(self.options.close_timeout) else {
+            self.end(RakNetError::Closed);
+            return Err(RakNetError::InvalidOption("close timeout is too large"));
+        };
+        self.close_deadline = Some(deadline);
+        let Some(SessionSlot::Established(session)) = self.session.take() else {
+            unreachable!("only established public owners begin close");
+        };
+        match session.close(Instant::now().into_std()) {
+            Ok(session) => self.session = Some(SessionSlot::Closing(session)),
+            Err(error) => {
+                let (session, cause) = error.into_parts();
+                self.session = Some(SessionSlot::Closing(session));
+                return Err(cause.into());
+            }
+        }
+        Ok(())
+    }
+
+    /// Drives the original close budget without changing it when this wait is cancelled.
+    async fn finish_close(&mut self) -> Result<(), RakNetError> {
         while self.session.is_some() {
             let result = async {
                 self.flush().await?;
