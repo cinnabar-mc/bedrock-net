@@ -495,6 +495,80 @@ fn sends(event: PackEvent) -> Vec<packets::Packet> {
     }
 }
 
+#[test]
+fn smaller_preloads_release_memory_and_in_band_transfer_reservations() {
+    let cached = uuid::Uuid::from_u128(1);
+    let streamed = uuid::Uuid::from_u128(2);
+    let data = b"ab";
+    // Exercise both retention and transfer admission with the same three-byte stack.
+    for transfer_limit in [10, 20] {
+        let mut negotiation = PackNegotiation::new(
+            packets::ResourcePacksInfo {
+                resource_pack_required: true,
+                resource_packs: vec![offer(cached, 9), offer(streamed, 1)],
+                ..Default::default()
+            },
+            PackTransferLimits {
+                max_archive_bytes: 9,
+                max_stack_bytes: 10,
+                max_transfer_bytes: transfer_limit,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        negotiation.supply_preloaded(cached, vec![7]).unwrap();
+        negotiation.start().unwrap();
+        let name: wire::Str = format!("{streamed}_1.0.0").into();
+        let requests = sends(
+            negotiation
+                .receive(
+                    packets::ResourcePackDataInfo {
+                        resource_name: name.clone(),
+                        chunk_size: wire::U32LE(data.len() as u32),
+                        file_size: wire::U64LE(data.len() as u64),
+                        file_hash: Bytes::copy_from_slice(&Sha256::digest(data)),
+                        ..Default::default()
+                    }
+                    .into(),
+                )
+                .expect("only the missing archive consumes the transfer budget"),
+        );
+        assert_eq!(request_indices(requests), [0]);
+        negotiation
+            .receive(
+                packets::ResourcePackChunkData {
+                    resource_name: name,
+                    chunk_id: wire::U32LE(0),
+                    chunk_data: Bytes::from_static(data),
+                    ..Default::default()
+                }
+                .into(),
+            )
+            .unwrap();
+        let stack = packets::ResourcePackStack {
+            texture_pack_list: [cached, streamed]
+                .into_iter()
+                .map(|id| PackInstanceId {
+                    pack_id: id.to_string().into(),
+                    version: "1.0.0".into(),
+                    ..Default::default()
+                })
+                .collect(),
+            ..Default::default()
+        };
+        let PackEvent::Finished { handoff, .. } = negotiation
+            .receive(stack.into())
+            .expect("the required stack retains only three bytes")
+        else {
+            panic!("the completed required stack must be handed off");
+        };
+        let archives = handoff.into_archives();
+        assert_eq!(archives.len(), 2);
+        assert_eq!(archives[0].archive, [7]);
+        assert_eq!(archives[1].archive, data);
+    }
+}
+
 /// Asserts that every response in a request window is an actual generated chunk request.
 fn request_indices(packets: Vec<packets::Packet>) -> Vec<i32> {
     packets
