@@ -1,11 +1,16 @@
 //! Network-level Login requests and verified server key exchange.
 //!
 //! The caller owns the connection proof key, UTC clock and client-data schema.
-//! These helpers return the opaque request consumed by protocolgen's Login packet
-//! and the existing directional batch ciphers. They perform no I/O or account authentication.
+//! These helpers format and verify opaque requests consumed by protocolgen's
+//! Login packet and derive the existing directional batch ciphers. Accepting
+//! authentication requires a caller-owned provider verifier. No helper performs I/O.
 
+mod accepting;
 mod error;
 mod jwt;
+pub use accepting::{
+    AuthenticatedLogin, LoginVerifier, TrustedIdentity, verify_authenticated_request,
+};
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -218,16 +223,58 @@ pub fn finish_key_exchange(
     max_token_bytes: usize,
 ) -> Result<(BatchEncryptor, BatchDecryptor), LoginError> {
     let (public, salt) = jwt::verify_server(server_token, max_token_bytes)?;
+    Ok(derive_ciphers(key, &public, &salt))
+}
+
+/// Signs one accepting exchange using caller-owned server key and fresh sixteen-byte salt.
+///
+/// Send and flush the returned token without the batch cipher, then install the
+/// outgoing/incoming streams before reading the client's acknowledgment. Use
+/// once per connection; neither this function nor the ciphers may be replayed.
+/// The caller authenticates the client's public key before calling this function.
+///
+/// # Errors
+/// Returns bounded token encoding, public-key or signature errors before returning streams.
+pub fn begin_key_exchange(
+    key: &SigningKey,
+    client: &p384::ecdsa::VerifyingKey,
+    salt: &[u8; 16],
+    max_token_bytes: usize,
+) -> Result<(String, (BatchEncryptor, BatchDecryptor)), LoginError> {
+    #[derive(Serialize)]
+    struct Salt<'a> {
+        salt: &'a str,
+    }
+    let der = key
+        .verifying_key()
+        .to_public_key_der()
+        .map_err(LoginError::PublicKey)?;
+    let public = STANDARD.encode(der.as_bytes());
+    let salt_text = base64::engine::general_purpose::STANDARD_NO_PAD.encode(salt);
+    let payload = jwt::json_line(&Salt { salt: &salt_text }, max_token_bytes)?;
+    let token = jwt::sign(key, &public, &payload, max_token_bytes)?;
+    Ok((
+        token,
+        derive_ciphers(key, &p384::PublicKey::from(*client), salt),
+    ))
+}
+
+/// Uses one shared ECDH and hash owner for the client and accepting directions.
+fn derive_ciphers(
+    key: &SigningKey,
+    public: &p384::PublicKey,
+    salt: &[u8],
+) -> (BatchEncryptor, BatchDecryptor) {
     let shared = p384::ecdh::diffie_hellman(key.as_nonzero_scalar(), public.as_affine());
     let mut hash = Sha256::new();
     hash.update(salt);
     hash.update(shared.raw_secret_bytes());
     let mut session_key = Zeroizing::new([0_u8; 32]);
     hash.finalize_into((&mut *session_key).into());
-    Ok((
+    (
         BatchEncryptor::new(*session_key),
         BatchDecryptor::new(*session_key),
-    ))
+    )
 }
 
 /// Converts UTC to Unix seconds, rounding fractional pre-epoch values downward.

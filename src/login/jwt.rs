@@ -19,9 +19,10 @@ struct SigningHeader<'a> {
 }
 
 #[derive(Deserialize)]
-struct ServerHeader {
+struct TokenHeader {
     alg: String,
-    x5u: String,
+    #[serde(default)]
+    x5u: Option<String>,
     #[serde(default)]
     crit: Option<Vec<String>>,
     #[serde(default)]
@@ -96,45 +97,94 @@ pub(super) fn sign(
 
 /// Verifies a bounded server token before decoding its salt or deriving any key.
 pub(super) fn verify_server(token: &str, limit: usize) -> Result<(PublicKey, Vec<u8>), LoginError> {
-    if token.len() > limit {
-        return Err(LoginError::LimitExceeded { limit });
-    }
-    let (input, signature) = token.rsplit_once('.').ok_or(LoginError::MalformedToken)?;
-    let (header, payload) = input.split_once('.').ok_or(LoginError::MalformedToken)?;
-    if payload.contains('.') {
-        return Err(LoginError::MalformedToken);
-    }
-    let header: ServerHeader =
-        serde_json::from_slice(&URL_SAFE_NO_PAD.decode(header).map_err(LoginError::Base64)?)
-            .map_err(LoginError::Json)?;
-    if header.alg != "ES384" || header.crit.iter().flatten().any(|name| name != "b64") {
-        return Err(LoginError::UnsupportedHeader);
-    }
-    let der = STANDARD.decode(header.x5u).map_err(LoginError::Base64)?;
+    let parsed = Parsed::new(token, limit)?;
+    let der = STANDARD
+        .decode(
+            parsed
+                .header
+                .x5u
+                .as_deref()
+                .ok_or(LoginError::UnsupportedHeader)?,
+        )
+        .map_err(LoginError::Base64)?;
     let public = PublicKey::from_public_key_der(&der).map_err(LoginError::PublicKey)?;
-    let signature = URL_SAFE_NO_PAD
-        .decode(signature)
-        .map_err(LoginError::Base64)?;
-    let signature = Signature::from_slice(&signature).map_err(LoginError::Signature)?;
-    let payload = URL_SAFE_NO_PAD
-        .decode(payload)
-        .map_err(LoginError::Base64)?;
-    let unencoded_input;
-    let signing_input = if header.b64 == Some(false) {
-        let protected = input.split_once('.').ok_or(LoginError::MalformedToken)?.0;
-        unencoded_input = [protected.as_bytes(), b".", payload.as_slice()].concat();
-        unencoded_input.as_slice()
-    } else {
-        input.as_bytes()
-    };
-    VerifyingKey::from(public)
-        .verify(signing_input, &signature)
-        .map_err(LoginError::Signature)?;
-    let claims: SaltClaims = serde_json::from_slice(&payload).map_err(LoginError::Json)?;
+    parsed.verify(&VerifyingKey::from(public))?;
+    let claims: SaltClaims = serde_json::from_slice(&parsed.payload).map_err(LoginError::Json)?;
     let salt = STANDARD_NO_PAD
         .decode(claims.salt.unwrap_or_default().trim_end_matches('='))
         .map_err(LoginError::Base64)?;
     Ok((public, salt))
+}
+
+/// Verifies client JSON against the provider-authenticated key, never the untrusted header key.
+pub(super) fn verify_client(
+    token: &str,
+    public: &VerifyingKey,
+    limit: usize,
+) -> Result<Vec<u8>, LoginError> {
+    let parsed = Parsed::new(token, limit)?;
+    parsed.verify(public)?;
+    Ok(parsed.payload)
+}
+
+/// Shared bounded compact framing and signature policy for both Login directions.
+struct Parsed<'a> {
+    input: &'a str,
+    header: TokenHeader,
+    signature: Signature,
+    payload: Vec<u8>,
+}
+
+impl<'a> Parsed<'a> {
+    /// Parses framing and supported headers without trusting a payload or header-supplied key.
+    fn new(token: &'a str, limit: usize) -> Result<Self, LoginError> {
+        if token.len() > limit {
+            return Err(LoginError::LimitExceeded { limit });
+        }
+        let (input, signature) = token.rsplit_once('.').ok_or(LoginError::MalformedToken)?;
+        let (header, payload) = input.split_once('.').ok_or(LoginError::MalformedToken)?;
+        if payload.contains('.') {
+            return Err(LoginError::MalformedToken);
+        }
+        let header: TokenHeader =
+            serde_json::from_slice(&URL_SAFE_NO_PAD.decode(header).map_err(LoginError::Base64)?)
+                .map_err(LoginError::Json)?;
+        if header.alg != "ES384" || header.crit.iter().flatten().any(|name| name != "b64") {
+            return Err(LoginError::UnsupportedHeader);
+        }
+        let signature = URL_SAFE_NO_PAD
+            .decode(signature)
+            .map_err(LoginError::Base64)?;
+        let signature = Signature::from_slice(&signature).map_err(LoginError::Signature)?;
+        let payload = URL_SAFE_NO_PAD
+            .decode(payload)
+            .map_err(LoginError::Base64)?;
+        Ok(Self {
+            input,
+            header,
+            signature,
+            payload,
+        })
+    }
+
+    /// Checks the exact signed representation before any payload deserialization.
+    fn verify(&self, public: &VerifyingKey) -> Result<(), LoginError> {
+        let unencoded_input;
+        let signing_input = if self.header.b64 == Some(false) {
+            let protected = self
+                .input
+                .split_once('.')
+                .ok_or(LoginError::MalformedToken)?
+                .0;
+            unencoded_input = [protected.as_bytes(), b".", self.payload.as_slice()].concat();
+            unencoded_input.as_slice()
+        } else {
+            self.input.as_bytes()
+        };
+        public
+            .verify(signing_input, &self.signature)
+            .map_err(LoginError::Signature)
+    }
 }
 
 struct LimitedWriter {

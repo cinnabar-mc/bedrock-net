@@ -22,6 +22,15 @@ pub enum LoginError {
     /// Authenticated Login requires a nonempty previously acquired credential.
     #[error("login authentication token is empty")]
     EmptyAuthenticationToken,
+    /// Only modern authenticated provider Login is implemented by the accepting owner.
+    #[error("unsupported login authentication mode")]
+    UnsupportedAuthentication,
+    /// The configured provider rejected this credential or returned an invalid identity.
+    #[error("login provider authentication failed")]
+    Authentication,
+    /// Revalidation changed the original provider-authenticated account or proof key.
+    #[error("login identity changed before admission")]
+    IdentityChanged,
     /// JSON could not be encoded or decoded.
     #[error("invalid login JSON")]
     Json(#[source] serde_json::Error),

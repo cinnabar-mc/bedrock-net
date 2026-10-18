@@ -1,0 +1,177 @@
+//! Authenticated accepting Login, with issuer policy supplied by its existing caller owner.
+
+use super::{LoginError, jwt};
+use p384::ecdsa::VerifyingKey;
+use serde::Deserialize;
+use serde_json::value::RawValue;
+use std::{borrow::Cow, time::SystemTime};
+use zeroize::Zeroizing;
+
+/// Pure authority for the configured multiplayer provider, never a client-selected issuer/key.
+///
+/// Implementations must verify signature, supported algorithm/critical headers,
+/// configured issuer/audience, finite temporal claims and authenticated Xbox
+/// identity before returning the provider's `cpk`. Reuse the application's
+/// existing provider verifier and acquired metadata. This interface performs no
+/// discovery, HTTP, refresh or account binding to the local host's XUID.
+pub trait LoginVerifier {
+    /// Verifies this exact bounded credential at caller-supplied provider UTC.
+    ///
+    /// # Errors
+    /// Return an authentication error without credential/claim contents on any policy failure.
+    fn verify(&self, token: &str, now: SystemTime) -> Result<TrustedIdentity, LoginError>;
+}
+
+/// Identity asserted by a trusted provider-verification implementation.
+/// No Debug implementation exposes its account identifier.
+pub struct TrustedIdentity {
+    xuid: String,
+    public_key: VerifyingKey,
+}
+
+impl TrustedIdentity {
+    /// Records an already provider-verified XUID and its signed P384 `cpk`.
+    ///
+    /// This constructor does not authenticate claims; only a trusted
+    /// [`LoginVerifier`] may use it after completing its configured provider policy.
+    ///
+    /// # Errors
+    /// Rejects an empty or non-int64 XUID before retaining it.
+    pub fn new(xuid: String, public_key: VerifyingKey) -> Result<Self, LoginError> {
+        if xuid.is_empty() || xuid.parse::<i64>().is_err() {
+            return Err(LoginError::Authentication);
+        }
+        Ok(Self { xuid, public_key })
+    }
+}
+
+/// Provider-authenticated identity and client-signed metadata from one exact Login.
+///
+/// Client metadata remains player-controlled even though its signature proves
+/// possession of the provider-bound key. A nonce requires the application's
+/// current directory/world approval. No Clone, Debug or serialization exposes
+/// credentials or allows this owner to be silently substituted.
+pub struct AuthenticatedLogin {
+    identity: TrustedIdentity,
+    credential: Zeroizing<String>,
+    client_data: Box<RawValue>,
+    nonce: Zeroizing<String>,
+}
+
+impl AuthenticatedLogin {
+    /// Borrows the provider-authenticated joining player's XUID, never the host account's XUID.
+    pub fn xuid(&self) -> &str {
+        &self.identity.xuid
+    }
+
+    /// Borrows the same provider key that verified this client's metadata and will derive encryption.
+    pub fn public_key(&self) -> &VerifyingKey {
+        &self.identity.public_key
+    }
+
+    /// Borrows the original client-signed JSON; application metadata validation remains caller-owned.
+    pub fn client_data(&self) -> &RawValue {
+        &self.client_data
+    }
+
+    /// Borrows the original client-signed title nonce; this value alone grants no world access.
+    pub fn nonce(&self) -> &str {
+        &self.nonce
+    }
+
+    /// Rechecks the exact original credential after any application approval/capacity wait.
+    ///
+    /// # Errors
+    /// Rejects expiry/provider failure or any changed authenticated XUID/key. No fallback or retry occurs.
+    pub fn revalidate(
+        &self,
+        verifier: &impl LoginVerifier,
+        now: SystemTime,
+    ) -> Result<(), LoginError> {
+        let identity = verifier.verify(&self.credential, now)?;
+        if identity.xuid != self.identity.xuid || identity.public_key != self.identity.public_key {
+            return Err(LoginError::IdentityChanged);
+        }
+        Ok(())
+    }
+}
+
+/// Verifies modern authenticated Login and its metadata without I/O or a hidden clock.
+///
+/// The required caller verifier establishes issuer trust. The existing Login
+/// ES384 owner then verifies client JSON against the provider's `cpk`, ignoring
+/// any client-header key. Legacy chains, offline and guest modes are explicitly
+/// unsupported; they never fall through to raw JWT claims or self-signed trust.
+///
+/// # Errors
+/// Rejects an oversized/truncated/negative-length/trailing frame, unsupported
+/// authentication, provider rejection, invalid client signature/JSON/nonce.
+pub fn verify_authenticated_request(
+    request: &[u8],
+    verifier: &impl LoginVerifier,
+    now: SystemTime,
+    max_request_bytes: usize,
+) -> Result<AuthenticatedLogin, LoginError> {
+    if max_request_bytes == 0 || request.len() > max_request_bytes {
+        return Err(LoginError::LimitExceeded {
+            limit: max_request_bytes,
+        });
+    }
+    let mut rest = request;
+    let envelope = take_field(&mut rest)?;
+    let client = take_field(&mut rest)?;
+    if !rest.is_empty() {
+        return Err(LoginError::InvalidLength);
+    }
+    #[derive(Deserialize)]
+    struct Envelope<'a> {
+        #[serde(rename = "AuthenticationType")]
+        mode: Option<u8>,
+        #[serde(rename = "Token", borrow)]
+        token: Option<Cow<'a, str>>,
+    }
+    let envelope: Envelope<'_> = serde_json::from_slice(envelope).map_err(LoginError::Json)?;
+    if envelope.mode != Some(0) {
+        return Err(LoginError::UnsupportedAuthentication);
+    }
+    let token = envelope
+        .token
+        .filter(|token| !token.is_empty())
+        .ok_or(LoginError::EmptyAuthenticationToken)?;
+    let identity = verifier.verify(&token, now)?;
+    let client = std::str::from_utf8(client).map_err(|_| LoginError::MalformedToken)?;
+    let payload = jwt::verify_client(client, &identity.public_key, max_request_bytes)?;
+    let client_data: Box<RawValue> = serde_json::from_slice(&payload).map_err(LoginError::Json)?;
+    super::validate_client_data(&client_data, max_request_bytes)?;
+    #[derive(Deserialize)]
+    struct Metadata {
+        #[serde(rename = "Nonce", default)]
+        nonce: String,
+    }
+    let metadata: Metadata = serde_json::from_str(client_data.get()).map_err(LoginError::Json)?;
+    Ok(AuthenticatedLogin {
+        identity,
+        credential: Zeroizing::new(token.into_owned()),
+        client_data,
+        nonce: Zeroizing::new(metadata.nonce),
+    })
+}
+
+/// Takes one positive signed-i32-sized field without truncation or unchecked arithmetic.
+fn take_field<'a>(rest: &mut &'a [u8]) -> Result<&'a [u8], LoginError> {
+    let prefix = rest.get(..4).ok_or(LoginError::InvalidLength)?;
+    let length = i32::from_le_bytes(prefix.try_into().map_err(|_| LoginError::InvalidLength)?);
+    let length = usize::try_from(length)
+        .ok()
+        .filter(|length| *length > 0)
+        .ok_or(LoginError::InvalidLength)?;
+    let end = 4usize
+        .checked_add(length)
+        .ok_or(LoginError::InvalidLength)?;
+    let field = rest.get(4..end).ok_or(LoginError::InvalidLength)?;
+    *rest = rest.get(end..).ok_or(LoginError::InvalidLength)?;
+    Ok(field)
+}
+
+#[cfg(test)]
+mod tests;
