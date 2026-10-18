@@ -39,6 +39,41 @@ async fn connected_pair() -> (RakNetConnection, UdpSocket, RakSession) {
 }
 
 #[tokio::test]
+async fn receive_overflow_returns_only_the_prefix_before_the_rejected_message() {
+    let (mut connection, peer, mut sender) = connected_pair().await;
+    connection.options.receive_buffer_bytes = 64;
+    let now = std::time::SystemTime::now();
+    for message in [vec![0xfe, 1], vec![0xfe; 63], vec![0xfe, 3]] {
+        sender
+            .handle(RakSessionInput::Send(
+                message.into_boxed_slice(),
+                RakReliability::ReliableOrdered,
+                RakPriority::Normal,
+                now,
+            ))
+            .unwrap();
+    }
+    sender.tick(now).unwrap();
+    let mut sent = 0;
+    while let Some(output) = sender.poll() {
+        if let RakSessionOutput::Datagram(datagram, _) = output {
+            peer.send(&datagram).await.unwrap();
+            sent += 1;
+        }
+    }
+    assert_eq!(sent, 1);
+    assert_eq!(
+        connection.recv().await.unwrap(),
+        Bytes::from_static(&[0xfe, 1])
+    );
+    assert!(matches!(
+        connection.recv().await,
+        Err(RakNetError::ReceiveBufferExceeded)
+    ));
+    assert!(matches!(connection.recv().await, Err(RakNetError::Closed)));
+}
+
+#[tokio::test]
 async fn completed_message_precedes_a_later_frame_error_in_the_same_datagram() {
     let (mut connection, peer, mut sender) = connected_pair().await;
     let now = std::time::SystemTime::now();

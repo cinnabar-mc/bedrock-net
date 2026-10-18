@@ -57,7 +57,7 @@ are explicit options. `wait_send_capacity` services ACKs when the outgoing byte
 budget is full, retaining inbound messages for the next `recv`. Complete earlier
 messages drain before terminal errors.
 
-The minimum Rust version is 1.90, required by the pinned transport dependency.
+Cargo.toml declares the minimum Rust version required by the pinned transport dependency.
 For Go transport interoperability checks, build the loopback-only helper under
 `tools/raknet-peer` and set `BEDROCK_NET_RAKNET_PEER` to that executable before
 running `cargo test --locked -p bedrock-net --features raknet`.

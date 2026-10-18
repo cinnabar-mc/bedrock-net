@@ -13,8 +13,17 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@1.90
-      - run: cargo check --locked -p bedrock-net --all-targets --all-features
+      - id: minimum-rust
+        run: |
+          python3 - <<'PY'
+          import os, tomllib
+          with open("Cargo.toml", "rb") as manifest, open(os.environ["GITHUB_OUTPUT"], "a") as output:
+              print("version=" + tomllib.load(manifest)["package"]["rust-version"], file=output)
+          PY
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ steps.minimum-rust.outputs.version }}
+      - run: cargo +${{ steps.minimum-rust.outputs.version }} check --locked -p bedrock-net --all-targets --all-features
   rust:
     strategy:
       matrix:
