@@ -183,12 +183,13 @@ impl Transport {
         matches!(self, Self::RakNet { .. })
     }
 
-    /// Sends after admission; the probe never races this against another send.
+    /// Completes local emission before the probe processes a typed handshake continuation.
     pub(super) async fn send(&mut self, message: Bytes) -> Result<(), Box<dyn Error>> {
         match self {
             Self::RakNet { connection, .. } => {
                 connection.wait_send_capacity(message.len()).await?;
                 connection.queue_send(message)?;
+                connection.flush().await?;
             }
             Self::NetherNet { connection, .. } | Self::NetherNetLan { connection, .. } => {
                 connection.send(message).await?
