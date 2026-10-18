@@ -1452,7 +1452,7 @@ checksum = "bc0287524726960e07b119cebd01678f852f147742ae0d925e6a520dca956126"
 [[package]]
 name = "nethernet"
 version = "0.0.1"
-source = "git+https://github.com/cinnabar-mc/nethernet?rev=e77711166259bd1efcfc80b44e9d953b5d721548#e77711166259bd1efcfc80b44e9d953b5d721548"
+source = "git+https://github.com/cinnabar-mc/nethernet?rev=2b56178b29dd65c2ae4c043e7dd56bf98bcb2f57#2b56178b29dd65c2ae4c043e7dd56bf98bcb2f57"
 dependencies = [
  "aes 0.9.3",
  "base64 0.23.1",
@@ -1476,7 +1476,7 @@ dependencies = [
 [[package]]
 name = "nethernet-tokio"
 version = "0.2.0"
-source = "git+https://github.com/cinnabar-mc/nethernet?rev=e77711166259bd1efcfc80b44e9d953b5d721548#e77711166259bd1efcfc80b44e9d953b5d721548"
+source = "git+https://github.com/cinnabar-mc/nethernet?rev=2b56178b29dd65c2ae4c043e7dd56bf98bcb2f57#2b56178b29dd65c2ae4c043e7dd56bf98bcb2f57"
 dependencies = [
  "bytes",
  "futures",
