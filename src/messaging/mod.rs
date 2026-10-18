@@ -273,14 +273,13 @@ async fn acquire_ice(
             request: completed,
             result,
         } = socket.drive().await?
+            && completed == request
         {
-            if completed == request {
-                result.map_err(|failure| match failure {
-                    Failure::TimedOut => Error::TimedOut,
-                    _ => Error::Ice,
-                })?;
-                break;
-            }
+            result.map_err(|failure| match failure {
+                Failure::TimedOut => Error::TimedOut,
+                _ => Error::Ice,
+            })?;
+            break;
         }
     }
     let credentials = socket.credentials().ok_or(Error::Ice)?;
