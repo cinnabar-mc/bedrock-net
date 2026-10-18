@@ -3,15 +3,18 @@ use crate::packs::PackEvent;
 
 /// Uses a synthetic deterministic proof key, without account or transport I/O.
 fn handshake(batch_encryption: bool) -> ClientHandshake {
-    ClientHandshake::new(
-        SigningKey::from_slice(&[1; 48]).unwrap(),
+    let key = Arc::new(SigningKey::from_slice(&[1; 48]).unwrap());
+    let client = ClientHandshake::new(
+        Arc::clone(&key),
         HandshakeOptions {
             batch_encryption,
             blob_cache: true,
             ..Default::default()
         },
     )
-    .unwrap()
+    .unwrap();
+    assert!(std::ptr::eq(client.key(), key.as_ref()));
+    client
 }
 
 /// Sends the generated settings and then signs one offline Login with that same owner.

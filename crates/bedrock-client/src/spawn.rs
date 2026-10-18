@@ -125,6 +125,32 @@ impl SpawnNegotiation {
         result
     }
 
+    /// Observes an unrelated raw packet without requiring its body to be decoded.
+    ///
+    /// The caller retains the original packet in its bounded FIFO and handles
+    /// Disconnect/Transfer immediately. Pass the four startup prerequisites
+    /// through `receive` instead; their bodies establish the checked state.
+    /// This method retains only whether a terrain packet arrived.
+    ///
+    /// # Errors
+    /// Rejects a startup prerequisite ID or use after completion/failure.
+    pub fn receive_deferred(&mut self, id: packets::PacketId) -> Result<(), SpawnError> {
+        if !matches!(self.phase, Phase::Active)
+            || matches!(
+                id,
+                packets::PacketId::StartGame
+                    | packets::PacketId::ItemRegistry
+                    | packets::PacketId::PlayStatus
+                    | packets::PacketId::ChunkRadiusUpdated
+            )
+        {
+            self.phase = Phase::Failed;
+            return Err(SpawnError::InvalidState);
+        }
+        self.observe_deferred(id);
+        Ok(())
+    }
+
     /// Creates the single initialization acknowledgment after presentation completes.
     ///
     /// The caller owns any loading-screen end notification and sends it before
@@ -184,12 +210,7 @@ impl SpawnNegotiation {
                 update.deferred = Some(Box::new(packets::Packet::ChunkRadiusUpdated(radius)));
             }
             other => {
-                self.terrain_received |= matches!(
-                    &other,
-                    packets::Packet::NetworkChunkPublisherUpdate(_)
-                        | packets::Packet::LevelChunk(_)
-                        | packets::Packet::SubChunk(_)
-                );
+                self.observe_deferred(other.id());
                 update.deferred = Some(Box::new(other));
             }
         }
@@ -208,6 +229,16 @@ impl SpawnNegotiation {
             });
         }
         Ok(update)
+    }
+
+    /// Shares terrain classification between raw and generated-packet callers.
+    fn observe_deferred(&mut self, id: packets::PacketId) {
+        self.terrain_received |= matches!(
+            id,
+            packets::PacketId::NetworkChunkPublisherUpdate
+                | packets::PacketId::LevelChunk
+                | packets::PacketId::SubChunk
+        );
     }
 }
 
