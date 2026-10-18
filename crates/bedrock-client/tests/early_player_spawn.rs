@@ -1,3 +1,5 @@
+//! Retains early startup input through the public handshake, pack and spawn owners.
+
 use bedrock_client::{
     handshake::{ClientHandshake, HandshakeEvent, HandshakeOptions},
     packs::PackEvent,
