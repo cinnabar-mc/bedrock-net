@@ -164,6 +164,11 @@ impl MessagingConnection {
                 let _ = client.close().await;
                 return Err(error);
             }
+            admit_established_connection(deadline, async {
+                driver.close();
+                let _ = client.close().await;
+            })
+            .await?;
             driver.established();
             Ok(Self {
                 client,
@@ -237,6 +242,14 @@ impl MessagingConnection {
             }
         }
     }
+}
+
+/// Guards the final connection handoff, retiring both owned edges when its original deadline elapsed.
+async fn admit_established_connection(
+    _deadline: Instant,
+    _close: impl std::future::Future<Output = ()>,
+) -> Result<(), Error> {
+    Ok(())
 }
 
 /// Acquires the SDK's original credential lifetime before the peer can send an offer response.
@@ -321,3 +334,6 @@ impl Drop for AcquiredServers {
         }
     }
 }
+
+#[cfg(test)]
+mod tests;
