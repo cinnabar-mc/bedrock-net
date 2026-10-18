@@ -62,9 +62,20 @@ For Go transport interoperability checks, build the loopback-only helper under
 `tools/raknet-peer` and set `BEDROCK_NET_RAKNET_PEER` to that executable before
 running `cargo test --locked -p bedrock-net --features raknet`.
 
-This is an incremental implementation. NetherNet, login, services and
-real-server compatibility validation are still pending. The existing Cinnabar Go
+This is an incremental implementation. Production NetherNet integration, login,
+services and broader server validation are still pending. The existing Cinnabar Go
 backend remains the production implementation.
+
+The standalone `bedrock-probe` workspace binary composes generated protocolgen
+packets with the native batch codec. Run
+`cargo run -p bedrock-probe -- <raknet|nethernet> IP:PORT` to request network
+settings and close the connection. The NetherNet path uses HTTP signaling and a
+self-signed client identity. Its transport adapter is being evaluated for later
+library integration; account authentication and the rest of login are pending.
+This probe has exchanged settings with a local offline BDS 1.26.52.3; it does not
+exercise login or subsequent compressed traffic.
+The root library remains the default workspace member, so these version-specific
+and transport evaluation dependencies stay outside its normal build.
 
 Run `cargo test --locked` for focused codec tests and `cargo fmt --all --check`
 for formatting. See [NOTICE](NOTICE) for implementation references and licensing.

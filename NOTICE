@@ -16,3 +16,7 @@ The optional RakNet driver uses bedrock-crustaceans/raknet (Apache-2.0), with a
 Cinnabar ordering-window fix pinned in Cargo.toml. The Go loopback fixture uses
 HashimTheArab/go-raknet (MIT), pinned
 in tools/raknet-peer/go.mod. Neither dependency's source is vendored here.
+
+The standalone probe consumes protocolgen's generated packet crate and uses
+bedrock-crustaceans/nethernet (Apache-2.0), with Cinnabar client identity support
+pinned in its manifest. Neither dependency's source is vendored here.

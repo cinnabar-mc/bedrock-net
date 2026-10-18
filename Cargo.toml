@@ -1,12 +1,16 @@
 [workspace]
-members = ["."]
+members = [".", "examples/client"]
+default-members = ["."]
 resolver = "3"
+
+[workspace.package]
+rust-version = "1.93"
 
 [package]
 name = "bedrock-net"
 version = "0.1.0"
 edition = "2024"
-rust-version = "1.93"
+rust-version.workspace = true
 license = "MIT OR Apache-2.0"
 description = "Native Rust transport and session foundations for Minecraft Bedrock"
 repository = "https://github.com/cinnabar-mc/bedrock-net"
