@@ -167,7 +167,7 @@ impl RakNetConnection {
             message.as_ref().into(),
             RakReliability::ReliableOrdered,
             RakPriority::Normal,
-            std::time::SystemTime::now(),
+            Instant::now().into_std(),
         ));
         if let Err(error) = result {
             self.end(RakNetError::Closed);
@@ -235,7 +235,7 @@ impl RakNetConnection {
         let result = self
             .session
             .as_mut()
-            .map_or(Ok(()), |session| session.tick(std::time::SystemTime::now()));
+            .map_or(Ok(()), |session| session.tick(Instant::now().into_std()));
         if let Err(error) = result {
             self.end(RakNetError::Closed);
             return Err(error.into());
@@ -325,7 +325,7 @@ impl RakNetConnection {
             let deadline = Instant::now()
                 .checked_add(self.options.close_timeout)
                 .ok_or(RakNetError::InvalidOption("close timeout is too large"))?;
-            let result = session.handle(RakSessionInput::Disconnect(std::time::SystemTime::now()));
+            let result = session.handle(RakSessionInput::Disconnect(Instant::now().into_std()));
             if let Err(error) = result {
                 self.end(RakNetError::Closed);
                 return Err(error.into());
@@ -363,14 +363,14 @@ impl RakNetConnection {
                 let length = received?;
                 RakSessionInput::Datagram(
                     self.receive_buffer[..length].into(),
-                    std::time::SystemTime::now(),
+                    Instant::now().into_std(),
                 )
             }
             _ = sleep_until(next) => {
                 if self.expire_close() {
                     return Ok(());
                 }
-                RakSessionInput::Update(std::time::SystemTime::now())
+                RakSessionInput::Update(Instant::now().into_std())
             }
         };
         let result = self
