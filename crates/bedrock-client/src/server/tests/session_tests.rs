@@ -562,8 +562,13 @@ fn typed_accepting_echoed_chunk_name_respects_actual_response_wire_budget() {
     let (server, request, now) = memory_chunk_request(budget, Some(CHUNK_REQUEST_VERSION));
     let deadline = server.deadline();
     let grant = server.grant() as *const Grant;
+    let packets::Packet::ResourcePackChunkRequest(original) = &request else {
+        panic!("missing generated chunk request")
+    };
+    let name = original.resource_name.clone();
     match server.receive(request.clone(), now) {
         Ok(ServerPackEvent::Chunk(chunk)) => {
+            assert_eq!(chunk.packet().resource_name, name);
             assert!(
                 chunk_frame_len(&chunk) <= budget,
                 "the actual response with its echoed request name exceeded its wire budget"
