@@ -6,23 +6,32 @@ resolver = "3"
 name = "bedrock-net"
 version = "0.1.0"
 edition = "2024"
-rust-version = "1.85"
+rust-version = "1.93"
 license = "MIT OR Apache-2.0"
 description = "Native Rust transport and session foundations for Minecraft Bedrock"
 repository = "https://github.com/cinnabar-mc/bedrock-net"
 readme = "README.md"
 publish = false
 
+[features]
+default = []
+raknet = ["dep:raknet", "dep:tokio"]
+
 [dependencies]
 aes = { version = "0.9", features = ["zeroize"] }
 bytes = "1"
 ctr = { version = "0.10", features = ["zeroize"] }
 flate2 = "1"
+raknet = { git = "https://github.com/cinnabar-mc/raknet", rev = "af959ae3b6c5868fe5c55d7d71f06828b2769ce5", optional = true }
 sha2 = "0.11"
 snap = "1"
 subtle = "2"
 thiserror = "2"
+tokio = { version = "1", features = ["net", "time", "macros"], optional = true }
 zeroize = "1"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["rt", "macros", "net", "time", "test-util", "process", "io-util"] }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

@@ -11,3 +11,8 @@ The batch codec is an original Rust implementation informed by public code in:
 
 No source files from those projects are included. Their licenses continue to
 apply to their respective projects. Dependencies carry their own licenses.
+
+The optional RakNet driver uses bedrock-crustaceans/raknet (Apache-2.0), with a
+Cinnabar ordering-window fix pinned in Cargo.toml. The Go loopback fixture uses
+HashimTheArab/go-raknet (MIT), pinned
+in tools/raknet-peer/go.mod. Neither dependency's source is vendored here.
