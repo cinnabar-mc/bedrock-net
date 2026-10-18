@@ -44,14 +44,19 @@ the handshake. Encrypt the compressed body after removing any transport marker;
 decrypt and verify before decompressing. Retain outgoing ciphertext in send order,
 and bound incoming wire bytes before decryption. Integrity failures invalidate the
 direction. A compression drop still consumes the encrypted batch's stream state.
-Enable `login` for offline request encoding and server key exchange. The caller
-owns its P-384 signing key, UTC time, identity claims and validated client-data
-JSON. The helpers retain raw client data, sign line-terminated JSON and produce
-the opaque connection request used by protocolgen. Server tokens are bounded,
+Enable `login` for offline or authenticated request encoding and server key
+exchange. The caller owns its P-384 signing key, UTC time, identity claims and
+validated client-data JSON. The helpers retain raw client data, sign
+line-terminated JSON and produce the opaque connection request used by
+protocolgen. Server tokens are bounded,
 verified with their DER key and used to derive the full-width ECDH session key.
 `finish_key_exchange` returns independent outgoing/incoming ciphers. Its
 self-contained signature establishes key possession; endpoint trust remains
-with the transport/application. Account authentication is still pending.
+with the transport/application. `encode_authenticated_request` formats an already
+acquired multiplayer credential without changing it. Acquire that credential for
+the same connection key through an account service such as
+[bedrock-services](https://github.com/cinnabar-mc/bedrock-services); account I/O
+stays outside this library.
 
 Enable the `raknet` feature for `raknet::RakNetConnection`, a Tokio driver over a
 pinned [bedrock-crustaceans/raknet](https://github.com/bedrock-crustaceans/raknet)

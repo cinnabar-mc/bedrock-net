@@ -26,10 +26,11 @@ import (
 const maxInputBytes = 1024 * 1024
 
 type request struct {
-	ConnectionRequest []byte `json:"request"`
-	ClientScalar      []byte `json:"client_scalar"`
-	ServerScalar      []byte `json:"server_scalar"`
-	Salt              []byte `json:"salt"`
+	AuthenticationType *uint8 `json:"authentication_type"`
+	ConnectionRequest  []byte `json:"request"`
+	ClientScalar       []byte `json:"client_scalar"`
+	ServerScalar       []byte `json:"server_scalar"`
+	Salt               []byte `json:"salt"`
 }
 
 type response struct {
@@ -92,8 +93,12 @@ func run() error {
 	if err := outerDecoder.Decode(&outer); err != nil {
 		return fmt.Errorf("decode token-only envelope: %w", err)
 	}
-	if outer.AuthenticationType != 2 {
-		return errors.New("expected offline AuthenticationType")
+	expectedType := uint8(2)
+	if input.AuthenticationType != nil {
+		expectedType = *input.AuthenticationType
+	}
+	if (expectedType != 0 && expectedType != 2) || outer.AuthenticationType != expectedType {
+		return errors.New("unexpected fixture AuthenticationType")
 	}
 	client, err := ecdh.P384().NewPrivateKey(input.ClientScalar)
 	if err != nil {
