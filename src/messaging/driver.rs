@@ -1,6 +1,8 @@
 //! Correlation between two existing bounded signaling owners.
 
 use super::Error;
+use super::incoming::Batch;
+use super::socket::{Outgoing, SocketStep, socket_step};
 use bedrock_services::signaling::{Event, RequestId, websocket::MessagingSocket};
 use futures::future::{pending, select_all};
 use nethernet_tokio::{CallerSignalingDriver, CallerSignalingError, SignalDelivery, SignalRequest};
@@ -8,7 +10,7 @@ use std::{
     collections::HashMap,
     future::{Future, poll_fn},
     task::Poll,
-    time::Instant,
+    time::{Duration, Instant},
 };
 use uuid::Uuid;
 
@@ -18,17 +20,31 @@ pub(super) struct Driver {
     peer: Uuid,
     pending: HashMap<RequestId, SignalRequest>,
     terminal: Option<Error>,
+    incoming: Batch,
+    admission_timeout: Duration,
+    outgoing: Option<Outgoing>,
+    attempt_deadline: Option<Instant>,
 }
 
 impl Driver {
     /// Moves both bounded owners into a single caller-polled service driver.
-    pub(super) fn new(socket: MessagingSocket, caller: CallerSignalingDriver, peer: Uuid) -> Self {
+    pub(super) fn new(
+        socket: MessagingSocket,
+        caller: CallerSignalingDriver,
+        peer: Uuid,
+        admission_timeout: Duration,
+        attempt_deadline: Instant,
+    ) -> Self {
         Self {
             socket,
             caller,
             peer,
             pending: HashMap::new(),
             terminal: None,
+            incoming: Batch::default(),
+            admission_timeout,
+            outgoing: None,
+            attempt_deadline: Some(attempt_deadline),
         }
     }
 
@@ -38,6 +54,18 @@ impl Driver {
         self.caller.close();
         self.socket.abort();
         self.pending.clear();
+        self.incoming.clear();
+        self.outgoing = None;
+    }
+
+    /// Ends only the setup deadline; already retained envelope deadlines never restart.
+    pub(super) fn established(&mut self) {
+        self.attempt_deadline = None;
+    }
+
+    /// Returns the first service failure without replacing it with local cleanup closure.
+    pub(super) fn failure(&self) -> Option<Error> {
+        self.terminal
     }
 
     /// Polls service I/O beside a transport operation without spawning another task.
@@ -50,6 +78,7 @@ impl Driver {
         loop {
             enum Step<T> {
                 Output(T),
+                OutputWithFailure(T, Error),
                 Progress,
                 Error(Error),
             }
@@ -61,7 +90,12 @@ impl Driver {
                     let service = advance.as_mut().poll(cx);
                     let application = operation.as_mut().poll(cx);
                     match service {
-                        Poll::Ready(Err(error)) => Poll::Ready(Step::Error(error)),
+                        Poll::Ready(Err(error)) => match application {
+                            Poll::Ready(value) => {
+                                Poll::Ready(Step::OutputWithFailure(value, error))
+                            }
+                            Poll::Pending => Poll::Ready(Step::Error(error)),
+                        },
                         Poll::Ready(Ok(())) => match application {
                             Poll::Ready(value) => Poll::Ready(Step::Output(value)),
                             Poll::Pending => Poll::Ready(Step::Progress),
@@ -73,6 +107,11 @@ impl Driver {
             };
             match step {
                 Step::Output(value) => return Ok(value),
+                Step::OutputWithFailure(value, error) => {
+                    self.terminal = Some(error);
+                    self.close();
+                    return Ok(value);
+                }
                 Step::Error(error) => {
                     self.terminal = Some(error);
                     self.close();
@@ -101,20 +140,67 @@ impl Driver {
             self.socket.cancel(id);
             self.pending.remove(&id);
         }
+        if self
+            .outgoing
+            .as_ref()
+            .is_some_and(|outgoing| outgoing.request.is_cancelled())
+        {
+            self.outgoing = None;
+        }
         enum Step {
             Outgoing(Option<SignalRequest>),
-            Incoming(Result<Event, bedrock_services::signaling::websocket::SocketError>),
+            Socket(Result<SocketStep, Error>),
+            Admitted(Result<(), CallerSignalingError>),
+            AdmissionTimeout,
             Cancelled,
         }
-        let step = tokio::select! {
-            request = self.caller.recv() => Step::Outgoing(request),
-            event = self.socket.drive() => Step::Incoming(event),
-            _ = async {
-                if self.pending.is_empty() { pending::<()>().await; }
-                let waits: Vec<_> = self.pending.values_mut()
-                    .map(|request| Box::pin(request.cancelled())).collect();
-                select_all(waits).await;
-            } => Step::Cancelled,
+        let step = {
+            let front = self.incoming.front_mut();
+            let outgoing_deadline = self
+                .outgoing
+                .as_ref()
+                .map(|outgoing| outgoing.request.deadline());
+            let has_outgoing = self.outgoing.is_some();
+            let (receipt, waiting, deadline) = match front {
+                Some(front) => {
+                    let receipt = front.waiting.is_none().then_some((
+                        &front.signal,
+                        front.receipt,
+                        front.deadline,
+                    ));
+                    (
+                        receipt,
+                        Some(&mut front.waiting),
+                        Some(
+                            outgoing_deadline
+                                .map_or(front.deadline, |deadline| deadline.min(front.deadline)),
+                        ),
+                    )
+                }
+                None => (None, None, outgoing_deadline),
+            };
+            tokio::select! {
+                biased;
+                event = socket_step(&mut self.socket, self.peer, receipt, self.outgoing.as_mut()) => Step::Socket(event),
+                admitted = async {
+                    match waiting {
+                        Some(Some(wait)) => wait.await,
+                        _ => pending().await,
+                    }
+                } => Step::Admitted(admitted),
+                request = async {
+                    if has_outgoing { pending().await } else { self.caller.recv().await }
+                } => Step::Outgoing(request),
+                _ = async {
+                    if self.pending.is_empty() { pending::<()>().await; }
+                    let waits: Vec<_> = self.pending.values_mut()
+                        .map(|request| Box::pin(request.cancelled())).collect();
+                    select_all(waits).await;
+                } => Step::Cancelled,
+                _ = async {
+                    match deadline { Some(deadline) => tokio::time::sleep_until(deadline.into()).await, None => pending().await }
+                } => Step::AdmissionTimeout,
+            }
         };
         match step {
             Step::Cancelled => Ok(()),
@@ -123,46 +209,49 @@ impl Driver {
                 if request.is_cancelled() {
                     return Ok(());
                 }
-                // CallerSignaling's permit remains held in this map until completion.
-                let wire = zeroize::Zeroizing::new(request.signal().to_string());
-                let result = self.socket.send_signal(
-                    self.peer,
-                    Uuid::new_v4(),
-                    &wire,
-                    request.requires_peer_receipt(),
-                    request.deadline(),
-                );
-                match result {
-                    Ok(id) => {
-                        self.pending.insert(id, request);
-                        Ok(())
-                    }
-                    Err(_) => {
-                        request.finish(Err(CallerSignalingError::Rejected));
-                        Err(Error::Admission)
-                    }
-                }
+                self.outgoing = Some(Outgoing::new(request));
+                Ok(())
             }
-            Step::Incoming(Err(error)) => Err(Error::Messaging(error)),
-            Step::Incoming(Ok(Event::Completed { request, result })) => {
+            Step::Socket(Err(error)) => Err(error),
+            Step::Socket(Ok(SocketStep::Acknowledged)) => {
+                self.incoming.acknowledged();
+                Ok(())
+            }
+            Step::Socket(Ok(SocketStep::Outgoing(id))) => {
+                if let Some(outgoing) = self.outgoing.take() {
+                    self.pending.insert(id, outgoing.request);
+                }
+                Ok(())
+            }
+            Step::Socket(Ok(SocketStep::OutgoingCancelled)) => {
+                self.outgoing = None;
+                Ok(())
+            }
+            Step::Admitted(Ok(())) => {
+                self.incoming.admitted();
+                Ok(())
+            }
+            Step::Admitted(Err(CallerSignalingError::TimedOut)) => Err(Error::TimedOut),
+            Step::Admitted(Err(CallerSignalingError::Closed)) => Err(Error::Closed),
+            Step::Admitted(Err(_)) => Err(Error::Signaling),
+            Step::AdmissionTimeout => Err(Error::TimedOut),
+            Step::Socket(Ok(SocketStep::Event(Err(error)))) => Err(Error::Messaging(error)),
+            Step::Socket(Ok(SocketStep::Event(Ok(Event::Completed { request, result })))) => {
                 if let Some(wait) = self.pending.remove(&request) {
                     complete(wait, result);
                 }
                 Ok(())
             }
-            Step::Incoming(Ok(Event::Signal(signal))) => {
-                if admit(&self.caller, &signal)? {
-                    // The JSON-RPC owner's receipt is sent only after the transport queue accepted it.
-                    let deadline = Instant::now()
-                        .checked_add(std::time::Duration::from_secs(5))
-                        .ok_or(Error::Configuration)?;
-                    self.socket
-                        .acknowledge(&signal, Uuid::new_v4(), deadline)
-                        .map_err(|_| Error::Admission)?;
-                }
-                Ok(())
+            Step::Socket(Ok(SocketStep::Event(Ok(Event::Signal(signal))))) => {
+                let deadline = Instant::now()
+                    .checked_add(self.admission_timeout)
+                    .ok_or(Error::Configuration)?;
+                let deadline = self
+                    .attempt_deadline
+                    .map_or(deadline, |attempt| attempt.min(deadline));
+                self.incoming.push(&self.caller, signal, deadline)
             }
-            Step::Incoming(Ok(_)) => Ok(()),
+            Step::Socket(Ok(SocketStep::Event(Ok(_)))) => Ok(()),
         }
     }
 }
@@ -179,18 +268,6 @@ fn complete(wait: SignalRequest, result: Result<(), bedrock_services::signaling:
             .map(|()| evidence)
             .map_err(|_| CallerSignalingError::Rejected),
     );
-}
-
-/// Uses the authenticated envelope sender; advertised NetherNet IDs never select a peer.
-fn admit(
-    caller: &CallerSignalingDriver,
-    signal: &bedrock_services::signaling::ReceivedSignal,
-) -> Result<bool, Error> {
-    match caller.try_deliver(&signal.sender().to_string(), signal.signal()) {
-        Ok(()) => Ok(true),
-        Err(CallerSignalingError::RouteMismatch | CallerSignalingError::InvalidSignal) => Ok(false),
-        Err(_) => Err(Error::Signaling),
-    }
 }
 
 impl Drop for Driver {

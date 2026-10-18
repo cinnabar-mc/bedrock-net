@@ -3,7 +3,7 @@ use bedrock_services::signaling::{Messaging, Outgoing, ReceivedSignal};
 use futures::{FutureExt, StreamExt};
 use nethernet_tokio::{CallerSignaling, CallerSignalingConfig, Signal};
 use serde_json::{Value, json};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 /// Encodes original synthetic service callbacks without a socket or account.
 fn incoming(state: &mut Messaging, peer: Uuid, method: &str, params: Value) -> Vec<Event> {
@@ -111,7 +111,20 @@ async fn sdk_completion_and_envelope_identity_reach_the_existing_caller_owner() 
         "untrusted-advertised-id",
         &Signal::candidate(9, "candidate-data".into(), peer.to_string()).to_string(),
     );
-    assert!(admit(&driver, &signal).unwrap());
+    let mut batch = Batch::default();
+    batch
+        .push(&driver, signal, Instant::now() + Duration::from_secs(5))
+        .unwrap();
+    batch
+        .front_mut()
+        .unwrap()
+        .waiting
+        .as_mut()
+        .unwrap()
+        .await
+        .unwrap();
+    batch.admitted();
+    assert!(batch.front_mut().unwrap().waiting.is_none());
     assert_eq!(signals.next().await.unwrap().network_id, peer.to_string());
     let wrong = received(
         &mut state,
@@ -119,14 +132,21 @@ async fn sdk_completion_and_envelope_identity_reach_the_existing_caller_owner() 
         &peer.to_string(),
         &Signal::candidate(9, "wrong-peer".into(), peer.to_string()).to_string(),
     );
-    assert!(!admit(&driver, &wrong).unwrap());
+    batch.acknowledged();
+    batch
+        .push(&driver, wrong, Instant::now() + Duration::from_secs(5))
+        .unwrap();
+    assert!(batch.front_mut().is_none());
     let stale = received(
         &mut state,
         peer,
         "7",
         &Signal::candidate(10, "old-connection".into(), peer.to_string()).to_string(),
     );
-    assert!(!admit(&driver, &stale).unwrap());
+    batch
+        .push(&driver, stale, Instant::now() + Duration::from_secs(5))
+        .unwrap();
+    assert!(batch.front_mut().is_none());
     assert!(signals.next().now_or_never().is_none());
     driver.close();
     assert!(signals.next().await.is_none());
@@ -169,5 +189,80 @@ async fn dropped_transport_wait_cancels_the_correlated_sdk_request_once() {
             .any(|event| matches!(event, Event::Completed { .. }))
     );
     drop(request);
+    driver.close();
+}
+
+/// One actual SDK callback batch crosses the caller's smaller queue without capacity failure or reordering.
+#[tokio::test]
+async fn a_complete_sdk_signal_batch_waits_for_transport_capacity_in_order() {
+    let peer = Uuid::from_u128(1);
+    let config = CallerSignalingConfig::default();
+    let capacity = config.capacity.get();
+    let (caller, mut driver) = CallerSignaling::new("7".into(), peer.to_string(), config).unwrap();
+    let mut signals = caller.signals().unwrap();
+    let mut offer = Box::pin(caller.signal(Signal::offer(9, "sdp".into(), peer.to_string())));
+    let request = tokio::select! {
+        request = driver.recv() => request.unwrap(),
+        _ = &mut offer => panic!("offer completed without service evidence"),
+    };
+    request.finish(Ok(SignalDelivery::PeerReceived));
+    offer.await.unwrap();
+    let envelopes: Vec<_> = (0..capacity * 2).map(|index| json!({
+        "From":peer,"Id":Uuid::new_v4(),"Message":json!({"jsonrpc":"2.0",
+            "method":"Signaling_WebRtc_v1_0","params":{"netherNetId":"untrusted-advertised-id",
+                "message":Signal::candidate(9,index.to_string(),peer.to_string()).to_string()}}).to_string()
+    })).collect();
+    let wire = serde_json::to_vec(&json!({"jsonrpc":"2.0","id":"batch",
+        "method":"Signaling_ReceiveMessage_v1_0","params":envelopes}))
+    .unwrap();
+    let mut sdk = Messaging::new(7);
+    let mut batch = Batch::default();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let mut retained = 0;
+    for event in sdk.receive(&wire, Instant::now()).unwrap() {
+        if let Event::Signal(signal) = event {
+            batch.push(&driver, signal, deadline).unwrap();
+            retained += 1;
+        }
+    }
+    assert_eq!(retained, capacity * 2);
+    let handoff = async {
+        while let Some(front) = batch.front_mut() {
+            front.waiting.as_mut().unwrap().await.unwrap();
+            batch.admitted();
+            assert!(batch.front_mut().unwrap().waiting.is_none());
+            // The socket step acknowledges only this already handed-off envelope.
+            batch.acknowledged();
+        }
+    };
+    let receive = async {
+        for index in 0..capacity * 2 {
+            assert_eq!(signals.next().await.unwrap().data, index.to_string());
+        }
+    };
+    futures::join!(handoff, receive);
+    assert!(batch.front_mut().is_none());
+
+    for index in 0..capacity {
+        driver
+            .try_deliver(
+                &peer.to_string(),
+                &Signal::candidate(9, index.to_string(), peer.to_string()).to_string(),
+            )
+            .unwrap();
+    }
+    let signal = received(
+        &mut sdk,
+        peer,
+        "7",
+        &Signal::candidate(9, "abandoned".into(), peer.to_string()).to_string(),
+    );
+    batch.push(&driver, signal, deadline).unwrap();
+    assert!(futures::poll!(batch.front_mut().unwrap().waiting.as_mut().unwrap()).is_pending());
+    batch.clear();
+    for index in 0..capacity {
+        assert_eq!(signals.next().await.unwrap().data, index.to_string());
+    }
+    assert!(signals.next().now_or_never().is_none());
     driver.close();
 }

@@ -11,7 +11,7 @@ bedrock-net = { path = "../..", features = ["raknet", "login"] }
 bedrock-protocol.workspace = true
 bedrock_auth = { git = "https://github.com/bedrock-crustaceans/bedrock-rs", rev = "ab7bb9521af078d4094c86da8b127d5f53cf0d31" }
 bytes = "1"
-nethernet-tokio = { git = "https://github.com/cinnabar-mc/nethernet", rev = "4a54074b2ad060260818d557e5ca47cf60172282" }
+nethernet-tokio = { git = "https://github.com/cinnabar-mc/nethernet", rev = "c604b6fd321ac7ba5c28b74674803df4556518a4" }
 base64 = "0.22"
 p384 = { version = "0.14", default-features = false, features = ["std", "ecdsa", "ecdh", "pkcs8"] }
 rand = "0.10"

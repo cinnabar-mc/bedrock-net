@@ -6,6 +6,8 @@
 //! Dropping it retires its service socket, pending signaling and transport handles.
 
 mod driver;
+mod incoming;
+mod socket;
 
 use bedrock_services::signaling::{
     Event, Failure,
@@ -40,6 +42,9 @@ pub enum Error {
     /// The SDK refused local request admission before bytes were written.
     #[error("messaging request admission failed")]
     Admission,
+    /// A retained service batch exceeds the SDK's count or wire-byte ceiling.
+    #[error("messaging retained input capacity exceeded")]
+    Capacity,
     /// A bounded signaling route could not admit a message.
     #[error("messaging transport signaling failed")]
     Signaling,
@@ -59,6 +64,13 @@ pub enum Error {
 pub struct MessagingConnection {
     client: NetherClient,
     driver: Driver,
+    receive: ReceiveState,
+}
+
+enum ReceiveState {
+    Open,
+    Draining(Option<Error>),
+    Done,
 }
 
 /// A selected account's already protected socket and one explicit peer route.
@@ -130,18 +142,34 @@ impl MessagingConnection {
             let ice = acquire_ice(&mut socket, &config, deadline).await?;
             config.client_ice = Some(ice);
             config.attempts = 1;
+            let caller_config = CallerSignalingConfig::default();
             let (caller, caller_driver) = CallerSignaling::new(
                 local_network_id.to_string(),
                 peer.to_string(),
-                CallerSignalingConfig::default(),
+                caller_config,
             )
             .map_err(|_| Error::Configuration)?;
-            let mut driver = Driver::new(socket, caller_driver, peer);
+            let mut driver = Driver::new(
+                socket,
+                caller_driver,
+                peer,
+                caller_config.send_timeout,
+                deadline,
+            );
             let client = driver
                 .run(NetherClient::connect_with(caller, peer.to_string(), config))
                 .await?
                 .map_err(|_| Error::Transport)?;
-            Ok(Self { client, driver })
+            if let Some(error) = driver.failure() {
+                let _ = client.close().await;
+                return Err(error);
+            }
+            driver.established();
+            Ok(Self {
+                client,
+                driver,
+                receive: ReceiveState::Open,
+            })
         });
         tokio::select! {
             biased;
@@ -158,12 +186,29 @@ impl MessagingConnection {
     /// Receives reliable data while service heartbeats, receipts and late ICE signals progress.
     /// Cancellation preserves the SDK socket's partial frame and the transport's queued data.
     pub async fn recv(&mut self) -> Result<Option<Bytes>, Error> {
-        let result = self
-            .driver
-            .run(self.client.recv())
-            .await
-            .and_then(|result| result.map_err(|_| Error::Transport));
+        if matches!(self.receive, ReceiveState::Done) {
+            return Ok(None);
+        }
+        if matches!(self.receive, ReceiveState::Draining(_)) {
+            return self.drain().await;
+        }
+        let result = self.driver.run(self.client.recv()).await;
+        let failure = match &result {
+            Err(error) => Some(*error),
+            Ok(_) => self.driver.failure(),
+        };
+        if let Some(failure) = failure {
+            self.receive = ReceiveState::Draining(Some(failure));
+            self.driver.close();
+            let _ = self.client.close().await;
+            if let Ok(Ok(Some(message))) = result {
+                return Ok(Some(message));
+            }
+            return self.drain().await;
+        }
+        let result = result?.map_err(|_| Error::Transport);
         if !matches!(&result, Ok(Some(_))) {
+            self.receive = ReceiveState::Done;
             self.driver.close();
             let _ = self.client.close().await;
         }
@@ -172,8 +217,25 @@ impl MessagingConnection {
 
     /// Closes the transport; dropping this owner also retires its messaging socket immediately.
     pub async fn close(&mut self) -> Result<(), Error> {
+        if matches!(self.receive, ReceiveState::Open) {
+            self.receive = ReceiveState::Draining(None);
+        }
         self.driver.close();
         self.client.close().await.map_err(|_| Error::Transport)
+    }
+
+    /// Drains the transport's existing bounded accepted FIFO before publishing one service failure or EOF.
+    async fn drain(&mut self) -> Result<Option<Bytes>, Error> {
+        match self.client.recv().await {
+            Ok(Some(message)) => Ok(Some(message)),
+            result => {
+                let state = std::mem::replace(&mut self.receive, ReceiveState::Done);
+                match state {
+                    ReceiveState::Draining(Some(error)) => Err(error),
+                    _ => result.map_err(|_| Error::Transport),
+                }
+            }
+        }
     }
 }
 

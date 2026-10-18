@@ -120,6 +120,13 @@ and acknowledged after bounded transport admission. Cancellation drops unsent
 waits without automatically retrying an ambiguous write. Closing or dropping the
 owner retires its service socket and signaling waits.
 
+One bounded service batch can wait for the smaller transport queue while socket
+control, heartbeats and completions continue. Envelopes retain their original
+deadline and a single receipt ID. Local SDK capacity waits retain an unadmitted
+send or receipt; admitted transport signals are never delivered twice. A service
+failure closes the transport and drains its existing accepted reliable FIFO
+before reporting one error. No additional application-data backlog is created.
+
 Account persistence, world/session admission, join nonces and retry policy remain
 application-owned. This edge does not acquire an MPSD session or host a world.
 The new adapter tests exercise the real pure SDK/caller boundaries with synthetic
