@@ -24,16 +24,16 @@ const LAN_CONNECTION_TYPE: u8 = 4;
 pub(super) enum Transport {
     RakNet {
         connection: RakNetConnection,
-        key: SigningKey,
+        key: Arc<SigningKey>,
     },
     NetherNetLan {
         connection: NetherClient,
-        key: SigningKey,
+        key: Arc<SigningKey>,
         nonce: String,
     },
     NetherNet {
         connection: NetherClient,
-        identity: Arc<SelfSignedIdentity>,
+        key: Arc<SigningKey>,
     },
 }
 
@@ -42,8 +42,9 @@ impl Transport {
     pub(super) async fn connect(kind: &str, address: SocketAddr) -> Result<Self, Box<dyn Error>> {
         match kind {
             "raknet" => {
-                let key =
-                    SigningKey::try_generate_from_rng(&mut SysRng).map_err(io::Error::other)?;
+                let key = Arc::new(
+                    SigningKey::try_generate_from_rng(&mut SysRng).map_err(io::Error::other)?,
+                );
                 let connection =
                     RakNetConnection::connect(address, RakNetOptions::default()).await?;
                 Ok(Self::RakNet { connection, key })
@@ -56,7 +57,11 @@ impl Transport {
                     .timeout(HANDSHAKE_TIMEOUT)
                     .build()?;
                 let signaling = HttpSignaling::with_client(rand::random::<u64>().to_string(), http);
-                let identity = Arc::new(SelfSignedIdentity::new(
+                let key = Arc::new(
+                    SigningKey::try_generate_from_rng(&mut SysRng).map_err(io::Error::other)?,
+                );
+                let identity = Arc::new(SelfSignedIdentity::from_key(
+                    Arc::clone(&key),
                     SystemTime::now(),
                     OFFLINE_IDENTITY_LIFETIME,
                 )?);
@@ -69,10 +74,7 @@ impl Transport {
                 let connection =
                     NetherClient::connect_with(signaling, format!("http://{address}"), config)
                         .await?;
-                Ok(Self::NetherNet {
-                    connection,
-                    identity,
-                })
+                Ok(Self::NetherNet { connection, key })
             }
             _ => Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
@@ -136,7 +138,8 @@ impl Transport {
             )
             .into());
         }
-        let key = SigningKey::try_generate_from_rng(&mut SysRng).map_err(io::Error::other)?;
+        let key =
+            Arc::new(SigningKey::try_generate_from_rng(&mut SysRng).map_err(io::Error::other)?);
         let config = ConnectionConfig {
             allow_unsigned_answers: true,
             attempts: 1,
@@ -158,11 +161,12 @@ impl Transport {
         }
     }
 
-    /// Borrows the one connection key, including the key bound to a NetherNet SDP offer.
-    pub(super) fn key(&self) -> &SigningKey {
+    /// Shares the original key allocation used by the transport, never private key material.
+    pub(super) fn key(&self) -> Arc<SigningKey> {
         match self {
-            Self::RakNet { key, .. } | Self::NetherNetLan { key, .. } => key,
-            Self::NetherNet { identity, .. } => identity.signing_key(),
+            Self::RakNet { key, .. }
+            | Self::NetherNetLan { key, .. }
+            | Self::NetherNet { key, .. } => Arc::clone(key),
         }
     }
 
@@ -210,11 +214,11 @@ impl Transport {
     }
 
     /// Completes normal close; dropping the owner also releases cancellation state.
-    pub(super) async fn close(&mut self) -> Result<(), Box<dyn Error>> {
+    pub(super) async fn close(self) -> Result<(), Box<dyn Error>> {
         match self {
-            Self::RakNet { connection, .. } => connection.close().await?,
+            Self::RakNet { mut connection, .. } => connection.close().await?,
             Self::NetherNet { connection, .. } | Self::NetherNetLan { connection, .. } => {
-                connection.close().await?
+                let _retired = connection.close().await?;
             }
         }
         Ok(())

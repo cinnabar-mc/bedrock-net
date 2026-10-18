@@ -30,7 +30,7 @@ impl LoginVerifier for Provider {
 }
 
 /// Drives actual generated client/server negotiation to the explicit application-approval boundary.
-fn pending(encrypted: bool) -> (ServerHandshake, ClientLogin, Provider, Instant, SystemTime) {
+fn pending(encrypted: bool) -> (Engine, ClientLogin, Provider, Instant, SystemTime) {
     let now = Instant::now();
     let utc = SystemTime::UNIX_EPOCH + Duration::from_secs(1000);
     let client_key = Arc::new(SigningKey::from_slice(&[4; 48]).unwrap());
@@ -40,7 +40,7 @@ fn pending(encrypted: bool) -> (ServerHandshake, ClientLogin, Provider, Instant,
         revoked: Cell::new(false),
         changed: Cell::new(false),
     };
-    let mut server = ServerHandshake::new(
+    let mut server = Engine::new(
         Arc::clone(&server_key),
         Some(provider.public),
         ServerHandshakeOptions {
@@ -62,7 +62,7 @@ fn pending(encrypted: bool) -> (ServerHandshake, ClientLogin, Provider, Instant,
     .unwrap();
     assert!(std::ptr::eq(client.key(), client_key.as_ref()));
     let (client, request) = client.start().unwrap();
-    let ServerHandshakeEvent::NetworkSettings {
+    let EngineEvent::NetworkSettings {
         packet,
         compression,
     } = server.receive(request.into(), &provider, now, utc).unwrap()
@@ -85,7 +85,7 @@ fn pending(encrypted: bool) -> (ServerHandshake, ClientLogin, Provider, Instant,
     login.client_network_version = wire::I32BE(0);
     assert!(matches!(
         server.receive(login.into(), &provider, now, utc).unwrap(),
-        ServerHandshakeEvent::LoginVerified
+        EngineEvent::LoginVerified
     ));
     assert_eq!(server.login().unwrap().xuid(), "123");
     assert_eq!(server.login().unwrap().nonce(), "original-nonce");
@@ -100,7 +100,7 @@ fn accepting_generated_handshake_preserves_cipher_order_and_pack_boundary() {
             .accept(&provider, encrypted.then_some(&[7; 16]), now, utc)
             .unwrap();
         if encrypted {
-            let ServerHandshakeEvent::KeyExchange { packet, ciphers } = event else {
+            let EngineEvent::KeyExchange { packet, ciphers } = event else {
                 panic!("missing plaintext exchange")
             };
             let (mut outgoing, mut incoming) = *ciphers;
@@ -122,7 +122,7 @@ fn accepting_generated_handshake_preserves_cipher_order_and_pack_boundary() {
                 server
                     .receive(response.into(), &provider, now, utc)
                     .unwrap(),
-                ServerHandshakeEvent::ReadyForPacks
+                EngineEvent::ReadyForPacks
             ));
             for body in [
                 b"pack preparation".as_slice(),
@@ -136,12 +136,12 @@ fn accepting_generated_handshake_preserves_cipher_order_and_pack_boundary() {
                 assert_eq!(incoming.decrypt(encrypted).unwrap(), body);
             }
         } else {
-            assert!(matches!(event, ServerHandshakeEvent::ReadyForPacks));
+            assert!(matches!(event, EngineEvent::ReadyForPacks));
         }
         let sibling = packets::ClientCacheStatus {
             is_cache_supported: true,
         };
-        let ServerHandshakeEvent::Unhandled(unhandled) = server
+        let EngineEvent::Unhandled(unhandled) = server
             .receive(sibling.clone().into(), &provider, now, utc)
             .unwrap()
         else {
@@ -206,7 +206,7 @@ fn accepting_cipher_and_compression_transitions_are_single_use() {
     let (mut server, _, provider, now, utc) = pending(true);
     assert!(matches!(
         server.accept(&provider, Some(&[1; 16]), now, utc).unwrap(),
-        ServerHandshakeEvent::KeyExchange { .. }
+        EngineEvent::KeyExchange { .. }
     ));
     assert!(matches!(
         server.accept(&provider, Some(&[1; 16]), now, utc),
@@ -253,7 +253,7 @@ fn accepting_cipher_and_compression_transitions_are_single_use() {
 #[test]
 fn accepting_rejects_version_and_transport_proof_before_application_admission() {
     let (pending, client, provider, now, utc) = pending(false);
-    let mut server = ServerHandshake::new(
+    let mut server = Engine::new(
         SigningKey::from_slice(&[5; 48]).unwrap(),
         Some(*SigningKey::from_slice(&[6; 48]).unwrap().verifying_key()),
         ServerHandshakeOptions {
@@ -300,7 +300,7 @@ fn accepting_rejects_version_and_transport_proof_before_application_admission() 
     assert!(server.login().is_none());
     drop(pending);
     for difference in [-1, 1] {
-        let mut server = ServerHandshake::new(
+        let mut server = Engine::new(
             SigningKey::from_slice(&[5; 48]).unwrap(),
             None,
             Default::default(),
@@ -308,7 +308,7 @@ fn accepting_rejects_version_and_transport_proof_before_application_admission() 
             now,
         )
         .unwrap();
-        let ServerHandshakeEvent::Refused(status) = server
+        let EngineEvent::Refused(status) = server
             .receive(
                 packets::RequestNetworkSettings {
                     client_network_version: wire::I32BE(PROTOCOL_VERSION + difference),
@@ -336,3 +336,5 @@ fn accepting_rejects_version_and_transport_proof_before_application_admission() 
         ));
     }
 }
+
+mod lifecycle_tests;

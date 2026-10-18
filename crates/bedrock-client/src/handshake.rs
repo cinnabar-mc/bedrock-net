@@ -16,7 +16,8 @@ use crate::packs::{PackError, PackOffer, PackTransferLimits};
 mod lifecycle;
 pub use lifecycle::{
     ClientHandshake, ClientKeyExchange, ClientLogin, ClientLoginReady, ClientPackOffer,
-    ClientPacks, ClientSettings, LoginEvent, LoginPreparationError, PacksEvent, SettingsEvent,
+    ClientPacks, ClientSettings, LoginEvent, LoginPreparationError, OfferEvent, PacksEvent,
+    SettingsEvent,
 };
 
 /// Transport and application capabilities fixed for one handshake.

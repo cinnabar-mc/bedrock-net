@@ -15,7 +15,7 @@ use std::{fmt, sync::Arc, time::SystemTime};
 /// Configuration for one original proof-key lifetime, before settings negotiation.
 #[must_use]
 pub struct ClientHandshake {
-    engine: Engine,
+    engine: Box<Engine>,
 }
 
 impl ClientHandshake {
@@ -25,7 +25,7 @@ impl ClientHandshake {
         options: HandshakeOptions,
     ) -> Result<Self, HandshakeError> {
         Ok(Self {
-            engine: Engine::new(key, options)?,
+            engine: Box::new(Engine::new(key, options)?),
         })
     }
 
@@ -65,7 +65,7 @@ impl ClientHandshake {
 /// ```
 #[must_use]
 pub struct ClientSettings {
-    engine: Engine,
+    engine: Box<Engine>,
 }
 
 /// Packet progress or the actual parsed settings handoff.
@@ -108,7 +108,7 @@ impl ClientSettings {
 /// Actual negotiated settings and the single proof retained for Login construction.
 #[must_use]
 pub struct ClientLoginReady {
-    engine: Engine,
+    engine: Box<Engine>,
 }
 
 impl ClientLoginReady {
@@ -182,7 +182,7 @@ impl std::error::Error for LoginPreparationError {
 /// Login was constructed with the original key; only post-Login controls are available.
 #[must_use]
 pub struct ClientLogin {
-    engine: Engine,
+    engine: Box<Engine>,
 }
 
 /// The sole verified key-exchange continuation, not a publicly constructible installed marker.
@@ -277,8 +277,28 @@ impl ClientLogin {
 /// Preload capability with the original late Login/key-exchange owner retained.
 #[must_use]
 pub struct ClientPackOffer {
-    engine: Engine,
+    engine: Box<Engine>,
     offer: PackOffer,
+}
+
+/// Late controls while preload/early-stop policy remains caller-owned.
+pub enum OfferEvent {
+    /// Send in order while retaining the original preload/control owner.
+    Send {
+        /// The same original admitted offer and proof key.
+        offer: ClientPackOffer,
+        /// Immediate original Login responses.
+        packets: Vec<packets::Packet>,
+    },
+    /// Install the verified exchange before continuing the same offer.
+    KeyExchange(ClientKeyExchange<ClientPackOffer>),
+    /// Preserve unrelated input in the caller's existing FIFO.
+    Unhandled {
+        /// The same preload/control owner.
+        offer: ClientPackOffer,
+        /// Unrelated or terminal input returned intact.
+        packet: Box<packets::Packet>,
+    },
 }
 
 impl ClientPackOffer {
@@ -290,6 +310,32 @@ impl ClientPackOffer {
     /// Installs caller-validated bytes before the transfer starts.
     pub fn supply_preloaded(&mut self, id: uuid::Uuid, archive: Vec<u8>) -> Result<(), PackError> {
         self.offer.supply_preloaded(id, archive)
+    }
+
+    /// Progresses actual late Login controls without starting the pack transfer.
+    /// Unrelated pack/startup input remains caller-owned until transfer starts.
+    pub fn receive_control(
+        mut self,
+        packet: packets::Packet,
+    ) -> Result<OfferEvent, HandshakeError> {
+        match self.engine.receive(packet)? {
+            EngineEvent::Send(packets) => Ok(OfferEvent::Send {
+                offer: self,
+                packets,
+            }),
+            EngineEvent::KeyExchange { ciphers, response } => {
+                Ok(OfferEvent::KeyExchange(ClientKeyExchange {
+                    continuation: self,
+                    ciphers,
+                    response,
+                }))
+            }
+            EngineEvent::Unhandled(packet) => Ok(OfferEvent::Unhandled {
+                offer: self,
+                packet,
+            }),
+            _ => Err(HandshakeError::InvalidState),
+        }
     }
 
     /// Consumes preload permission and keeps late controls on the same key owner.
@@ -308,7 +354,7 @@ impl ClientPackOffer {
 /// In-band pack transfer plus the original late Login/control owner.
 #[must_use]
 pub struct ClientPacks {
-    engine: Engine,
+    engine: Box<Engine>,
     transfer: PackNegotiation,
 }
 

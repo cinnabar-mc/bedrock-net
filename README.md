@@ -77,9 +77,12 @@ borrows them and revalidation rejects changes. Missing presentation stays absent
 Recognized outer Login and nonce fields accept Go's field casing; ambiguous
 aliases are rejected without rewriting signed metadata. Peer JSON diagnostics
 retain no input values. JWT claim and JWS header names keep their original policy.
-`bedrock_client::server::ServerHandshake` adds generated-packet accepting transitions
-with explicit compression/cipher boundaries and an original caller deadline.
-It pauses for application authorization and ends before pack preparation.
+`bedrock_client::server` exposes consumed settings, verified Login, explicit
+caller authorization, cipher acknowledgment and pack-preparation capabilities.
+Completed owners have private constructors and retain the original deadline/key;
+caller grants remain explicit application authority. Pending I/O continuations
+retain exact packets/streams for the real adapter's flush/install contract.
+The accepting API ends before pack preparation.
 Legacy/offline/guest accepting Login, server pack delivery and world bridging remain
 unimplemented. See the [packet lifecycle contract](crates/bedrock-client/README.md).
 

@@ -73,27 +73,49 @@ live-server qualification. The extracted Cinnabar implementation retains its
 [PolyForm Noncommercial license](../../LICENSE-CINNABAR); the spawn adaptation
 preserves [Jolyne's MIT notice](LICENSE-AXOLOTL).
 
-`server::ServerHandshake` provides the accepting network/Login half, ending before
-pack preparation. Supply one server key, an absolute caller deadline, any verified
-transport peer key and a required `bedrock_net::login::LoginVerifier`. Reuse the
-existing configured provider verification owner; it must authenticate signature,
-issuer, audience, dates, XUID and `cpk`. There is no default or permissive verifier.
-Modern authenticated Login is supported; legacy chains, offline and guest admission
-remain unimplemented.
+Accepting Login uses its own consumed capabilities:
 
-Send and flush `NetworkSettings` uncompressed before installing compression and
-calling `compression_installed`. `LoginVerified` pauses for application admission:
-check the authenticated player's XUID and original signed nonce against the current
-hosted session, world opening and host account binding. Then call `accept`. When
-batch encryption is enabled, supply fresh caller-owned sixteen-byte salt, send and
-flush the returned server token in plaintext, install both streams, then call
-`encryption_installed` before reading the encrypted acknowledgment. Transports that
-already encrypt the application stream can explicitly skip the extra batch cipher.
+| Owner | Available work | Next owner |
+| --- | --- | --- |
+| `ServerHandshake` | Observe the actual settings request | `PendingServerSettings` |
+| `PendingServerSettings` | Dispatch/flush plaintext and install compression | `ServerLogin` |
+| `ServerLogin` | Verify actual provider/client/transport proof | `VerifiedLogin` |
+| `VerifiedLogin` | Run explicit caller authorization | `ApprovedLogin<Grant>` |
+| `ApprovedLogin<Grant>` | Revalidate and create the sole exchange | Pending exchange or `ServerPacksReady<Grant>` |
+| `PendingServerKeyExchange<Grant>` | Flush plaintext; transfer exact cipher streams | `ServerAcknowledgment<Grant>` |
+| `ServerAcknowledgment<Grant>` | Observe actual encrypted acknowledgment | `ServerPacksReady<Grant>` |
+| `ServerPacksReady<Grant>` | Revalidate and consume the original Login/grant | `AcceptedLogin<Grant>` |
 
-At `ReadyForPacks`, `finish` transfers the verified Login after revalidation. Prepare
-the actual world connection and exact pack snapshot before sending LoginSuccess or
-ResourcePacksInfo; recheck the original application approval after every wait before
-the final handoff. Client metadata remains player-controlled despite its signature.
-This module does not publish a world, implement server pack chunk delivery or bridge
-a peer to a running world. The caller retains packet siblings, handles terminal
-packets immediately, bounds admission/cleanup and closes on failed transitions.
+Supply one server key, original absolute deadline, any caller-verified transport
+peer key and required `bedrock_net::login::LoginVerifier`. The verifier uses the
+existing configured provider authority: signature, issuer, audience, dates, XUID
+and `cpk`; there is no default or permissive verifier. Only actual verification
+creates `VerifiedLogin`. Modern authenticated Login is supported; accepting legacy
+chains, offline and guest authentication remain unimplemented.
+
+`VerifiedLogin::authorize` runs the caller's actual policy callback against the
+original authenticated player and signed nonce, retaining its concrete grant.
+That grant is caller-trusted authority, not library-proven hosted membership.
+For hosted worlds, use the real current directory/world/account/proof owner;
+service cards, invites, SDP and client metadata alone do not authorize a player.
+Recheck the grant after each wait before actual later dispatch/attachment.
+
+Borrow the pending settings packet for uncompressed send/flush, install its
+compression on the retained codec, then consume `flushed`. For encryption, provide
+fresh caller-owned sixteen-byte salt, send/flush the pending server token in
+plaintext, then consume its continuation and install both returned streams before
+reading the encrypted acknowledgment. An explicitly encrypted transport skips the
+additional cipher. Pending continuations have private constructors and retain the
+exact output/owner on transition failure. They assert the adapter's explicit I/O
+contract; a pure owner cannot prove a real socket flush. No unchecked Installed or
+Approved marker constructor exists.
+
+The original deadline never restarts. Provider identity/key/presentation are
+revalidated at exchange, acknowledgment and final handoff. `ServerTransitionError`
+returns the retained owner/cause for retirement; it never resets a failed owner.
+No LoginSuccess or pack advertisement is emitted by this accepting milestone.
+Prepare the actual world and exact pack snapshot before any later advertisement.
+`AcceptedLogin` proves consumed Login completion, not world attachment/spawn.
+The caller preserves decoded siblings, handles terminal packets immediately and
+closes on failed transitions. No accepting listener, pack delivery or running-world
+bridge is provided by this API.
