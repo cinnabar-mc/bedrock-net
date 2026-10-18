@@ -6,7 +6,6 @@ use std::sync::LazyLock;
 #[derive(Deserialize)]
 struct Catalog {
     protocol_version: i32,
-    #[cfg(test)]
     baseline_module_version: String,
     packs: Vec<BuiltinPack>,
 }
@@ -21,6 +20,12 @@ static CATALOG: LazyLock<Catalog> = LazyLock::new(|| {
     serde_json::from_str(include_str!("../../data/builtin-packs.json"))
         .expect("checked built-in pack catalog")
 });
+
+/// Go module version that defines this catalog's compatibility baseline.
+/// Consumers with a Go fallback can bind their dependency pin to this value.
+pub fn behavioral_baseline() -> &'static str {
+    &CATALOG.baseline_module_version
+}
 
 /// Recognizes exact built-in identities; downloaded overrides remain ordinary archives.
 pub(super) fn contains(id: uuid::Uuid, version: &str) -> bool {

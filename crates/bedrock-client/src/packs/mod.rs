@@ -3,6 +3,8 @@
 mod builtins;
 mod transfer;
 
+pub use builtins::behavioral_baseline;
+
 use bedrock_packs::ResourcePackHandoff;
 use bedrock_protocol::{packets, types::PackInfoData, types::ResourcePackClientResponseData};
 use std::{collections::BTreeMap, sync::Arc};
