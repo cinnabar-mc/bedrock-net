@@ -2,6 +2,7 @@ use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 
 use ::raknet::prelude::{
     RakClient, RakClientConfig, RakClientInput, RakClientOutput, RakSessionConfig, Sans,
+    is_mtu_probe_size_error,
 };
 use tokio::net::UdpSocket;
 use tokio::time::{Instant, sleep_until, timeout_at};
@@ -29,16 +30,26 @@ impl RakNetConnection {
                 "send capacity must fit the engine limit",
             ));
         }
+        let config = RakClientConfig {
+            max_mtu_size: options.max_mtu,
+            conn_attempt_timeout: options.connect_timeout,
+            ..RakClientConfig::default()
+        };
+        config.validate()?;
         let deadline = Instant::now()
             .checked_add(options.connect_timeout)
             .ok_or(RakNetError::InvalidOption("connect timeout is too large"))?;
-        timeout_at(deadline, Self::dial(peer, options))
+        timeout_at(deadline, Self::handshake(peer, options, config))
             .await
             .map_err(|_| RakNetError::ConnectTimeout)?
     }
 
     /// Drives the pinned engine until it transfers the connected protocol state.
-    async fn dial(peer: SocketAddr, options: RakNetOptions) -> Result<Self, RakNetError> {
+    async fn handshake(
+        peer: SocketAddr,
+        options: RakNetOptions,
+        config: RakClientConfig,
+    ) -> Result<Self, RakNetError> {
         let local_ip = if peer.is_ipv6() {
             IpAddr::V6(Ipv6Addr::UNSPECIFIED)
         } else {
@@ -47,16 +58,36 @@ impl RakNetConnection {
         let socket = UdpSocket::bind(SocketAddr::new(local_ip, 0)).await?;
         socket.connect(peer).await?;
         let local = socket.local_addr()?;
-        let mut client = RakClient::new(RakClientConfig {
-            conn_attempt_timeout: options.connect_timeout,
-            ..RakClientConfig::default()
-        });
+        let mut client = RakClient::new(config);
         client.handle(RakClientInput::Connect(peer, std::time::SystemTime::now()))?;
         let mut buffer = vec![0; UDP_BUFFER_BYTES];
         let mut next_tick = Instant::now();
         loop {
             while let Some(output) = client.poll() {
                 match output {
+                    RakClientOutput::MtuProbe { id, datagram, .. } => {
+                        let started = Instant::now();
+                        let result = socket.send(&datagram).await;
+                        let elapsed = started.elapsed();
+                        let too_large = result.as_ref().is_err_and(is_mtu_probe_size_error);
+                        client.handle(RakClientInput::MtuProbeResult {
+                            id,
+                            now: std::time::SystemTime::now(),
+                            elapsed,
+                            too_large,
+                        })?;
+                        match result {
+                            Ok(sent) if sent != datagram.len() => {
+                                return Err(std::io::Error::new(
+                                    std::io::ErrorKind::WriteZero,
+                                    "partial UDP MTU probe send",
+                                )
+                                .into());
+                            }
+                            Err(error) if !too_large => return Err(error.into()),
+                            _ => {}
+                        }
+                    }
                     RakClientOutput::SocketDatagram(datagram, _) => {
                         let sent = socket.send(&datagram).await?;
                         if sent != datagram.len() {

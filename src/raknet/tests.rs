@@ -16,8 +16,9 @@ async fn connected_pair() -> (RakNetConnection, UdpSocket, RakSession) {
     let address = peer.local_addr().unwrap();
     socket.connect(address).await.unwrap();
     peer.connect(local).await.unwrap();
-    let receiver = RakSession::new(RakSessionId(1), address, 1, 1492, |_| {});
-    let sender = RakSession::new(RakSessionId(2), local, 2, 1492, |_| {});
+    let now = std::time::SystemTime::now();
+    let receiver = RakSession::new(RakSessionId(1), address, 1, 1492, now, |_| {});
+    let sender = RakSession::new(RakSessionId(2), local, 2, 1492, now, |_| {});
     (
         RakNetConnection {
             socket: Some(socket),

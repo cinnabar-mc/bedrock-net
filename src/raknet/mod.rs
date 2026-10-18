@@ -30,6 +30,11 @@ const UDP_BUFFER_BYTES: usize = 1 << 16;
 /// Connection deadlines and application receive-queue bounds.
 #[derive(Clone, Debug)]
 pub struct RakNetOptions {
+    /// Largest permitted MTU, including IP and UDP headers.
+    ///
+    /// Cap this to the local interface MTU for tunnels or VPNs. Values outside
+    /// the protocol engine's supported bounds fail before opening a socket.
+    pub max_mtu: u16,
     /// Maximum duration of the complete transport handshake.
     pub connect_timeout: Duration,
     /// Maximum duration of graceful close before releasing the socket.
@@ -45,8 +50,10 @@ pub struct RakNetOptions {
 impl Default for RakNetOptions {
     fn default() -> Self {
         let session = RakSessionConfig::default();
+        let client = RakClientConfig::default();
         Self {
-            connect_timeout: RakClientConfig::default().conn_attempt_timeout,
+            max_mtu: client.max_mtu_size,
+            connect_timeout: client.conn_attempt_timeout,
             close_timeout: session.close_timeout,
             receive_buffer_bytes: usize::try_from(session.max_queued_bytes)
                 .expect("default RakNet byte bound is positive"),
