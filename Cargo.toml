@@ -8,6 +8,7 @@ rust-version = "1.93"
 
 [workspace.dependencies]
 bedrock-protocol = { package = "bedrock-protocol-1-26-51", git = "https://github.com/cinnabar-mc/protocolgen", rev = "4e9626abbb51b8fa842f49b4aea0fb4d3c01a682" }
+p384 = { version = "0.14", default-features = false, features = ["std", "ecdsa", "ecdh", "pkcs8"] }
 
 [package]
 name = "bedrock-net"
@@ -31,7 +32,7 @@ base64 = { version = "0.22", optional = true }
 bytes = "1"
 ctr = { version = "0.10", features = ["zeroize"] }
 flate2 = "1"
-p384 = { version = "0.14", default-features = false, features = ["std", "ecdsa", "ecdh", "pkcs8"], optional = true }
+p384 = { workspace = true, optional = true }
 raknet = { git = "https://github.com/cinnabar-mc/raknet", rev = "64c50dda0e1dc21409b0f42f746d66786697a86b", optional = true }
 serde = { version = "1", features = ["derive"], optional = true }
 serde_json = { version = "1", features = ["raw_value"], optional = true }
