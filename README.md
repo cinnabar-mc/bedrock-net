@@ -6,10 +6,11 @@ Native Rust networking foundations for Minecraft Bedrock, developed for
 The workspace separates byte-oriented transport/batch processing in `bedrock-net`,
 generated-packet client negotiation in [bedrock-client](crates/bedrock-client),
 and reusable pack text/archive ownership in [bedrock-packs](crates/bedrock-packs).
-The client crate now owns bounded resource-pack negotiation, in-band integrity,
-preload handoff and final stack ordering. Login, spawn and ongoing play ownership
-remain to be extracted from Cinnabar. The core and new client/pack crates create
-no runtime; optional I/O adapters are separate edges.
+The client crate owns generated-packet Login, verified key-exchange transitions,
+bounded resource-pack negotiation, in-band integrity, final stack ordering and
+spawn prerequisites. Applications retain account verification, I/O, deadlines,
+loading/presentation policy and ongoing play. The core and client/pack crates
+create no runtime; optional I/O adapters are separate edges.
 
 The initial implementation provides a synchronous, runtime-independent batch
 codec with raw DEFLATE and Snappy, explicit compression negotiation, bounded
