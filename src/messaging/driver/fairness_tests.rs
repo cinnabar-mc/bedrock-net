@@ -113,9 +113,8 @@ async fn readable_websocket_burst_cannot_starve_ready_transport_admission() {
                 batch.admitted();
                 let signal = signals
                     .next()
-                    .now_or_never()
-                    .flatten()
-                    .expect("actual admission must make one transport signal available");
+                    .await
+                    .expect("actual admitted transport signal must remain available");
                 assert_eq!(signal.data, delivered.to_string());
                 delivered += 1;
                 // Receipt completion is immediate in this admission-only fixture.
