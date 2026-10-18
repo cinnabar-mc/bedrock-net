@@ -22,9 +22,9 @@ jobs:
               for package in tomllib.load(lock)["package"]:
                   source = package.get("source", "")
                   if source.startswith("git+"):
-                      location, revision = source.removeprefix("git+").split("#", 1)
+                      location = source.removeprefix("git+").split("#", 1)[0]
                       repository = location.split("?", 1)[0]
-                      sources.setdefault(repository, set()).add(revision)
+                      sources.setdefault(repository, set()).add(source)
           duplicated = [repository for repository, revisions in sources.items() if len(revisions) != 1]
           if duplicated:
               raise SystemExit("Multiple Git identities: " + ", ".join(sorted(duplicated)))
