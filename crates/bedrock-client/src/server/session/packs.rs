@@ -225,8 +225,8 @@ impl Delivery {
                 packets::ResourcePackDataInfo::ID,
                 options.max_metadata_bytes,
             )?;
-            // All response fields have fixed widths except this canonical name and payload.
-            // Validate the largest original chunk once instead of copying every emitted payload.
+            // Reject an impossible canonical chunk before exposing the offer.
+            // Emission separately checks the actual echoed request name.
             let largest_chunk = usize::try_from(size.min(u64::from(options.chunk_size)))
                 .map_err(|_| invalid("accepting chunk size overflow"))?;
             let probe = match &archive.content.storage {
@@ -438,13 +438,19 @@ impl Delivery {
                 }
             }
         }
-        self.awaiting_flush = true;
-        Ok(Event::Chunk(packets::ResourcePackChunkData {
+        let packet = packets::ResourcePackChunkData {
             resource_name: name,
             chunk_id: wire::U32LE(position.chunk),
             byte_offset: wire::U64LE(position.offset),
             chunk_data: bytes,
-        }))
+        };
+        bounded_metadata(
+            &packet,
+            packets::ResourcePackChunkData::ID,
+            self.options.max_metadata_bytes,
+        )?;
+        self.awaiting_flush = true;
+        Ok(Event::Chunk(packet))
     }
 
     /// Advances only after actual flush; the next pack metadata can follow the completed last chunk.
