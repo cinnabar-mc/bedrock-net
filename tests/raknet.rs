@@ -289,6 +289,94 @@ async fn go_peer_exchanges_fragmented_messages_over_ipv6_and_mapped_ipv4() {
 }
 
 #[tokio::test]
+async fn go_peer_acceptance_preserves_early_packets_within_configured_handshake_limits() {
+    for (message_limit, terminal) in [(2, false), (1, false), (2, true)] {
+        let Some(mut peer) = Peer::start(0).await else {
+            return;
+        };
+        let peer_address = peer.address;
+        let socket = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
+        let relay_address = socket.local_addr().unwrap();
+        let exchange = async move {
+            let result = RakNetConnection::connect(
+                relay_address,
+                RakNetOptions {
+                    receive_buffer_bytes: 4,
+                    receive_buffer_messages: message_limit,
+                    ..RakNetOptions::default()
+                },
+            )
+            .await;
+            if message_limit == 1 {
+                assert!(matches!(
+                    result,
+                    Err(RakNetError::Handshake(
+                        ::raknet::prelude::RakClientError::HandshakeReceiveBufferExceeded
+                    ))
+                ));
+                peer.child.kill().await.unwrap();
+                return;
+            }
+            let mut connection = result.unwrap();
+            for index in [1, 2] {
+                assert_eq!(connection.recv().await.unwrap().as_ref(), [0xfe, index]);
+            }
+            if terminal {
+                assert!(matches!(
+                    connection.recv().await,
+                    Err(RakNetError::Disconnected(
+                        bedrock_net::raknet::DisconnectReason::Remote
+                    ))
+                ));
+                peer.child.kill().await.unwrap();
+                return;
+            }
+            let echoed = Bytes::from_static(&[0xfe, 3]);
+            connection.queue_send(echoed.clone()).unwrap();
+            assert_eq!(connection.recv().await.unwrap(), echoed);
+            connection.close().await.unwrap();
+            peer.finish().await;
+        };
+        tokio::pin!(exchange);
+        let mut client = None;
+        let mut injected = false;
+        let mut buffer = [0; 65536];
+        timeout(Duration::from_secs(15), async {
+            loop {
+                tokio::select! {
+                    _ = &mut exchange => break,
+                    received = socket.recv_from(&mut buffer) => {
+                        let (length, from) = received.unwrap();
+                        let to = if from == peer_address { client.unwrap() } else { client = Some(from); peer_address };
+                        if from == peer_address && !injected && length > 14 && buffer[0] & 0xe0 == 0x80 {
+                            // The pinned Go peer's first data frame is its unsplit reliable ordered acceptance.
+                            assert_eq!(buffer[4], (::raknet::prelude::RakReliability::ReliableOrdered as u8) << 5);
+                            assert_eq!(buffer[14], 0x10, "fixture must inject around ConnectionRequestAccepted");
+                            // Two complete unreliable frames leave the Go peer's reliable indices unchanged.
+                            let mut bytes = Vec::from(&buffer[..4]);
+                            bytes.extend_from_slice(&[0, 0, 16, 0xfe, 1]);
+                            bytes.extend_from_slice(&buffer[4..length]);
+                            bytes.extend_from_slice(&[0, 0, 16, 0xfe, 2]);
+                            if terminal {
+                                bytes.extend_from_slice(&[0, 0, 8, 0x15]);
+                            }
+                            socket.send_to(&bytes, to).await.unwrap();
+                            injected = true;
+                        } else {
+                            socket.send_to(&buffer[..length], to).await.unwrap();
+                        }
+                    }
+                }
+            }
+        }).await.expect("handshake relay and owned peer finish");
+        assert!(
+            injected,
+            "actual Go acceptance exercised early packet handoff"
+        );
+    }
+}
+
+#[tokio::test]
 async fn go_peer_messages_are_drained_before_its_disconnect() {
     let Some(peer) = Peer::start(2).await else {
         return;

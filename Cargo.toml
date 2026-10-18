@@ -26,7 +26,7 @@ aes = { version = "0.9", features = ["zeroize"] }
 bytes = "1"
 ctr = { version = "0.10", features = ["zeroize"] }
 flate2 = "1"
-raknet = { git = "https://github.com/cinnabar-mc/raknet", rev = "5c3fd78b64672c854baddcbf31155c57e1d80cb4", optional = true }
+raknet = { git = "https://github.com/cinnabar-mc/raknet", rev = "c6205188d795b64f5771fb9bd79739d135004b35", optional = true }
 sha2 = "0.11"
 snap = "1"
 subtle = "2"
