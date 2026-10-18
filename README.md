@@ -32,8 +32,9 @@ assert_eq!(received, [packet]);
 # Ok::<(), bedrock_net::BatchError>(())
 ```
 
-After NetworkSettings, call `enable_compression` before processing subsequent
-batches. Outgoing batches use the selected algorithm and threshold; incoming
+After NetworkSettings, consume the plain codec with `codec.negotiate(settings)`
+before processing subsequent batches. This returns `BatchCodec<Negotiated>`;
+there is no second negotiation/reset method on that owner. Outgoing batches use the selected algorithm and threshold; incoming
 batches use their declared algorithm. Unknown or invalid compressed payloads
 produce `DecodeOutcome::Dropped`. The caller must count/log these outcomes and
 continue reading. Framing, missing compression headers and size-limit violations

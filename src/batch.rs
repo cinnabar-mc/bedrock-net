@@ -63,35 +63,76 @@ pub enum DecodeOutcome {
     Dropped(DropReason),
 }
 
+mod phase_private {
+    pub trait Sealed {}
+}
+
+/// Byte framing before the one-time compression transition.
+#[derive(Debug)]
+pub struct Plain(());
+
+/// Byte framing after actual negotiated settings have been installed once.
+#[derive(Debug)]
+pub struct Negotiated(CompressionSettings);
+
+/// Sealed codec phases, allowing generic framing without a public phase cast.
+pub trait BatchPhase: phase_private::Sealed {
+    /// Reads installed settings; it grants no mutation or authentication authority.
+    fn compression(&self) -> Option<CompressionSettings>;
+}
+impl phase_private::Sealed for Plain {}
+impl phase_private::Sealed for Negotiated {}
+impl BatchPhase for Plain {
+    fn compression(&self) -> Option<CompressionSettings> {
+        None
+    }
+}
+impl BatchPhase for Negotiated {
+    fn compression(&self) -> Option<CompressionSettings> {
+        Some(self.0)
+    }
+}
+
 /// Runtime-independent batch framing and negotiated compression.
 ///
 /// The caller owns packet serialization, network I/O, logging and scheduling.
 /// Before compression is enabled, no compression marker is consumed or emitted.
 #[derive(Debug)]
-pub struct BatchCodec {
+pub struct BatchCodec<S = Plain> {
     header: BatchHeader,
     limits: BatchLimits,
-    compression: Option<CompressionSettings>,
+    phase: S,
 }
 
-impl BatchCodec {
+impl BatchCodec<Plain> {
     /// Creates a codec for a new connection before NetworkSettings.
     pub const fn new(header: BatchHeader, limits: BatchLimits) -> Self {
         Self {
             header,
             limits,
-            compression: None,
+            phase: Plain(()),
         }
     }
 
-    /// Enables compression headers at the negotiated NetworkSettings boundary.
+    /// Consumes plaintext framing into its single negotiated compression configuration.
+    /// Incoming batches still choose their own declared algorithm.
     ///
-    /// These settings control outgoing batches. Incoming batches select their
-    /// own declared algorithm, including algorithms different from this choice.
-    pub fn enable_compression(&mut self, settings: CompressionSettings) {
-        self.compression = Some(settings);
+    /// ```compile_fail
+    /// fn configure_twice(codec: bedrock_net::BatchCodec, settings: bedrock_net::CompressionSettings) {
+    ///     let configured = codec.negotiate(settings);
+    ///     let _again = configured.negotiate(settings);
+    /// }
+    /// ```
+    pub const fn negotiate(self, settings: CompressionSettings) -> BatchCodec<Negotiated> {
+        BatchCodec {
+            header: self.header,
+            limits: self.limits,
+            phase: Negotiated(settings),
+        }
     }
+}
 
+impl<S: BatchPhase> BatchCodec<S> {
     /// Encodes packets as consecutive batches, splitting by count and decoded size.
     ///
     /// Packet slices include their packet headers and exclude their length prefixes.
@@ -164,7 +205,7 @@ impl BatchCodec {
                 None => return Err(BatchError::MissingBatchHeader),
             }
         }
-        if self.compression.is_some() {
+        if self.phase.compression().is_some() {
             let id = message
                 .first()
                 .copied()
@@ -193,7 +234,7 @@ impl BatchCodec {
         if self.header == BatchHeader::RakNet {
             message.push(RAKNET_BATCH_HEADER);
         }
-        if let Some(settings) = self.compression {
+        if let Some(settings) = self.phase.compression() {
             let algorithm = if body.len() < usize::from(settings.threshold) {
                 CompressionAlgorithm::None
             } else {

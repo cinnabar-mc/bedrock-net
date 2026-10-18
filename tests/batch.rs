@@ -2,8 +2,8 @@
 
 use bedrock_net::encryption::{BatchDecryptor, BatchEncryptor, EncryptionError};
 use bedrock_net::{
-    BatchCodec, BatchError, BatchHeader, BatchLimits, CompressionAlgorithm, CompressionSettings,
-    DecodeOutcome, DropReason,
+    BatchCodec, BatchError, BatchHeader, BatchLimits, BatchPhase, CompressionAlgorithm,
+    CompressionSettings, DecodeOutcome, DropReason, Negotiated,
 };
 use bytes::Bytes;
 
@@ -11,17 +11,15 @@ use bytes::Bytes;
 mod go;
 
 /// Builds a codec after compression negotiation, using the supplied safety policy.
-fn negotiated(algorithm: CompressionAlgorithm, limits: BatchLimits) -> BatchCodec {
-    let mut codec = BatchCodec::new(BatchHeader::RakNet, limits);
-    codec.enable_compression(CompressionSettings {
+fn negotiated(algorithm: CompressionAlgorithm, limits: BatchLimits) -> BatchCodec<Negotiated> {
+    BatchCodec::new(BatchHeader::RakNet, limits).negotiate(CompressionSettings {
         algorithm,
         threshold: 0,
-    });
-    codec
+    })
 }
 
 /// Extracts the packets, failing the test if a batch unexpectedly drops.
-fn packets(codec: &BatchCodec, wire: Bytes) -> Vec<Bytes> {
+fn packets<S: BatchPhase>(codec: &BatchCodec<S>, wire: Bytes) -> Vec<Bytes> {
     match codec.decode(wire).unwrap() {
         DecodeOutcome::Packets { packets, .. } => packets,
         DecodeOutcome::Dropped(reason) => panic!("unexpected dropped batch: {reason}"),
@@ -97,13 +95,13 @@ fn incoming_empty_entries_preserve_packets_and_do_not_consume_packet_capacity() 
 fn negotiation_changes_headers_and_compresses_at_threshold_equality() {
     let input = [Bytes::from_static(&[2, 0, 0, 0, 0])];
     for header in [BatchHeader::RakNet, BatchHeader::NetherNet] {
-        let mut codec = BatchCodec::new(header, BatchLimits::default());
+        let codec = BatchCodec::new(header, BatchLimits::default());
         let marker = usize::from(header == BatchHeader::RakNet);
         let initial = codec.encode(&input).unwrap().pop().unwrap();
         assert_eq!(&initial[marker..], &[5, 2, 0, 0, 0, 0]);
         assert_eq!(packets(&codec, initial), input);
 
-        codec.enable_compression(CompressionSettings {
+        let codec = codec.negotiate(CompressionSettings {
             algorithm: CompressionAlgorithm::Deflate,
             threshold: 7,
         });
@@ -111,10 +109,11 @@ fn negotiation_changes_headers_and_compresses_at_threshold_equality() {
         assert_eq!(below[marker], 0xff);
         assert_eq!(packets(&codec, below), input);
 
-        codec.enable_compression(CompressionSettings {
-            algorithm: CompressionAlgorithm::Deflate,
-            threshold: 6,
-        });
+        let codec =
+            BatchCodec::new(header, BatchLimits::default()).negotiate(CompressionSettings {
+                algorithm: CompressionAlgorithm::Deflate,
+                threshold: 6,
+            });
         let at = codec.encode(&input).unwrap().pop().unwrap();
         assert_eq!(at[marker], CompressionAlgorithm::Deflate.network_id() as u8);
         assert_eq!(packets(&codec, at), input);
@@ -300,11 +299,12 @@ fn directional_encryption_matches_consecutive_go_batches_byte_for_byte() {
 fn discarded_compression_still_advances_the_encrypted_stream() {
     let mut encryptor = BatchEncryptor::new([7; 32]);
     let mut decryptor = BatchDecryptor::new([7; 32]);
-    let mut codec = BatchCodec::new(BatchHeader::NetherNet, BatchLimits::default());
-    codec.enable_compression(CompressionSettings {
-        algorithm: CompressionAlgorithm::Deflate,
-        threshold: 0,
-    });
+    let codec = BatchCodec::new(BatchHeader::NetherNet, BatchLimits::default()).negotiate(
+        CompressionSettings {
+            algorithm: CompressionAlgorithm::Deflate,
+            threshold: 0,
+        },
+    );
     let bad = encryptor.encrypt(Bytes::from_static(&[2])).unwrap();
     let body = decryptor.decrypt(bad).unwrap();
     assert!(matches!(
