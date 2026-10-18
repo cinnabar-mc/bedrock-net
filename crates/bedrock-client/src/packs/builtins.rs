@@ -28,7 +28,7 @@ pub fn behavioral_baseline() -> &'static str {
 }
 
 /// Recognizes exact built-in identities; downloaded overrides remain ordinary archives.
-pub(super) fn contains(id: uuid::Uuid, version: &str) -> bool {
+pub(crate) fn contains(id: uuid::Uuid, version: &str) -> bool {
     CATALOG.protocol_version == bedrock_protocol::PROTOCOL_VERSION
         && CATALOG
             .packs

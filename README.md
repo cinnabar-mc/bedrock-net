@@ -82,9 +82,11 @@ caller authorization, cipher acknowledgment and pack-preparation capabilities.
 Completed owners have private constructors and retain the original deadline/key;
 caller grants remain explicit application authority. Pending I/O continuations
 retain exact packets/streams for the real adapter's flush/install contract.
-The accepting API ends before pack preparation.
-Legacy/offline/guest accepting Login, server pack delivery and world bridging remain
-unimplemented. See the [packet lifecycle contract](crates/bedrock-client/README.md).
+Accepting pack delivery continues through owned read/write continuations and
+actual caller-supplied world definitions; it supports original memory or external
+archive sources without loading disk packs wholly into RAM.
+Legacy/offline/guest accepting Login, an accepting listener and running-world
+bridging remain unimplemented. See the [packet lifecycle contract](crates/bedrock-client/README.md).
 
 Enable the `raknet` feature for `raknet::RakNetConnection`, a Tokio driver over a
 pinned [bedrock-crustaceans/raknet](https://github.com/bedrock-crustaceans/raknet)

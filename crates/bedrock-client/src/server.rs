@@ -1,4 +1,4 @@
-//! Caller-driven accepting network handshake, ending before application pack preparation.
+//! Caller-driven accepting Login; owned pack/world startup continues in [`session`].
 
 use bedrock_net::{
     CompressionAlgorithm, CompressionSettings,
@@ -13,6 +13,9 @@ use std::{
 };
 
 mod lifecycle;
+
+/// Owned accepting pack delivery and selected-world startup after the actual Login handoff.
+pub mod session;
 pub use lifecycle::{
     AcceptedLogin, ApprovedLogin, AuthorizationFailure, PendingServerKeyExchange,
     PendingServerSettings, ServerAcknowledgment, ServerAcknowledgmentEvent, ServerApprovalEvent,

@@ -338,3 +338,5 @@ fn accepting_rejects_version_and_transport_proof_before_application_admission() 
 }
 
 mod lifecycle_tests;
+
+mod session_tests;

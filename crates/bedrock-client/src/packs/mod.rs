@@ -1,6 +1,6 @@
 //! Resource-pack negotiation without network, filesystem or runtime ownership.
 
-mod builtins;
+pub(crate) mod builtins;
 mod transfer;
 
 pub use builtins::behavioral_baseline;
@@ -46,7 +46,7 @@ impl Default for PackTransferLimits {
 
 impl PackTransferLimits {
     /// Rejects impossible sizes and request windows before retaining server data.
-    fn validate(self) -> Result<(), PackError> {
+    pub(crate) fn validate(self) -> Result<(), PackError> {
         if self.max_packs == 0
             || self.max_packs > u16::MAX as usize
             || self.max_archive_bytes == 0

@@ -52,9 +52,13 @@ jobs:
       - working-directory: tools/raknet-peer
         run: go build -o ../../target/raknet-peer.exe .
       - working-directory: tools/go-oracle
-        run: go build -o ../../target/login-check.exe ./cmd/login-check
+        run: |
+          go build -o ../../target/login-check.exe ./cmd/login-check
+          go build -o ../../target/pack-delivery-check.exe ./cmd/pack-delivery-check
       - run: cargo fmt --all --check
       - run: cargo test --locked --workspace
+        env:
+          BEDROCK_NET_PACK_DELIVERY_ORACLE: ${{ github.workspace }}/target/pack-delivery-check.exe
       - run: cargo test --locked -p bedrock-net --all-features
         env:
           BEDROCK_NET_RAKNET_PEER: ${{ github.workspace }}/target/raknet-peer.exe
