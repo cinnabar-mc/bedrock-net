@@ -56,9 +56,12 @@ background tasks. Queue complete messages with `queue_send`, then keep `recv`
 polled in the session network loop to service acknowledgements and timers. `flush`
 sends immediately available datagrams. Cancelling these waits retains pending
 state; dropping a connection attempt or connection releases its socket. Transport messages
-retain their batch marker. Receive queue capacities and handshake/close deadlines
-are explicit options. `max_mtu` caps probes and connected datagrams for local
-tunnels or VPNs; invalid caps fail before socket creation. Probe size failures
+retain their batch marker. Each attempt generates a fresh client identity from OS entropy
+before sending any datagrams; entropy failure returns an I/O error and releases the socket.
+The identity remains stable throughout retries and protected handshakes. Receive queue
+capacities and handshake/close deadlines are explicit options. `max_mtu` caps probes
+and connected datagrams for local tunnels or VPNs; invalid caps fail before socket
+creation. Probe size failures
 advance discovery, and Request 1 discovery continues independently while Request 2
 retries. Initial MTU negotiation tolerates up to ten recognized transient UDP
 read errors across both offline phases; other errors remain fatal and the overall
