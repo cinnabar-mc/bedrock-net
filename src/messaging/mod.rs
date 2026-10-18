@@ -185,9 +185,24 @@ impl MessagingConnection {
         }
     }
 
-    /// Clones the existing transport handle; receive calls must continue driving this owner.
+    /// Clones the existing transport handle; recv or maintain must continue driving this owner.
     pub fn session(&self) -> Session {
         self.client.session()
+    }
+
+    /// Drives service/control/signaling while application receive capacity is unavailable.
+    /// This consumes no application data and starts no task. A service terminal is
+    /// staged for recv to drain the existing accepted reliable FIFO before reporting it.
+    /// It completes once after staging a service failure; later maintenance calls
+    /// remain pending while recv owns terminal reporting.
+    /// Canceling it preserves the socket and all retained signaling admission waits.
+    pub async fn maintain(&mut self) {
+        if !matches!(self.receive, ReceiveState::Open) {
+            return std::future::pending().await;
+        }
+        if let Err(error) = self.driver.run(std::future::pending::<()>()).await {
+            self.fail_service(error).await;
+        }
     }
 
     /// Receives reliable data while service heartbeats, receipts and late ICE signals progress.
@@ -205,9 +220,7 @@ impl MessagingConnection {
             Ok(_) => self.driver.failure(),
         };
         if let Some(failure) = failure {
-            self.receive = ReceiveState::Draining(Some(failure));
-            self.driver.close();
-            let _ = self.client.close().await;
+            self.fail_service(failure).await;
             if let Ok(Ok(Some(message))) = result {
                 return Ok(Some(message));
             }
@@ -229,6 +242,13 @@ impl MessagingConnection {
         }
         self.driver.close();
         self.client.close().await.map_err(|_| Error::Transport)
+    }
+
+    /// Retires service and transport admission while retaining the already accepted receive prefix.
+    async fn fail_service(&mut self, failure: Error) {
+        self.receive = ReceiveState::Draining(Some(failure));
+        self.driver.close();
+        let _ = self.client.close().await;
     }
 
     /// Drains the transport's existing bounded accepted FIFO before publishing one service failure or EOF.

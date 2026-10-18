@@ -113,8 +113,11 @@ The edge hands the SDK's original TURN expiry to NetherNet's bounded UDP resolve
 and ICE owner. It performs one connection attempt and creates no runtime or task.
 
 Keep polling `MessagingConnection::recv` during connection use, including while
-waiting for writes through its cloned `session()` handle. This drives heartbeats,
-receipts and late ICE candidates. SDK request IDs correlate existing caller
+waiting for writes through its cloned `session()` handle. When application input
+is full, poll `maintain` instead: it drives service/control/signaling without
+consuming game data. Both paths drive heartbeats, receipts and late ICE candidates.
+Maintenance stages a service terminal for the existing receive FIFO to drain
+before one error/EOF; it creates no additional payload backlog or task. SDK request IDs correlate existing caller
 requests; offers require service acceptance and the intended peer's receipt.
 Incoming signals are routed by authenticated envelope UUID and connection ID,
 and acknowledged after bounded transport admission. Cancellation drops unsent
