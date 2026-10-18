@@ -1,6 +1,6 @@
 use thiserror::Error;
 
-/// A batch failure that the connection owner must handle as fatal.
+/// A batch encoding failure or fatal decoding failure.
 #[derive(Debug, Error)]
 #[non_exhaustive]
 pub enum BatchError {
@@ -47,7 +47,7 @@ pub enum BatchError {
         /// Bytes remaining after the prefix.
         remaining: usize,
     },
-    /// A packet entry contained no packet bytes.
+    /// An outgoing packet contained no packet bytes.
     #[error("empty packet")]
     EmptyPacket,
     /// An outgoing packet length could not fit a u32 prefix.

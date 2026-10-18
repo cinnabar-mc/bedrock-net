@@ -16,7 +16,7 @@ use bytes::Bytes;
 let codec = BatchCodec::new(BatchHeader::RakNet, BatchLimits::default());
 let packet = Bytes::from_static(&[2, 0, 0, 0, 0]);
 let batches = codec.encode(&[packet.clone()])?;
-let DecodeOutcome::Packets(received) = codec.decode(batches[0].clone())? else {
+let DecodeOutcome::Packets { packets: received, .. } = codec.decode(batches[0].clone())? else {
     unreachable!("compression is not enabled");
 };
 assert_eq!(received, [packet]);
@@ -29,6 +29,9 @@ batches use their declared algorithm. Unknown or invalid compressed payloads
 produce `DecodeOutcome::Dropped`. The caller must count/log these outcomes and
 continue reading. Framing, missing compression headers and size-limit violations
 return errors. A malformed batch never exposes a partial packet list.
+Empty server entries are skipped without consuming packet capacity. Successful
+decode outcomes include `skipped_empty_packets` for caller diagnostics; wire and
+decoded byte ceilings still apply. Empty outgoing packets remain errors.
 
 The default limits are library safety policy. Cinnabar may configure larger
 batches for resource-pack transfers. Encoders split at both packet-count and

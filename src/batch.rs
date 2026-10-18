@@ -23,7 +23,7 @@ pub struct BatchLimits {
     pub max_encoded_bytes: usize,
     /// Maximum total length-prefixed packet bytes after decompression.
     pub max_decoded_bytes: usize,
-    /// Maximum packet entries in one decoded or encoded batch.
+    /// Maximum nonempty packets in one decoded or encoded batch.
     pub max_packets: usize,
 }
 
@@ -41,8 +41,14 @@ impl Default for BatchLimits {
 /// One fully validated batch, or a compression failure the caller must count and skip.
 #[derive(Debug)]
 pub enum DecodeOutcome {
-    /// Encoded packets in wire order, with headers and undecoded bodies.
-    Packets(Vec<Bytes>),
+    /// Encoded packets in wire order and diagnostics for skipped empty entries.
+    #[non_exhaustive]
+    Packets {
+        /// Packet headers and undecoded bodies, sharing the batch allocation.
+        packets: Vec<Bytes>,
+        /// Empty incoming entries skipped; the caller should count/log these.
+        skipped_empty_packets: usize,
+    },
     /// A discarded batch; later batches on the same connection remain readable.
     Dropped(DropReason),
 }
@@ -133,6 +139,7 @@ impl BatchCodec {
     ///
     /// Successful packets share the batch allocation. Validation completes before
     /// returning any packets, so a framing error cannot dispatch a partial batch.
+    /// Empty server entries are skipped and counted, retaining the byte bounds.
     ///
     /// # Errors
     /// Returns an error for malformed envelopes or packet lengths, missing
@@ -163,7 +170,11 @@ impl BatchCodec {
                 maximum: self.limits.max_decoded_bytes,
             });
         }
-        split_packets(message, self.limits.max_packets).map(DecodeOutcome::Packets)
+        let (packets, skipped_empty_packets) = split_packets(message, self.limits.max_packets)?;
+        Ok(DecodeOutcome::Packets {
+            packets,
+            skipped_empty_packets,
+        })
     }
 
     /// Wraps an already bounded length-prefixed body in its transport/compression envelope.
@@ -204,13 +215,11 @@ impl BatchCodec {
 }
 
 /// Validates packet boundaries in full, keeping each packet as a slice of the input.
-fn split_packets(body: Bytes, maximum: usize) -> Result<Vec<Bytes>, BatchError> {
+fn split_packets(body: Bytes, maximum: usize) -> Result<(Vec<Bytes>, usize), BatchError> {
     let mut packets = Vec::new();
+    let mut skipped_empty_packets = 0;
     let mut offset = 0;
     while offset < body.len() {
-        if packets.len() == maximum {
-            return Err(BatchError::TooManyPackets { maximum });
-        }
         let (length, prefix) = read_length(&body[offset..], offset)?;
         offset += prefix;
         let length = usize::try_from(length).map_err(|_| BatchError::TruncatedPacket {
@@ -218,7 +227,11 @@ fn split_packets(body: Bytes, maximum: usize) -> Result<Vec<Bytes>, BatchError> 
             remaining: body.len() - offset,
         })?;
         if length == 0 {
-            return Err(BatchError::EmptyPacket);
+            skipped_empty_packets += 1;
+            continue;
+        }
+        if packets.len() == maximum {
+            return Err(BatchError::TooManyPackets { maximum });
         }
         if length > body.len() - offset {
             return Err(BatchError::TruncatedPacket {
@@ -229,7 +242,7 @@ fn split_packets(body: Bytes, maximum: usize) -> Result<Vec<Bytes>, BatchError> 
         packets.push(body.slice(offset..offset + length));
         offset += length;
     }
-    Ok(packets)
+    Ok((packets, skipped_empty_packets))
 }
 
 /// Reads a bounded u32 envelope length; packet headers remain the protocol codec's responsibility.

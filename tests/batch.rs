@@ -23,7 +23,7 @@ fn negotiated(algorithm: CompressionAlgorithm, limits: BatchLimits) -> BatchCode
 /// Extracts the packets, failing the test if a batch unexpectedly drops.
 fn packets(codec: &BatchCodec, wire: Bytes) -> Vec<Bytes> {
     match codec.decode(wire).unwrap() {
-        DecodeOutcome::Packets(packets) => packets,
+        DecodeOutcome::Packets { packets, .. } => packets,
         DecodeOutcome::Dropped(reason) => panic!("unexpected dropped batch: {reason}"),
     }
 }
@@ -39,6 +39,58 @@ fn decodes_go_vectors_by_declared_algorithm() {
     for wire in [go::GO_BATCH_0, go::GO_BATCH_1, go::GO_BATCH_65535] {
         assert_eq!(packets(&codec, Bytes::from_static(wire)), expected);
     }
+}
+
+#[test]
+fn incoming_empty_entries_preserve_packets_and_do_not_consume_packet_capacity() {
+    let codec = negotiated(
+        CompressionAlgorithm::Deflate,
+        BatchLimits {
+            max_packets: 2,
+            ..BatchLimits::default()
+        },
+    );
+    let expected = [
+        Bytes::from_static(&[2, 0, 0, 0, 0]),
+        Bytes::from_static(&[9, 3, b'h', b'e', b'y']),
+    ];
+    for wire in [
+        go::GO_BATCH_EMPTY_0,
+        go::GO_BATCH_EMPTY_1,
+        go::GO_BATCH_EMPTY_65535,
+    ] {
+        let DecodeOutcome::Packets {
+            packets,
+            skipped_empty_packets,
+            ..
+        } = codec.decode(Bytes::from_static(wire)).unwrap()
+        else {
+            panic!("empty-entry fixture was dropped");
+        };
+        assert_eq!(packets, expected);
+        assert_eq!(skipped_empty_packets, 3);
+    }
+    let initial = BatchCodec::new(
+        BatchHeader::RakNet,
+        BatchLimits {
+            max_packets: 0,
+            ..BatchLimits::default()
+        },
+    );
+    let DecodeOutcome::Packets {
+        packets,
+        skipped_empty_packets,
+        ..
+    } = initial.decode(Bytes::from_static(&[0xfe, 0, 0])).unwrap()
+    else {
+        panic!("initial empty-entry batch was dropped");
+    };
+    assert!(packets.is_empty());
+    assert_eq!(skipped_empty_packets, 2);
+    assert!(matches!(
+        codec.encode(&[Bytes::new()]),
+        Err(BatchError::EmptyPacket)
+    ));
 }
 
 #[test]
@@ -101,7 +153,7 @@ fn splits_count_and_byte_limited_batches_without_reordering() {
 fn malformed_tail_never_exposes_a_partial_batch() {
     let codec = BatchCodec::new(BatchHeader::RakNet, BatchLimits::default());
     for tail in [
-        &[0][..],
+        &[0, 0x80][..],
         &[3, 2][..],
         &[0x80][..],
         &[0xff, 0xff, 0xff, 0xff, 0x10][..],

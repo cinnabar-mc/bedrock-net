@@ -176,7 +176,16 @@ async fn receive_settings(
     loop {
         let message: Bytes = connection.recv().await?;
         let packets = match codec.decode(message)? {
-            DecodeOutcome::Packets(packets) => packets,
+            DecodeOutcome::Packets {
+                packets,
+                skipped_empty_packets,
+                ..
+            } => {
+                if skipped_empty_packets != 0 {
+                    eprintln!("skipped {skipped_empty_packets} empty batch entries");
+                }
+                packets
+            }
             DecodeOutcome::Dropped(reason) => {
                 eprintln!("dropped batch: {reason:?}");
                 continue;
