@@ -13,7 +13,7 @@ pub enum SpawnError {
     #[error("requested startup chunk radius must be positive")]
     InvalidRequest,
     /// A later StartGame attempted to replace the local player's identity.
-    #[error("conflicting StartGame runtime identity: first {first}, then {received}")]
+    #[error("conflicting StartGame runtime entity ID: first {first}, then {received}")]
     ConflictingRuntimeId {
         /// The first local-player runtime identifier.
         first: u64,
