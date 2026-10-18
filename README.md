@@ -89,9 +89,11 @@ The verifier can retain signed name, canonical UUID and PlayFab identifiers with
 `TrustedIdentity::with_player_identity`; `AuthenticatedLogin::player_identity`
 borrows them and revalidation rejects changes. Missing presentation stays absent.
 
-Accepting pack/world continuations are implemented, with their regression and
-cross-language qualification still pending. No accepting listener or running-world
-bridge is provided. The Login-only handoff remains available independently.
+Local regressions exercise the accepting pack/world continuations through
+generated-packet exchanges, memory and file sources, provider revalidation and
+error handling. Pinned Go helpers check delivery policy and identity projection.
+No accepting listener or running-world bridge is provided; application hosting
+and live compatibility remain separate. The Login-only handoff is also available.
 
 See the [integration guide](docs/integration.md) for packet routing, cipher
 ordering, pack/startup handoffs and owner-preserving error/close handling. The

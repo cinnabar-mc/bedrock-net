@@ -84,7 +84,7 @@ Accepting Login uses its own consumed capabilities:
 | `ApprovedLogin<Grant>` | Revalidate and create the sole exchange | Pending exchange or `ServerPacksReady<Grant>` |
 | `PendingServerKeyExchange<Grant>` | Flush plaintext; transfer exact cipher streams | `ServerAcknowledgment<Grant>` |
 | `ServerAcknowledgment<Grant>` | Observe actual encrypted acknowledgment | `ServerPacksReady<Grant>` |
-| `ServerPacksReady<Grant>` | Revalidate original Login/grant; stop or start actual pack delivery | `AcceptedLogin<Grant>` or `ServerPacks<Grant>` |
+| `ServerPacksReady<Grant>` | Revalidate Login; retain the grant for caller checks; stop or start pack delivery | `AcceptedLogin<Grant>` or `ServerPacks<Grant>` |
 
 Supply one server key, original absolute deadline, any caller-verified transport
 peer key and required `bedrock_net::login::LoginVerifier`. The verifier uses the
@@ -121,8 +121,9 @@ closes on failed transitions. No accepting listener or running-world bridge is
 provided by this API.
 
 
-Accepting pack delivery and startup continue through owned capabilities. Their
-regression and cross-language qualification remain pending:
+Accepting pack delivery and startup continue through owned capabilities. Local
+generated-packet regressions and pinned Go delivery-policy checks exercise these
+boundaries; application hosting and live compatibility remain separate:
 
 | Owner | Available work | Next owner |
 | --- | --- | --- |

@@ -136,9 +136,11 @@ pack completion, account authority or world readiness.
 ## Accepting Login
 
 The Login-only handoff yields `AcceptedLogin<Grant>`. Optional `start_packs`
-continues through owned chunk read/write and caller-selected startup data; its
-regression and cross-language qualification remain pending. This section covers
-the Login boundary, without an accepting listener or world attachment. See the detailed
+continues through owned chunk read/write and caller-selected startup data. Local
+generated-packet regressions exercise that flow, with delivery policy checked
+against the pinned Go helper. This section covers the Login boundary, without an
+accepting listener or world attachment. Application hosting and live compatibility
+remain separate. See the
 [accepting capability contract](../crates/bedrock-client/README.md) and
 [server API](../crates/bedrock-client/src/server/lifecycle.rs).
 
