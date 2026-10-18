@@ -76,12 +76,21 @@ impl Drop for LossRelay {
 impl Peer {
     /// Starts the explicitly supplied fixture binary; unavailable fixtures produce a named skip.
     async fn start(close_after: usize) -> Option<Self> {
+        Self::start_family(close_after, false).await
+    }
+
+    /// Starts a loopback peer on the selected IP family.
+    async fn start_family(close_after: usize, ipv6: bool) -> Option<Self> {
         let Some(binary) = std::env::var_os("BEDROCK_NET_RAKNET_PEER") else {
             eprintln!("missing fixture: BEDROCK_NET_RAKNET_PEER; build tools/raknet-peer");
             return None;
         };
         let mut child = Command::new(binary)
-            .args(["-close-after", &close_after.to_string()])
+            .args([
+                "-close-after",
+                &close_after.to_string(),
+                &format!("-ipv6={ipv6}"),
+            ])
             .stdout(Stdio::piped())
             .stderr(Stdio::inherit())
             .kill_on_drop(true)
@@ -235,6 +244,51 @@ async fn go_peer_preserves_message_boundaries_fragmentation_and_fifo() {
 }
 
 #[tokio::test]
+async fn go_peer_exchanges_fragmented_messages_over_ipv6_and_mapped_ipv4() {
+    for ipv6 in [true, false] {
+        if ipv6 {
+            match UdpSocket::bind("[::1]:0").await {
+                Ok(socket) => drop(socket),
+                Err(error)
+                    if matches!(
+                        error.kind(),
+                        std::io::ErrorKind::AddrNotAvailable | std::io::ErrorKind::Unsupported
+                    ) =>
+                {
+                    eprintln!("missing fixture: IPv6 loopback: {error}");
+                    continue;
+                }
+                Err(error) => panic!("bind IPv6 loopback: {error}"),
+            }
+        }
+        let Some(peer) = Peer::start_family(0, ipv6).await else {
+            return;
+        };
+        let address = match peer.address {
+            SocketAddr::V4(v4) => SocketAddr::new(v4.ip().to_ipv6_mapped().into(), v4.port()),
+            addr => addr,
+        };
+        let mut connection = RakNetConnection::connect(address, RakNetOptions::default())
+            .await
+            .unwrap();
+        assert_eq!(connection.peer_addr(), peer.address);
+        assert_eq!(connection.local_addr().is_ipv6(), ipv6);
+        assert!(connection.local_addr().ip().is_loopback());
+        let message = Bytes::from(vec![0xfe; 4096]);
+        connection.queue_send(message.clone()).unwrap();
+        assert_eq!(
+            timeout(Duration::from_secs(15), connection.recv())
+                .await
+                .unwrap()
+                .unwrap(),
+            message
+        );
+        connection.close().await.unwrap();
+        peer.finish().await;
+    }
+}
+
+#[tokio::test]
 async fn go_peer_messages_are_drained_before_its_disconnect() {
     let Some(peer) = Peer::start(2).await else {
         return;
@@ -354,6 +408,11 @@ async fn go_peer_acknowledgements_release_send_capacity_without_consuming_messag
     )
     .await
     .unwrap();
+    // Reliable handshake control messages can still occupy the configured budget.
+    timeout(Duration::from_secs(10), connection.wait_send_capacity(100))
+        .await
+        .expect("handshake ACKs release initial application capacity")
+        .unwrap();
     let mut sent = Vec::new();
     for index in 0..10u8 {
         let mut message = vec![index; 100];

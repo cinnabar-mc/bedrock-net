@@ -55,7 +55,7 @@ a fixed flush delay. One connection owns its socket and protocol state and spawn
 background tasks. Queue complete messages with `queue_send`, then keep `recv`
 polled in the session network loop to service acknowledgements and timers. `flush`
 sends immediately available datagrams. Cancelling these waits retains pending
-state; dropping a dial or connection releases its socket. Transport messages
+state; dropping a connection attempt or connection releases its socket. Transport messages
 retain their batch marker. Receive queue capacities and handshake/close deadlines
 are explicit options. `max_mtu` caps probes and connected datagrams for local
 tunnels or VPNs; invalid caps fail before socket creation. Probe size failures
@@ -66,6 +66,10 @@ budget is full, retaining inbound messages for the next `recv`. Complete earlier
 messages drain before terminal errors.
 
 Cargo.toml declares the minimum Rust version required by the pinned transport dependency.
+The driver selects the socket family after normalizing mapped IPv4 endpoints and
+advertises its connected socket's local address during setup. Native IPv6 scope
+IDs remain available for socket routing and are omitted from protocol addresses.
+
 For Go transport interoperability checks, build the loopback-only helper under
 `tools/raknet-peer` and set `BEDROCK_NET_RAKNET_PEER` to that executable before
 running `cargo test --locked -p bedrock-net --features raknet`.
