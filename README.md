@@ -85,6 +85,10 @@ original memory archive or adapter-owned external source through sequential
 read/write continuations. Startup requires the actual caller-selected world
 packet definitions; completion does not attach that world to a player.
 
+The verifier can retain signed name, canonical UUID and PlayFab identifiers with
+`TrustedIdentity::with_player_identity`; `AuthenticatedLogin::player_identity`
+borrows them and revalidation rejects changes. Missing presentation stays absent.
+
 Accepting pack/world continuations are implemented, with their regression and
 cross-language qualification still pending. No accepting listener or running-world
 bridge is provided. The Login-only handoff remains available independently.
