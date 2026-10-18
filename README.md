@@ -45,7 +45,9 @@ Key exchange and authentication are separate, pending work.
 
 Enable the `raknet` feature for `raknet::RakNetConnection`, a Tokio driver over a
 pinned [bedrock-crustaceans/raknet](https://github.com/bedrock-crustaceans/raknet)
-protocol engine. One connection owns its socket and protocol state and spawns no
+protocol engine, with a queued ordering-window fix in the Cinnabar fork. Sustained
+application traffic follows congestion control and sends ready datagrams without
+a fixed flush delay. One connection owns its socket and protocol state and spawns no
 background tasks. Queue complete messages with `queue_send`, then keep `recv`
 polled in the session network loop to service acknowledgements and timers. `flush`
 sends immediately available datagrams. Cancelling these waits retains pending

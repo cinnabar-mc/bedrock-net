@@ -396,7 +396,7 @@ checksum = "f8dcc9c7d52a811697d2151c701e0d08956f92b0e24136cf4cf27b57a6a0d9bf"
 [[package]]
 name = "raknet"
 version = "0.1.0"
-source = "git+https://github.com/bedrock-crustaceans/raknet?rev=1b15b7a590645ab80a8b1c35881d089d64e5683c#1b15b7a590645ab80a8b1c35881d089d64e5683c"
+source = "git+https://github.com/cinnabar-mc/raknet?rev=af959ae3b6c5868fe5c55d7d71f06828b2769ce5#af959ae3b6c5868fe5c55d7d71f06828b2769ce5"
 dependencies = [
  "byteorder",
  "facet",

@@ -7,6 +7,9 @@
 
 mod connect;
 
+#[cfg(test)]
+mod tests;
+
 use std::collections::VecDeque;
 use std::net::SocketAddr;
 use std::time::Duration;
@@ -138,7 +141,7 @@ impl RakNetConnection {
         })
     }
 
-    /// Admits a complete message for immediate reliable, ordered delivery.
+    /// Admits a complete message for reliable, ordered delivery without a fixed flush delay.
     ///
     /// Admission is synchronous. Once accepted, do not queue it again if a later
     /// `flush` or `recv` is cancelled: its state is retained in this connection.
@@ -156,7 +159,7 @@ impl RakNetConnection {
         let result = session.handle(RakSessionInput::Send(
             message.as_ref().into(),
             RakReliability::ReliableOrdered,
-            RakPriority::Immediate,
+            RakPriority::Normal,
             std::time::SystemTime::now(),
         ));
         if let Err(error) = result {
@@ -219,7 +222,26 @@ impl RakNetConnection {
     /// # Errors
     /// Returns socket, protocol or receive-queue failures. These end the connection.
     pub async fn flush(&mut self) -> Result<(), RakNetError> {
-        let result = self.flush_datagrams().await;
+        if self.expire_close() {
+            return Ok(());
+        }
+        if let Some(session) = self.session.as_mut()
+            && let Err(error) = session.tick(std::time::SystemTime::now())
+        {
+            self.end(RakNetError::Closed);
+            return Err(error.into());
+        }
+        let result = if let Some(deadline) = self.close_deadline {
+            match tokio::time::timeout_at(deadline, self.flush_datagrams()).await {
+                Ok(result) => result,
+                Err(_) => {
+                    self.end(RakNetError::Disconnected(DisconnectReason::Requested));
+                    Ok(())
+                }
+            }
+        } else {
+            self.flush_datagrams().await
+        };
         if result.is_err() {
             self.end(RakNetError::Closed);
         }
@@ -290,33 +312,25 @@ impl RakNetConnection {
         let Some(session) = self.session.as_mut() else {
             return Ok(());
         };
-        let deadline = match self.close_deadline {
-            Some(deadline) => deadline,
-            None => {
-                let deadline = Instant::now()
-                    .checked_add(self.options.close_timeout)
-                    .ok_or(RakNetError::InvalidOption("close timeout is too large"))?;
-                session.handle(RakSessionInput::Disconnect(std::time::SystemTime::now()))?;
-                self.close_deadline = Some(deadline);
-                deadline
-            }
-        };
+        if self.close_deadline.is_none() {
+            let deadline = Instant::now()
+                .checked_add(self.options.close_timeout)
+                .ok_or(RakNetError::InvalidOption("close timeout is too large"))?;
+            session.handle(RakSessionInput::Disconnect(std::time::SystemTime::now()))?;
+            self.close_deadline = Some(deadline);
+        }
         while self.session.is_some() {
-            let result = tokio::time::timeout_at(deadline, async {
+            let result = async {
                 self.flush().await?;
                 if self.session.is_some() {
                     self.step().await?;
                 }
                 Ok::<(), RakNetError>(())
-            })
+            }
             .await;
-            match result {
-                Ok(Ok(())) => {}
-                Ok(Err(error)) => {
-                    self.end(RakNetError::Closed);
-                    return Err(error);
-                }
-                Err(_) => self.end(RakNetError::Disconnected(DisconnectReason::Requested)),
+            if let Err(error) = result {
+                self.end(RakNetError::Closed);
+                return Err(error);
             }
         }
         Ok(())
@@ -324,7 +338,13 @@ impl RakNetConnection {
 
     /// Advances one socket or timer event. All state survives cancellation of its wait.
     async fn step(&mut self) -> Result<(), RakNetError> {
+        if self.expire_close() {
+            return Ok(());
+        }
         let socket = self.socket.as_ref().ok_or(RakNetError::Closed)?;
+        let next = self
+            .close_deadline
+            .map_or(self.next_tick, |deadline| deadline.min(self.next_tick));
         let input = tokio::select! {
             received = socket.recv(&mut self.receive_buffer) => {
                 let length = received?;
@@ -333,7 +353,10 @@ impl RakNetConnection {
                     std::time::SystemTime::now(),
                 )
             }
-            _ = sleep_until(self.next_tick) => {
+            _ = sleep_until(next) => {
+                if self.expire_close() {
+                    return Ok(());
+                }
                 RakSessionInput::Update(std::time::SystemTime::now())
             }
         };
@@ -349,17 +372,7 @@ impl RakNetConnection {
         while let Some(output) = self.session.as_mut().and_then(|session| session.poll()) {
             match output {
                 RakSessionOutput::Packet(message) => {
-                    let full_count = self.incoming.len() == self.options.receive_buffer_messages;
-                    let full_bytes = message.len()
-                        > self
-                            .options
-                            .receive_buffer_bytes
-                            .saturating_sub(self.incoming_bytes);
-                    if full_count || full_bytes {
-                        return Err(RakNetError::ReceiveBufferExceeded);
-                    }
-                    self.incoming_bytes += message.len();
-                    self.incoming.push_back(Bytes::from(message));
+                    self.retain_message(message)?;
                 }
                 RakSessionOutput::Datagram(datagram, _) => {
                     self.pending_datagram = Some(datagram);
@@ -381,10 +394,47 @@ impl RakNetConnection {
 
     /// Releases protocol and socket resources while retaining complete earlier messages.
     fn end(&mut self, error: RakNetError) {
-        if self.session.take().is_some() {
+        if let Some(mut session) = self.session.take() {
             self.failure = Some(error);
+            while let Some(output) = session.poll() {
+                if let RakSessionOutput::Packet(message) = output
+                    && let Err(error) = self.retain_message(message)
+                {
+                    self.failure = Some(error);
+                    break;
+                }
+            }
         }
         self.socket = None;
         self.pending_datagram = None;
+    }
+
+    /// Retains one completed message without exceeding either application queue bound.
+    fn retain_message(&mut self, message: Box<[u8]>) -> Result<(), RakNetError> {
+        if self.incoming.len() >= self.options.receive_buffer_messages
+            || message.len()
+                > self
+                    .options
+                    .receive_buffer_bytes
+                    .saturating_sub(self.incoming_bytes)
+        {
+            return Err(RakNetError::ReceiveBufferExceeded);
+        }
+        self.incoming_bytes += message.len();
+        self.incoming.push_back(Bytes::from(message));
+        Ok(())
+    }
+
+    /// Applies a retained close deadline to every operation that drives protocol I/O.
+    fn expire_close(&mut self) -> bool {
+        if self.session.is_some()
+            && self
+                .close_deadline
+                .is_some_and(|deadline| Instant::now() >= deadline)
+        {
+            self.end(RakNetError::Disconnected(DisconnectReason::Requested));
+            return true;
+        }
+        false
     }
 }

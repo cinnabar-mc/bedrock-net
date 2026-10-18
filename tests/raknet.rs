@@ -215,6 +215,40 @@ async fn go_peer_recovers_a_lost_datagram_without_duplicate_delivery() {
 }
 
 #[tokio::test]
+async fn go_peer_recovers_loss_during_a_burst_larger_than_its_ordered_window() {
+    const MESSAGES: u32 = 3000;
+    let Some(peer) = Peer::start(MESSAGES as usize).await else {
+        return;
+    };
+    let relay = LossRelay::start(peer.address).await;
+    let mut connection = RakNetConnection::connect(relay.address, RakNetOptions::default())
+        .await
+        .unwrap();
+    connection.flush().await.unwrap();
+    relay.drop_next.store(true, Ordering::Relaxed);
+    for index in 0..MESSAGES {
+        let mut message = vec![0xfe];
+        message.extend_from_slice(&index.to_le_bytes());
+        connection.queue_send(Bytes::from(message)).unwrap();
+    }
+    timeout(Duration::from_secs(30), async {
+        for index in 0..MESSAGES {
+            let message = connection.recv().await.unwrap();
+            assert_eq!(message[0], 0xfe);
+            assert_eq!(&message[1..], &index.to_le_bytes());
+        }
+        assert!(matches!(
+            connection.recv().await,
+            Err(RakNetError::Disconnected(_))
+        ));
+    })
+    .await
+    .expect("congestion-controlled burst recovers loss without outrunning ordered delivery");
+    assert!(relay.dropped.load(Ordering::Relaxed));
+    peer.finish().await;
+}
+
+#[tokio::test]
 async fn go_peer_acknowledgements_release_send_capacity_without_consuming_messages() {
     let Some(peer) = Peer::start(0).await else {
         return;
@@ -287,7 +321,7 @@ async fn cancelling_a_partial_handshake_releases_its_socket() {
     drop(rebound);
 }
 
-#[tokio::test(start_paused = true)]
+#[tokio::test]
 async fn handshake_deadline_releases_its_socket_without_detaching_work() {
     let server = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
     let mut connecting = Box::pin(RakNetConnection::connect(
@@ -302,6 +336,9 @@ async fn handshake_deadline_releases_its_socket_without_detaching_work() {
         result = &mut connecting => panic!("handshake unexpectedly ended: {:?}", result.err()),
         received = server.recv_from(&mut datagram) => received.unwrap().1,
     };
+    // Pause after real UDP readiness; an idle paused runtime may otherwise advance
+    // the handshake deadline before the operating system delivers its first packet.
+    tokio::time::pause();
     tokio::time::advance(Duration::from_secs(2)).await;
     assert!(matches!(connecting.await, Err(RakNetError::ConnectTimeout)));
     let rebound = UdpSocket::bind(client_address).await.unwrap();
