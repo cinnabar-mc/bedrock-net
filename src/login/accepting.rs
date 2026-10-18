@@ -75,6 +75,11 @@ impl TrustedIdentity {
         )?);
         Ok(self)
     }
+
+    /// Borrows presentation retained from the same provider-verified credential.
+    pub fn player_identity(&self) -> Option<&PlayerIdentity> {
+        self.player.as_ref()
+    }
 }
 
 /// Provider-authenticated identity and client-signed metadata from one exact Login.
@@ -104,7 +109,7 @@ impl AuthenticatedLogin {
     /// Borrows authenticated presentation if the trusted verifier supplied it.
     /// A world consumer requiring a name/UUID must reject None, without client-data fallback.
     pub fn player_identity(&self) -> Option<&PlayerIdentity> {
-        self.identity.player.as_ref()
+        self.identity.player_identity()
     }
 
     /// Borrows the original client-signed JSON; application metadata validation remains caller-owned.
