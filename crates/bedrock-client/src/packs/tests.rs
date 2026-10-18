@@ -286,6 +286,93 @@ fn optional_content_admission_and_transfer_budget_are_separate() {
     assert!(budget.begin(&mut download, info).is_err());
 }
 
+/// Rejected metadata cannot reserve a UUID ahead of its first usable acquisition source.
+#[test]
+fn rejected_offer_does_not_poison_a_later_usable_uuid() {
+    let id = uuid::Uuid::from_u128(1);
+    let other = uuid::Uuid::from_u128(2);
+    let bytes = fixture_bytes(id);
+    let other_bytes = fixture_bytes(other);
+    let mut rejected = offer(id, bytes.len() + 1);
+    rejected.pack_id_version.pack_version.version = "2.0.0".into();
+    let accepted = offer(id, bytes.len());
+    let mut duplicate = accepted.clone();
+    duplicate.pack_id_version.pack_version.version = "9.0.0".into();
+    duplicate.cdn_url = "https://not-admitted.invalid/duplicate".into();
+    let mut preloading = PackOffer::new(
+        packets::ResourcePacksInfo {
+            resource_pack_required: true,
+            resource_packs: vec![
+                rejected,
+                accepted,
+                duplicate,
+                offer(other, other_bytes.len()),
+            ],
+            ..Default::default()
+        },
+        PackTransferLimits {
+            max_archive_bytes: bytes.len() as u64,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let admitted = preloading
+        .offers()
+        .map(|entry| {
+            (
+                entry.pack_id_version.pack_uuid,
+                entry
+                    .pack_id_version
+                    .pack_version
+                    .version
+                    .to_string_lossy()
+                    .into_owned(),
+                entry.cdn_url.to_string_lossy().into_owned(),
+            )
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        admitted,
+        vec![
+            (id, "1.0.0".into(), String::new()),
+            (other, "1.0.0".into(), String::new())
+        ]
+    );
+    preloading.supply_preloaded(id, bytes.clone()).unwrap();
+    preloading
+        .supply_preloaded(other, other_bytes.clone())
+        .unwrap();
+    let (mut transfer, response) = preloading.start().unwrap();
+    assert!(matches!(
+        response.response,
+        ResourcePackClientResponseData::DownloadingFinished { .. }
+    ));
+    let PackEvent::Finished(complete) = transfer
+        .receive(
+            packets::ResourcePackStack {
+                texture_pack_list: [id, other]
+                    .into_iter()
+                    .map(|id| PackInstanceId {
+                        pack_id: id.to_string().into(),
+                        version: "1.0.0".into(),
+                        ..Default::default()
+                    })
+                    .collect(),
+                ..Default::default()
+            }
+            .into(),
+        )
+        .unwrap()
+    else {
+        panic!("the first admitted source must satisfy its required stack once");
+    };
+    let (_, handoff) = complete.into_parts();
+    let archives = handoff.into_archives();
+    assert_eq!(archives.len(), 2);
+    assert_eq!(archives[0].archive, bytes);
+    assert_eq!(archives[1].archive, other_bytes);
+}
+
 #[test]
 fn retained_metadata_and_out_of_order_fragment_release_the_shared_decoded_batches() {
     use std::sync::atomic::{AtomicBool, Ordering};
