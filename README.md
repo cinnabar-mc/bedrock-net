@@ -3,6 +3,14 @@
 Native Rust networking foundations for Minecraft Bedrock, developed for
 [Cinnabar](https://github.com/cinnabar-mc/cinnabar) and reusable by other clients.
 
+The workspace separates byte-oriented transport/batch processing in `bedrock-net`,
+generated-packet client negotiation in [bedrock-client](crates/bedrock-client),
+and reusable pack text/archive ownership in [bedrock-packs](crates/bedrock-packs).
+The client crate now owns bounded resource-pack negotiation, in-band integrity,
+preload handoff and final stack ordering. Login, spawn and ongoing play ownership
+remain to be extracted from Cinnabar. The core and new client/pack crates create
+no runtime; optional I/O adapters are separate edges.
+
 The initial implementation provides a synchronous, runtime-independent batch
 codec with raw DEFLATE and Snappy, explicit compression negotiation, bounded
 decoding and ordered batch splitting. It accepts encoded packet bytes, including
@@ -120,8 +128,12 @@ metadata and an original skin. Other metadata/platforms and broader server
 compatibility remain unverified. The helper tests independently verify request
 signatures and key agreement with the pinned Go implementation.
 
-The root library remains the default workspace member, so these version-specific
-and transport evaluation dependencies stay outside its normal build.
+The three library crates are the default workspace members. The standalone probe
+remains an explicit member; its runtime and transport evaluation dependencies
+stay outside the libraries' normal dependency graphs. The generated codec pin
+is shared by the probe and client crate in the workspace manifest.
 
 Run `cargo test --locked` for focused codec tests and `cargo fmt --all --check`
 for formatting. See [NOTICE](NOTICE) for implementation references and licensing.
+The root library retains its MIT/Apache license choice. Extracted Cinnabar code
+in the client and pack crates retains its separately identified PolyForm license.

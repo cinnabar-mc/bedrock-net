@@ -1,0 +1,38 @@
+{
+  "protocol_version": 2193,
+  "baseline_module_version": "v1.25.3-0.20261017173210-81e65c54fb21",
+  "packs": [
+    {
+      "id": "d34cfa4b-2ad1-453d-a0db-668b429a3ea0",
+      "version": "1.26.40"
+    },
+    {
+      "id": "b41c2785-c512-4a49-af56-3a87afd47c57",
+      "version": "1.21.30"
+    },
+    {
+      "id": "a4df0cb3-17be-4163-88d7-fcf7002b935d",
+      "version": "1.21.20"
+    },
+    {
+      "id": "d19adffe-a2e1-4b02-8436-ca4583368c89",
+      "version": "1.21.10"
+    },
+    {
+      "id": "85d5603d-2824-4b21-8044-34f441f4fce1",
+      "version": "1.21.0"
+    },
+    {
+      "id": "e977cd13-0a11-4618-96fb-03dfe9c43608",
+      "version": "1.20.60"
+    },
+    {
+      "id": "0674721c-a0aa-41a1-9ba8-1ed33ea3e7ed",
+      "version": "1.20.50"
+    },
+    {
+      "id": "0fba4063-dba1-4281-9b89-ff9390653530",
+      "version": "1.0.0"
+    }
+  ]
+}
