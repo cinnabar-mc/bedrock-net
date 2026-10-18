@@ -103,6 +103,28 @@ For Go transport interoperability checks, build the loopback-only helper under
 `tools/raknet-peer` and set `BEDROCK_NET_RAKNET_PEER` to that executable before
 running `cargo test --locked -p bedrock-net --features raknet`.
 
+Enable `messaging` for the optional Player Messaging runtime edge. The application
+acquires a protected SDK `MessagingSocket` from its selected account, then moves
+it into `messaging::PreparedMessaging` with the exact advertised local network ID
+and the intended peer's messaging UUID. Supply the connection's shared proof-key
+SDP identity, configured peer trust and original absolute deadline to `connect`.
+The edge hands the SDK's original TURN expiry to NetherNet's bounded UDP resolver
+and ICE owner. It performs one connection attempt and creates no runtime or task.
+
+Keep polling `MessagingConnection::recv` during connection use, including while
+waiting for writes through its cloned `session()` handle. This drives heartbeats,
+receipts and late ICE candidates. SDK request IDs correlate existing caller
+requests; offers require service acceptance and the intended peer's receipt.
+Incoming signals are routed by authenticated envelope UUID and connection ID,
+and acknowledged after bounded transport admission. Cancellation drops unsent
+waits without automatically retrying an ambiguous write. Closing or dropping the
+owner retires its service socket and signaling waits.
+
+Account persistence, world/session admission, join nonces and retry policy remain
+application-owned. This edge does not acquire an MPSD session or host a world.
+The new adapter tests exercise the real pure SDK/caller boundaries with synthetic
+messages; real-account, protected-socket and WAN acceptance remain unverified.
+
 This is an incremental implementation. Production NetherNet integration, the
 full Login/session lifecycle, services and broader server validation are still
 pending. The existing Cinnabar Go backend remains the production implementation.
