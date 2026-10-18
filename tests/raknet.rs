@@ -147,6 +147,11 @@ impl Peer {
 
     /// Starts a loopback peer on the selected IP family.
     async fn start_family(close_after: usize, ipv6: bool) -> Option<Self> {
+        Self::start_options(close_after, ipv6, false).await
+    }
+
+    /// Starts the peer with optional reporting of the client's advertised system uptime.
+    async fn start_options(close_after: usize, ipv6: bool, report_uptime: bool) -> Option<Self> {
         let Some(binary) = std::env::var_os("BEDROCK_NET_RAKNET_PEER") else {
             eprintln!("missing fixture: BEDROCK_NET_RAKNET_PEER; build tools/raknet-peer");
             return None;
@@ -156,6 +161,7 @@ impl Peer {
                 "-close-after",
                 &close_after.to_string(),
                 &format!("-ipv6={ipv6}"),
+                &format!("-report-uptime={report_uptime}"),
             ])
             .stdout(Stdio::piped())
             .stderr(Stdio::inherit())
@@ -186,6 +192,32 @@ impl Peer {
 // Closing a socket immediately makes its ephemeral port eligible for another test.
 // Keep network fixtures apart so release witnesses cannot observe each other's binds.
 static NETWORK_FIXTURES: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+#[tokio::test]
+async fn go_peer_observes_client_uptime_instead_of_unix_time() {
+    let _sockets = NETWORK_FIXTURES.lock().await;
+    let Some(peer) = Peer::start_options(0, false, true).await else {
+        return;
+    };
+    let exchange = async {
+        let mut connection = RakNetConnection::connect(peer.address, RakNetOptions::default())
+            .await
+            .unwrap();
+        let report = connection.recv().await.unwrap();
+        assert_eq!(report.len(), 9);
+        assert_eq!(report[0], 0xfe);
+        let uptime_ms = i64::from_le_bytes(report[1..].try_into().unwrap());
+        // This test process has not been running for a year; Unix time is decades larger.
+        let year_ms = 365 * 24 * 60 * 60 * 1000;
+        assert!(
+            (0..year_ms).contains(&uptime_ms),
+            "advertised uptime: {uptime_ms} ms"
+        );
+        connection.close().await.unwrap();
+        peer.finish().await;
+    };
+    timeout(Duration::from_secs(20), exchange).await.unwrap();
+}
 
 #[tokio::test]
 async fn go_peer_connects_when_a_smaller_probe_is_required_after_the_initial_grant() {

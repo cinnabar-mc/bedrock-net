@@ -1,8 +1,9 @@
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 
 use ::raknet::prelude::{
-    ClientGuid, RakClient, RakClientConfig, RakClientInput, RakClientOutput, RakSessionConfig,
-    Sans, canonical_socket_addr, is_mtu_probe_size_error, is_transient_udp_read_error,
+    ClientGuid, RakClient, RakClientConfig, RakClientInput, RakClientOutput, RakClock,
+    RakSessionConfig, Sans, canonical_socket_addr, is_mtu_probe_size_error,
+    is_transient_udp_read_error,
 };
 use tokio::net::UdpSocket;
 use tokio::time::{Instant, sleep_until, timeout_at};
@@ -10,6 +11,12 @@ use tokio::time::{Instant, sleep_until, timeout_at};
 use super::{RakNetConnection, RakNetError, RakNetOptions, UDP_BUFFER_BYTES};
 
 const MAX_INITIAL_READ_ERRORS: usize = 10;
+
+/// Shares the endpoint uptime origin across connection attempts in this process.
+fn endpoint_clock() -> RakClock {
+    static CLOCK: std::sync::OnceLock<RakClock> = std::sync::OnceLock::new();
+    *CLOCK.get_or_init(|| RakClock::new(Instant::now().into_std()))
+}
 
 impl RakNetConnection {
     /// Completes a transport handshake, spawning no background tasks.
@@ -43,9 +50,22 @@ impl RakNetConnection {
         let deadline = Instant::now()
             .checked_add(options.connect_timeout)
             .ok_or(RakNetError::InvalidOption("connect timeout is too large"))?;
-        timeout_at(deadline, Self::handshake(peer, options, config))
+        let result = timeout_at(deadline, Self::handshake(peer, options, config))
             .await
-            .map_err(|_| RakNetError::ConnectTimeout)?
+            .map_err(|_| RakNetError::ConnectTimeout)?;
+        // The engine can observe the shared deadline before Tokio polls its timer.
+        if Instant::now() >= deadline
+            && matches!(
+                &result,
+                Err(RakNetError::Handshake(
+                    ::raknet::prelude::RakClientError::ConnectionFailed
+                ))
+            )
+        {
+            Err(RakNetError::ConnectTimeout)
+        } else {
+            result
+        }
     }
 
     /// Drives the pinned engine until it transfers the connected protocol state.
@@ -64,12 +84,12 @@ impl RakNetConnection {
         socket.connect(peer).await?;
         let local = socket.local_addr()?;
         let guid = ClientGuid::generate()?;
-        let mut client = RakClient::new(config);
+        let mut client = RakClient::new(config, endpoint_clock());
         client.handle(RakClientInput::Connect {
             remote: peer,
             local,
             guid,
-            now: std::time::SystemTime::now(),
+            now: Instant::now().into_std(),
         })?;
         let mut buffer = vec![0; UDP_BUFFER_BYTES];
         let mut next_tick = Instant::now();
@@ -84,7 +104,7 @@ impl RakNetConnection {
                         let too_large = result.as_ref().is_err_and(is_mtu_probe_size_error);
                         client.handle(RakClientInput::MtuProbeResult {
                             id,
-                            now: std::time::SystemTime::now(),
+                            now: Instant::now().into_std(),
                             elapsed,
                             too_large,
                         })?;
@@ -131,23 +151,23 @@ impl RakNetConnection {
                             failure: None,
                         });
                     }
-                    RakClientOutput::SessionDatagram(_) | RakClientOutput::Pong(..) => {}
+                    RakClientOutput::SessionDatagram(_) | RakClientOutput::Pong { .. } => {}
                 }
             }
             let input = tokio::select! {
                 received = socket.recv(&mut buffer) => {
                     match received {
-                        Ok(length) => RakClientInput::Datagram(buffer[..length].into(), peer, std::time::SystemTime::now()),
+                        Ok(length) => RakClientInput::Datagram(buffer[..length].into(), peer, Instant::now().into_std()),
                         Err(error) if client.is_offline_negotiating()
                             && initial_read_errors < MAX_INITIAL_READ_ERRORS
                             && is_transient_udp_read_error(&error) => {
                                 initial_read_errors += 1;
-                                RakClientInput::Update(std::time::SystemTime::now())
+                                RakClientInput::Update(Instant::now().into_std())
                             }
                         Err(error) => return Err(error.into()),
                     }
                 }
-                _ = sleep_until(next_tick) => RakClientInput::Update(std::time::SystemTime::now()),
+                _ = sleep_until(next_tick) => RakClientInput::Update(Instant::now().into_std()),
             };
             client.handle(input)?;
         }

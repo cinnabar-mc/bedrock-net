@@ -4,7 +4,7 @@ use std::future::{Future, poll_fn};
 use std::net::Ipv4Addr;
 use std::task::Poll;
 
-use ::raknet::prelude::RakSessionId;
+use ::raknet::prelude::{RakClock, RakSessionId};
 
 use super::*;
 
@@ -16,9 +16,25 @@ async fn connected_pair() -> (RakNetConnection, UdpSocket, RakSession) {
     let address = peer.local_addr().unwrap();
     socket.connect(address).await.unwrap();
     peer.connect(local).await.unwrap();
-    let now = std::time::SystemTime::now();
-    let receiver = RakSession::new(RakSessionId(1), address, 1, 1492, now, |_| {});
-    let sender = RakSession::new(RakSessionId(2), local, 2, 1492, now, |_| {});
+    let now = Instant::now().into_std();
+    let receiver = RakSession::new(
+        RakSessionId(1),
+        address,
+        1,
+        1492,
+        now,
+        RakClock::new(now),
+        Default::default(),
+    );
+    let sender = RakSession::new(
+        RakSessionId(2),
+        local,
+        2,
+        1492,
+        now,
+        RakClock::new(now),
+        Default::default(),
+    );
     (
         RakNetConnection {
             socket: Some(socket),
@@ -43,7 +59,7 @@ async fn connected_pair() -> (RakNetConnection, UdpSocket, RakSession) {
 async fn receive_overflow_returns_only_the_prefix_before_the_rejected_message() {
     let (mut connection, peer, mut sender) = connected_pair().await;
     connection.options.receive_buffer_bytes = 64;
-    let now = std::time::SystemTime::now();
+    let now = Instant::now().into_std();
     for message in [vec![0xfe, 1], vec![0xfe; 63], vec![0xfe, 3]] {
         sender
             .handle(RakSessionInput::Send(
@@ -77,7 +93,7 @@ async fn receive_overflow_returns_only_the_prefix_before_the_rejected_message() 
 #[tokio::test]
 async fn completed_message_precedes_a_later_frame_error_in_the_same_datagram() {
     let (mut connection, peer, mut sender) = connected_pair().await;
-    let now = std::time::SystemTime::now();
+    let now = Instant::now().into_std();
     for message in [Box::from([0xfe, 42].as_slice()), Box::from([0].as_slice())] {
         sender
             .handle(RakSessionInput::Send(
@@ -124,7 +140,7 @@ async fn cancelled_close_keeps_its_deadline_when_recv_resumes_driving() {
     .await;
     drop(closing);
     // Model a completed input whose outputs have not yet been collected when close expires.
-    let now = std::time::SystemTime::now();
+    let now = Instant::now().into_std();
     sender
         .handle(RakSessionInput::Send(
             Box::new([0xfe, 2]),
