@@ -569,6 +569,67 @@ fn smaller_preloads_release_memory_and_in_band_transfer_reservations() {
     }
 }
 
+/// An unrelated offered version cannot hide the exact built-in tuple selected by a required stack.
+#[test]
+fn required_builtin_selection_survives_a_downloaded_version_mismatch() {
+    let catalog: serde_json::Value =
+        serde_json::from_str(include_str!("../../data/builtin-packs.json")).unwrap();
+    let builtin = &catalog["packs"][0];
+    let id = uuid::Uuid::parse_str(builtin["id"].as_str().unwrap()).unwrap();
+    let version = builtin["version"].as_str().unwrap();
+    let downloaded_version = format!("{version}-different-offer");
+    let make = |offered_version: &str, offer_required| {
+        let mut offered = offer(id, 2);
+        offered.pack_id_version.pack_version.version = offered_version.into();
+        let mut client = PackNegotiation::new(
+            packets::ResourcePacksInfo {
+                resource_pack_required: offer_required,
+                resource_packs: vec![offered],
+                ..Default::default()
+            },
+            PackTransferLimits::default(),
+        )
+        .unwrap();
+        client.supply_preloaded(id, vec![7, 8]).unwrap();
+        client.start().unwrap();
+        client
+    };
+    let stack = |selected_version: &str, required| packets::ResourcePackStack {
+        texture_pack_required: required,
+        texture_pack_list: vec![PackInstanceId {
+            pack_id: id.to_string().into(),
+            version: selected_version.into(),
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+    for (offer_required, stack_required) in [(true, false), (false, true), (true, true)] {
+        let mut client = make(&downloaded_version, offer_required);
+        let PackEvent::Finished { handoff, .. } = client.receive(stack(version, stack_required).into())
+            .expect("a selected catalogued built-in remains available despite another downloaded version")
+        else { panic!("required built-in stack did not finish"); };
+        assert!(handoff.required());
+        assert!(
+            handoff.is_empty(),
+            "an unselected version must not be applied as the built-in"
+        );
+    }
+    let mut override_client = make(version, true);
+    let PackEvent::Finished { handoff, .. } = override_client
+        .receive(stack(version, false).into())
+        .unwrap()
+    else {
+        panic!("matching downloaded override did not finish");
+    };
+    assert_eq!(handoff.into_archives()[0].archive, [7, 8]);
+    let mut unavailable = make(&downloaded_version, true);
+    assert!(
+        unavailable
+            .receive(stack(&format!("{version}-not-catalogued"), false).into())
+            .is_err()
+    );
+}
+
 /// Asserts that every response in a request window is an actual generated chunk request.
 fn request_indices(packets: Vec<packets::Packet>) -> Vec<i32> {
     packets

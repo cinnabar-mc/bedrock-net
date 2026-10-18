@@ -145,3 +145,29 @@ fn malformed_prerequisites_fail_before_initialization() {
         Err(SpawnError::InvalidState)
     ));
 }
+
+/// Startup returns every non-spawn status intact so its caller can retain terminal meaning.
+#[test]
+fn startup_returns_non_spawn_play_status_without_claiming_readiness() {
+    let mut client = negotiation();
+    client.receive(start(RUNTIME_ID)).unwrap();
+    client.receive(registry("first")).unwrap();
+    client.receive(radius(8)).unwrap();
+    for status in [
+        PlayStatusType::LoginfailedServerfullsubclient,
+        PlayStatusType::Loginsuccess,
+        PlayStatusType::Unknown(999),
+    ] {
+        let packet = packets::Packet::PlayStatus(packets::PlayStatus { status });
+        let update = client.receive(packet.clone()).unwrap();
+        assert!(update.ready.is_none());
+        assert!(update.startup.is_none());
+        assert_eq!(
+            update.deferred.as_deref(),
+            Some(&packet),
+            "startup consumed a non-spawn status instead of preserving it for the caller"
+        );
+    }
+    assert!(client.receive(player_spawn()).unwrap().ready.is_some());
+    assert_eq!(client.finish_loading().unwrap().player_id.0, RUNTIME_ID);
+}
