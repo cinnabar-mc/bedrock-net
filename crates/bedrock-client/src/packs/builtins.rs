@@ -30,19 +30,25 @@ pub fn behavioral_baseline() -> &'static str {
 /// Borrows the version-bound builtin stack identities in their original application order.
 /// Accepting adapters may append these without offering an archive for download.
 pub fn builtin_packs() -> impl ExactSizeIterator<Item = (uuid::Uuid, &'static str)> {
-    CATALOG
-        .packs
+    current_packs()
         .iter()
         .map(|pack| (pack.id, pack.version.as_str()))
 }
 
+/// Retains the original mismatch fallback for every consumer of the version-bound catalog.
+fn current_packs() -> &'static [BuiltinPack] {
+    if CATALOG.protocol_version == bedrock_protocol::PROTOCOL_VERSION {
+        &CATALOG.packs
+    } else {
+        &[]
+    }
+}
+
 /// Recognizes exact built-in identities; downloaded overrides remain ordinary archives.
 pub(crate) fn contains(id: uuid::Uuid, version: &str) -> bool {
-    CATALOG.protocol_version == bedrock_protocol::PROTOCOL_VERSION
-        && CATALOG
-            .packs
-            .iter()
-            .any(|pack| pack.id == id && pack.version == version)
+    current_packs()
+        .iter()
+        .any(|pack| pack.id == id && pack.version == version)
 }
 
 #[cfg(test)]
