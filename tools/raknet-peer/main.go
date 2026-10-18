@@ -12,23 +12,28 @@ import (
 	"github.com/sandertv/go-raknet"
 )
 
-// main parses the single test-mode flag and reports command failures once.
+// main parses the loopback fixture options and reports command failures once.
 func main() {
 	closeAfter := flag.Int("close-after", 0, "close after echoing this many messages; zero echoes until the peer closes")
+	ipv6 := flag.Bool("ipv6", false, "listen on IPv6 loopback instead of IPv4")
 	flag.Parse()
 	if *closeAfter < 0 || flag.NArg() != 0 {
 		fmt.Fprintln(os.Stderr, "invalid arguments")
 		os.Exit(2)
 	}
-	if err := run(*closeAfter); err != nil {
+	if err := run(*closeAfter, *ipv6); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
 }
 
 // run publishes the ephemeral loopback address, then echoes complete RakNet messages in order.
-func run(closeAfter int) (err error) {
-	listener, err := raknet.Listen("127.0.0.1:0")
+func run(closeAfter int, ipv6 bool) (err error) {
+	address := "127.0.0.1:0"
+	if ipv6 {
+		address = "[::1]:0"
+	}
+	listener, err := raknet.Listen(address)
 	if err != nil {
 		return fmt.Errorf("listen: %w", err)
 	}
