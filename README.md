@@ -132,7 +132,7 @@ The edge hands the SDK's original TURN expiry to NetherNet's bounded UDP resolve
 and ICE owner. It performs one connection attempt and creates no runtime or task.
 
 Keep polling `MessagingConnection::recv` during connection use, including while
-waiting for writes through its cloned `session()` handle. When application input
+waiting for writes through its established `sender()` capability. When application input
 is full, poll `maintain` instead: it drives service/control/signaling without
 consuming game data. Both paths drive heartbeats, receipts and late ICE candidates.
 Maintenance stages a service terminal for the existing receive FIFO to drain
@@ -141,7 +141,11 @@ requests; offers require service acceptance and the intended peer's receipt.
 Incoming signals are routed by authenticated envelope UUID and connection ID,
 and acknowledged after bounded transport admission. Cancellation drops unsent
 waits without automatically retrying an ambiguous write. Closing or dropping the
-owner retires its service socket and signaling waits.
+owner retires its service socket and signaling waits. `begin_close(self)` consumes
+local sender capability into `ClosingMessagingConnection`, which can drain only the
+original accepted reliable prefix and one terminal. `try_finish` succeeds after
+that terminal; it does not claim a remote acknowledgment or actor join. Existing
+shared senders observe closure through the original runtime admission gate.
 
 One bounded service batch can wait for the smaller transport queue while socket
 control, heartbeats and completions continue. Envelopes retain their original

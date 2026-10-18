@@ -7,6 +7,8 @@
 
 mod driver;
 mod incoming;
+mod lifecycle;
+pub use lifecycle::{ClosedMessaging, ClosingMessagingConnection, MessagingConnection};
 mod retirement;
 mod socket;
 
@@ -17,8 +19,8 @@ use bedrock_services::signaling::{
 use bytes::Bytes;
 use driver::Driver;
 use nethernet_tokio::{
-    CallerSignaling, CallerSignalingConfig, ClientIceConfig, ConnectionConfig, NetherClient,
-    Session,
+    AcceptedSession, CallerSignaling, CallerSignalingConfig, ClientIceConfig, ConnectionConfig,
+    NetherClient, NetherError, Retired, SessionSender,
 };
 use retirement::SessionRetirement;
 use std::{
@@ -63,8 +65,8 @@ pub enum Error {
 
 /// One signed NetherNet connection and the authenticated messaging socket that carries its signals.
 /// It has no Debug implementation because the signaling owner retains sensitive SDP.
-pub struct MessagingConnection {
-    client: NetherClient,
+struct Engine {
+    client: TransportState,
     retirement: SessionRetirement,
     driver: Driver,
     receive: ReceiveState,
@@ -74,6 +76,32 @@ enum ReceiveState {
     Open,
     Draining(Option<Error>),
     Done,
+}
+
+/// The original transport and accepted receivers; local retirement adds no queue.
+enum TransportState {
+    Live(NetherClient),
+    Retired(AcceptedSession<Retired>),
+    Done,
+}
+
+impl TransportState {
+    /// Receives from the original reliable FIFO before and after local retirement.
+    async fn recv(&mut self) -> Result<Option<Bytes>, NetherError> {
+        match self {
+            Self::Live(client) => client.recv().await,
+            Self::Retired(accepted) => accepted.reliable.recv().await,
+            Self::Done => Ok(None),
+        }
+    }
+
+    /// Synchronously retires the unique lifecycle owner while retaining both original receivers.
+    fn retire(&mut self) {
+        *self = match std::mem::replace(self, Self::Done) {
+            Self::Live(client) => Self::Retired(client.close()),
+            state => state,
+        };
+    }
 }
 
 /// A selected account's already protected socket and one explicit peer route.
@@ -108,7 +136,7 @@ impl PreparedMessaging {
         config: ConnectionConfig,
         deadline: Instant,
     ) -> Result<MessagingConnection, Error> {
-        MessagingConnection::connect(
+        Engine::connect(
             self.socket,
             self.local_network_id,
             self.peer,
@@ -116,16 +144,19 @@ impl PreparedMessaging {
             deadline,
         )
         .await
+        .map(|engine| MessagingConnection {
+            engine: Box::new(engine),
+        })
     }
 }
 
-impl MessagingConnection {
+impl Engine {
     /// Connects once to an explicit peer using the same local network ID supplied at socket upgrade.
     ///
     /// Supply signed SDP identity and peer trust in `config`; unsigned answers are refused.
     /// The original deadline bounds TURN acquisition, DNS and connection establishment.
     /// TURN lifetimes are handed off unchanged. No automatic ambiguous retry occurs.
-    pub async fn connect(
+    async fn connect(
         mut socket: MessagingSocket,
         local_network_id: u64,
         peer: Uuid,
@@ -167,17 +198,17 @@ impl MessagingConnection {
                 .map_err(|_| Error::Transport)?;
             let retirement = SessionRetirement::new(&client);
             if let Some(error) = driver.failure() {
-                let _ = client.close().await;
+                let _retired = client.close();
                 return Err(error);
             }
             admit_established_connection(deadline, async {
                 driver.close();
-                let _ = client.close().await;
+                retirement.start_close();
             })
             .await?;
             driver.established();
             Ok(Self {
-                client,
+                client: TransportState::Live(client),
                 retirement,
                 driver,
                 receive: ReceiveState::Open,
@@ -191,8 +222,8 @@ impl MessagingConnection {
     }
 
     /// Clones the existing transport handle; recv or maintain must continue driving this owner.
-    pub fn session(&self) -> Session {
-        self.retirement.session()
+    fn sender(&self) -> SessionSender {
+        self.retirement.sender()
     }
 
     /// Drives service/control/signaling while application receive capacity is unavailable.
@@ -201,18 +232,18 @@ impl MessagingConnection {
     /// It completes once after staging a service failure; later maintenance calls
     /// remain pending while recv owns terminal reporting.
     /// Canceling it preserves the socket and all retained signaling admission waits.
-    pub async fn maintain(&mut self) {
+    async fn maintain(&mut self) {
         if !matches!(self.receive, ReceiveState::Open) {
             return std::future::pending().await;
         }
         if let Err(error) = self.driver.run(std::future::pending::<()>()).await {
-            self.fail_service(error).await;
+            self.fail_service(error);
         }
     }
 
     /// Receives reliable data while service heartbeats, receipts and late ICE signals progress.
     /// Cancellation preserves the SDK socket's partial frame and the transport's queued data.
-    pub async fn recv(&mut self) -> Result<Option<Bytes>, Error> {
+    async fn recv(&mut self) -> Result<Option<Bytes>, Error> {
         if matches!(self.receive, ReceiveState::Done) {
             return Ok(None);
         }
@@ -225,7 +256,7 @@ impl MessagingConnection {
             Ok(_) => self.driver.failure(),
         };
         if let Some(failure) = failure {
-            self.fail_service(failure).await;
+            self.fail_service(failure);
             if let Ok(Ok(Some(message))) = result {
                 return Ok(Some(message));
             }
@@ -235,25 +266,25 @@ impl MessagingConnection {
         if !matches!(&result, Ok(Some(_))) {
             self.receive = ReceiveState::Done;
             self.driver.close();
-            let _ = self.client.close().await;
+            self.client.retire();
         }
         result
     }
 
-    /// Closes the transport; dropping this owner also retires its messaging socket immediately.
-    pub async fn close(&mut self) -> Result<(), Error> {
+    /// Consumes local send permission without dropping the original accepted receive queues.
+    fn retire(&mut self) {
         if matches!(self.receive, ReceiveState::Open) {
             self.receive = ReceiveState::Draining(None);
         }
         self.driver.close();
-        self.client.close().await.map_err(|_| Error::Transport)
+        self.client.retire();
     }
 
     /// Retires service and transport admission while retaining the already accepted receive prefix.
-    async fn fail_service(&mut self, failure: Error) {
+    fn fail_service(&mut self, failure: Error) {
         self.receive = ReceiveState::Draining(Some(failure));
         self.driver.close();
-        let _ = self.client.close().await;
+        self.client.retire();
     }
 
     /// Drains the transport's existing bounded accepted FIFO before publishing one service failure or EOF.

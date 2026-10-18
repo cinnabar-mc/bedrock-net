@@ -218,7 +218,9 @@ impl Transport {
         match self {
             Self::RakNet { mut connection, .. } => connection.close().await?,
             Self::NetherNet { connection, .. } | Self::NetherNetLan { connection, .. } => {
-                let _retired = connection.close().await?;
+                let mut retired = connection.close();
+                while retired.reliable.recv().await?.is_some() {}
+                while retired.unreliable.recv().await?.is_some() {}
             }
         }
         Ok(())

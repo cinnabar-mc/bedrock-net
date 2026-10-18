@@ -48,7 +48,7 @@ async fn dropping_messaging_transport_owner_closes_a_retained_session() {
         let mut client = client.unwrap();
         let mut accepted = accepted.unwrap();
         let owner = SessionRetirement::new(&client);
-        let retained = owner.session();
+        let retained = owner.sender();
         retained
             .send(Bytes::from_static(b"live retained handle"))
             .await
@@ -74,7 +74,9 @@ async fn dropping_messaging_transport_owner_closes_a_retained_session() {
             .await;
         // Always clean up the real actors before an intended fail-first assertion.
         retained.close().await.unwrap();
-        accepted.session.close().await.unwrap();
+        let mut retired = accepted.close();
+        while retired.reliable.recv().await.unwrap().is_some() {}
+        while retired.unreliable.recv().await.unwrap().is_some() {}
         listener.close().await.unwrap();
         assert!(
             closed,
