@@ -83,14 +83,7 @@ pub fn encode_offline_request(
     now: SystemTime,
     max_request_bytes: usize,
 ) -> Result<Bytes, LoginError> {
-    if !client_data.get().trim_start().starts_with('{') {
-        return Err(LoginError::InvalidClientData);
-    }
-    if client_data.get().len() > max_request_bytes {
-        return Err(LoginError::LimitExceeded {
-            limit: max_request_bytes,
-        });
-    }
+    validate_client_data(client_data, max_request_bytes)?;
     let now = unix_seconds(now)?;
     let exp = now
         .checked_add(OFFLINE_VALIDITY_SECONDS)
@@ -124,9 +117,72 @@ pub fn encode_offline_request(
         },
         max_request_bytes,
     )?;
+    encode_request(key, &public_key, &envelope, client_data, max_request_bytes)
+}
+
+/// Encodes a Login using an already acquired multiplayer credential.
+///
+/// The caller acquires the token for this key and retains the same private owner
+/// through client-data signing and server key exchange. The token is preserved;
+/// this formatter performs no account I/O or issuer verification. Client data
+/// remains application-owned JSON. Returned bytes exclude the packet header
+/// and protocol version.
+///
+/// # Errors
+/// Rejects an empty or oversized token, non-object client data and encoding,
+/// key or signature failures before returning a partial request.
+pub fn encode_authenticated_request(
+    key: &SigningKey,
+    multiplayer_token: &str,
+    client_data: &RawValue,
+    max_request_bytes: usize,
+) -> Result<Bytes, LoginError> {
+    if multiplayer_token.is_empty() {
+        return Err(LoginError::EmptyAuthenticationToken);
+    }
+    if multiplayer_token.len() > max_request_bytes {
+        return Err(LoginError::LimitExceeded {
+            limit: max_request_bytes,
+        });
+    }
+    validate_client_data(client_data, max_request_bytes)?;
+    let der = key
+        .verifying_key()
+        .to_public_key_der()
+        .map_err(LoginError::PublicKey)?;
+    let public_key = STANDARD.encode(der.as_bytes());
+    let envelope = jwt::json_line(
+        &AuthEnvelope {
+            authentication_type: 0,
+            token: multiplayer_token,
+        },
+        max_request_bytes,
+    )?;
+    encode_request(key, &public_key, &envelope, client_data, max_request_bytes)
+}
+
+/// Rejects non-object or oversized application JSON before any signature work.
+fn validate_client_data(client_data: &RawValue, limit: usize) -> Result<(), LoginError> {
+    if !client_data.get().trim_start().starts_with('{') {
+        return Err(LoginError::InvalidClientData);
+    }
+    if client_data.get().len() > limit {
+        return Err(LoginError::LimitExceeded { limit });
+    }
+    Ok(())
+}
+
+/// Signs validated application JSON and frames the complete, bounded request.
+fn encode_request(
+    key: &SigningKey,
+    public_key: &str,
+    envelope: &[u8],
+    client_data: &RawValue,
+    max_request_bytes: usize,
+) -> Result<Bytes, LoginError> {
     let mut client_json = client_data.get().as_bytes().to_vec();
     client_json.push(b'\n');
-    let client_token = jwt::sign(key, &public_key, &client_json, max_request_bytes)?;
+    let client_token = jwt::sign(key, public_key, &client_json, max_request_bytes)?;
     let size = 8_usize
         .checked_add(envelope.len())
         .and_then(|size| size.checked_add(client_token.len()))
@@ -136,11 +192,11 @@ pub fn encode_offline_request(
             limit: max_request_bytes,
         });
     }
-    let envelope_len = u32::try_from(envelope.len()).map_err(|_| LoginError::InvalidLength)?;
-    let client_len = u32::try_from(client_token.len()).map_err(|_| LoginError::InvalidLength)?;
+    let envelope_len = i32::try_from(envelope.len()).map_err(|_| LoginError::InvalidLength)?;
+    let client_len = i32::try_from(client_token.len()).map_err(|_| LoginError::InvalidLength)?;
     let mut request = Vec::with_capacity(size);
     request.extend_from_slice(&envelope_len.to_le_bytes());
-    request.extend_from_slice(&envelope);
+    request.extend_from_slice(envelope);
     request.extend_from_slice(&client_len.to_le_bytes());
     request.extend_from_slice(client_token.as_bytes());
     Ok(request.into())
