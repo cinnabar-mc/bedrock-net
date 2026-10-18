@@ -41,6 +41,12 @@ call `finish_loading` once presentation is ready and send the initialization
 acknowledgment. Loading-screen notifications, rendering limits and preparation
 scheduling remain application policy.
 
+Raw packet readers can pass only non-prerequisite IDs to `receive_deferred`
+and retain their original bytes. This preserves lazy play decoding, including
+terrain data, while the core remains the owner of startup terrain classification.
+StartGame, ItemRegistry, PlayStatus and ChunkRadiusUpdated require their actual
+decoded bodies through `receive`.
+
 Deadlines, cancellation, malformed-wire handling, endpoint and account trust,
 credential persistence, cache/CDN I/O, deferred byte bounds and ongoing play are
 caller responsibilities. These owners do not claim live-server qualification.

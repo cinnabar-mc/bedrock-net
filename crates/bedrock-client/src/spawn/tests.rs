@@ -98,12 +98,15 @@ fn first_startup_definitions_prepare_early_and_radius_is_requested_once() {
 fn deferred_input_keeps_fifo_order_and_terrain_fact_until_ready() {
     let mut client = negotiation();
     client.receive(start(RUNTIME_ID)).unwrap();
+    // Raw callers retain chunk bytes and only supply the ID until ordinary play decoding.
+    client
+        .receive_deferred(packets::PacketId::LevelChunk)
+        .unwrap();
     let mut deferred = Vec::new();
     let inputs = [
         packets::Packet::SetTime(packets::SetTime {
             time: wire::ZigZag32(1),
         }),
-        packets::Packet::NetworkChunkPublisherUpdate(Default::default()),
         radius(8),
         packets::Packet::SetTime(packets::SetTime {
             time: wire::ZigZag32(2),
