@@ -456,6 +456,31 @@ async fn go_peer_acknowledgements_release_send_capacity_without_consuming_messag
 }
 
 #[tokio::test]
+async fn initial_port_refusal_retries_until_the_handshake_deadline() {
+    let address = {
+        let unused = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
+        unused.local_addr().unwrap()
+    };
+    let result = RakNetConnection::connect(
+        address,
+        RakNetOptions {
+            connect_timeout: Duration::from_secs(1),
+            ..RakNetOptions::default()
+        },
+    )
+    .await;
+    assert!(
+        matches!(
+            result,
+            Err(RakNetError::ConnectTimeout
+                | RakNetError::Handshake(::raknet::prelude::RakClientError::ConnectionFailed))
+        ),
+        "initial socket errors should leave retry timers active: {:?}",
+        result.err()
+    );
+}
+
+#[tokio::test]
 async fn cancelling_a_partial_handshake_releases_its_socket() {
     let server = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
     let mut connecting = Box::pin(RakNetConnection::connect(
