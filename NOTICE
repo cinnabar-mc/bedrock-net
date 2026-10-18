@@ -19,4 +19,11 @@ tools/raknet-peer/go.mod. Neither dependency's source is vendored here.
 
 The standalone probe consumes protocolgen's generated packet crate and uses
 bedrock-crustaceans/nethernet (Apache-2.0), with Cinnabar client identity support
-pinned in its manifest. Neither dependency's source is vendored here.
+pinned in its manifest. It also uses bedrock-rs bedrock_auth for the caller-owned
+ClientData metadata schema, under the Apache-2.0 commit identified above.
+These dependencies are not vendored here.
+
+The optional Login helpers use the same public Rust and Go references for
+line-terminated token JSON, token-only offline requests, and server key exchange.
+P-384 signatures, public-key parsing and ECDH use RustCrypto p384. The synthetic
+Login oracle shares tools/go-oracle's existing Gophertunnel pin.
