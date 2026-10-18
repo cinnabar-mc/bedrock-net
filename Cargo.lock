@@ -268,7 +268,7 @@ dependencies = [
 [[package]]
 name = "bedrock-services"
 version = "0.1.0"
-source = "git+https://github.com/cinnabar-mc/bedrock-services?rev=7f8b480fb7f4b66c42358409da19ad520b20b47a#7f8b480fb7f4b66c42358409da19ad520b20b47a"
+source = "git+https://github.com/cinnabar-mc/bedrock-services?rev=4c93cdd8460b704bb9e99766e1dde3d285e4c8ea#4c93cdd8460b704bb9e99766e1dde3d285e4c8ea"
 dependencies = [
  "base64 0.22.1",
  "futures-util",

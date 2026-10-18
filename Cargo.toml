@@ -31,7 +31,7 @@ messaging = ["dep:bedrock-services", "dep:futures", "dep:nethernet", "dep:nether
 aes = { version = "0.9", features = ["zeroize"] }
 base64 = { version = "0.22", optional = true }
 bytes = "1"
-bedrock-services = { git = "https://github.com/cinnabar-mc/bedrock-services", rev = "7f8b480fb7f4b66c42358409da19ad520b20b47a", features = ["signaling-tokio"], optional = true }
+bedrock-services = { git = "https://github.com/cinnabar-mc/bedrock-services", rev = "4c93cdd8460b704bb9e99766e1dde3d285e4c8ea", features = ["signaling-tokio"], optional = true }
 futures = { version = "0.3", optional = true }
 nethernet = { git = "https://github.com/cinnabar-mc/nethernet", rev = "46bffc13d2c48ca78957cd02b66c1cb9ec11025f", optional = true }
 nethernet-tokio = { git = "https://github.com/cinnabar-mc/nethernet", rev = "46bffc13d2c48ca78957cd02b66c1cb9ec11025f", optional = true }
