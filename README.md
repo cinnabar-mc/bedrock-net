@@ -65,8 +65,9 @@ sends immediately available datagrams. Cancelling these waits retains pending
 state; dropping a connection attempt or connection releases its socket. Transport messages
 retain their batch marker. Each attempt generates a fresh client identity from OS entropy
 before sending any datagrams; entropy failure returns an I/O error and releases the socket.
-The identity remains stable throughout retries and protected handshakes. Receive queue
-capacities and handshake/close deadlines are explicit options. `max_mtu` caps probes
+The identity remains stable throughout retries and protected handshakes. Transport
+timers and wire uptime use a monotonic clock, independently of authentication UTC.
+Receive queue capacities and handshake/close deadlines are explicit options. `max_mtu` caps probes
 and connected datagrams for local tunnels or VPNs; invalid caps fail before socket
 creation. Probe size failures
 advance discovery, and Request 1 discovery continues independently while Request 2
