@@ -313,19 +313,14 @@ pub(super) fn finish(
             skipped += 1;
             continue;
         }
-        let Some(download) = downloads.get(&id) else {
+        if downloads.get(&id).is_none_or(|download| {
+            download.offer.pack_id_version.pack_version.version != pack.version
+        }) {
             if super::builtins::contains(id, &pack.version.to_string_lossy()) {
                 continue;
             }
             if required {
                 return Err(invalid("required stack contains an unavailable pack"));
-            }
-            skipped += 1;
-            continue;
-        };
-        if download.offer.pack_id_version.pack_version.version != pack.version {
-            if required {
-                return Err(invalid("required stack pack version differs from offer"));
             }
             skipped += 1;
             continue;

@@ -54,8 +54,8 @@ pub struct SpawnUpdate {
     pub startup: Option<StartupData>,
     /// Preserve this packet in the caller's bounded FIFO, ahead of unread input.
     ///
-    /// Disconnect and Transfer are also returned here for immediate handling by
-    /// the caller. The core does not interpret display text or validate routes.
+    /// Disconnect, Transfer and non-spawn PlayStatus are also returned here for
+    /// handling by the caller. The core does not interpret display text or validate routes.
     pub deferred: Option<Box<packets::Packet>>,
     /// Signals completion of the network prerequisites exactly once.
     pub ready: Option<SpawnReady>,
@@ -197,10 +197,8 @@ impl SpawnNegotiation {
                     self.item_registry = Some(registry);
                 }
             }
-            packets::Packet::PlayStatus(status) => {
-                if status.status == PlayStatusType::Playerspawn {
-                    self.player_spawn_received = true;
-                }
+            packets::Packet::PlayStatus(status) if status.status == PlayStatusType::Playerspawn => {
+                self.player_spawn_received = true;
             }
             packets::Packet::ChunkRadiusUpdated(radius) => {
                 if radius.chunk_radius.0 < 1 {

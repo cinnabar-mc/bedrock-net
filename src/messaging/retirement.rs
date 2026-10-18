@@ -21,5 +21,11 @@ impl SessionRetirement {
     }
 }
 
+impl Drop for SessionRetirement {
+    fn drop(&mut self) {
+        self.session.start_close();
+    }
+}
+
 #[cfg(test)]
 mod tests;
