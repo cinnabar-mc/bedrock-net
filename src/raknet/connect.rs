@@ -172,13 +172,14 @@ pub(super) async fn finish_connect(
     let result = timeout_at(deadline, connecting)
         .await
         .map_err(|_| RakNetError::ConnectTimeout)?;
-    // The engine can observe the shared deadline before Tokio polls its timer.
+    // A ready owner or engine timeout can win before Tokio polls the shared timer.
     if Instant::now() >= deadline
         && matches!(
             &result,
-            Err(RakNetError::Handshake(
-                ::raknet::prelude::RakClientError::ConnectionFailed
-            ))
+            Ok(_)
+                | Err(RakNetError::Handshake(
+                    ::raknet::prelude::RakClientError::ConnectionFailed
+                ))
         )
     {
         Err(RakNetError::ConnectTimeout)
