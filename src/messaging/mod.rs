@@ -133,9 +133,11 @@ impl MessagingConnection {
             || config.identity.is_none()
             || config.server_trust.is_none()
             || config.allow_unsigned_answers
-            || Instant::now() >= deadline
         {
             return Err(Error::Configuration);
+        }
+        if tokio::time::Instant::now().into_std() >= deadline {
+            return Err(Error::TimedOut);
         }
         let cancellation = config.cancel_token.clone();
         let connecting = tokio::time::timeout_at(deadline.into(), async {
@@ -246,10 +248,15 @@ impl MessagingConnection {
 
 /// Guards the final connection handoff, retiring both owned edges when its original deadline elapsed.
 async fn admit_established_connection(
-    _deadline: Instant,
-    _close: impl std::future::Future<Output = ()>,
+    deadline: Instant,
+    close: impl std::future::Future<Output = ()>,
 ) -> Result<(), Error> {
-    Ok(())
+    if tokio::time::Instant::now().into_std() >= deadline {
+        close.await;
+        Err(Error::TimedOut)
+    } else {
+        Ok(())
+    }
 }
 
 /// Acquires the SDK's original credential lifetime before the peer can send an offer response.

@@ -5,7 +5,11 @@ use tokio::sync::oneshot;
 /// An already-ready establishment cannot escape its original deadline on a delayed outer poll.
 #[tokio::test(start_paused = true)]
 async fn ready_establishment_cannot_escape_original_connect_deadline() {
-    for delayed_poll in [false, true] {
+    for delay in [
+        Duration::ZERO,
+        Duration::from_secs(1),
+        Duration::from_secs(2),
+    ] {
         let closed = Cell::new(false);
         let deadline = tokio::time::Instant::now() + Duration::from_secs(1);
         let (complete, established) = oneshot::channel();
@@ -17,11 +21,11 @@ async fn ready_establishment_cannot_escape_original_connect_deadline() {
             .await
         });
         complete.send(()).unwrap();
-        if delayed_poll {
-            tokio::time::advance(Duration::from_secs(2)).await;
+        if !delay.is_zero() {
+            tokio::time::advance(delay).await;
         }
         let result = connecting.await.unwrap();
-        if delayed_poll {
+        if delay >= Duration::from_secs(1) {
             assert!(
                 matches!(result, Err(Error::TimedOut)),
                 "ready connection escaped its original connect deadline"

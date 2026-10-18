@@ -123,7 +123,9 @@ owner retires its service socket and signaling waits.
 One bounded service batch can wait for the smaller transport queue while socket
 control, heartbeats and completions continue. Envelopes retain their original
 deadline and a single receipt ID. Local SDK capacity waits retain an unadmitted
-send or receipt; admitted transport signals are never delivered twice. A service
+send or receipt; admitted transport signals are never delivered twice. Incoming
+expiry is checked at transport queue publication, and final connection handoff
+refuses and retires a ready connection at or after its original setup deadline. A service
 failure closes the transport and drains its existing accepted reliable FIFO
 before reporting one error. No additional application-data backlog is created.
 

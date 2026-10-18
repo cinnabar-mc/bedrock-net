@@ -31,8 +31,11 @@ impl Batch {
         signal: ReceivedSignal,
         deadline: Instant,
     ) -> Result<(), Error> {
-        let delivery = match caller.prepare_delivery(&signal.sender().to_string(), signal.signal())
-        {
+        let delivery = match caller.prepare_delivery_before(
+            &signal.sender().to_string(),
+            signal.signal(),
+            deadline,
+        ) {
             Ok(delivery) => delivery,
             Err(CallerSignalingError::RouteMismatch | CallerSignalingError::InvalidSignal) => {
                 return Ok(());
@@ -57,11 +60,7 @@ impl Batch {
             receipt: Uuid::new_v4(),
             deadline,
             bytes,
-            waiting: Some(Box::pin(async move {
-                tokio::time::timeout_at(deadline.into(), delivery)
-                    .await
-                    .map_err(|_| CallerSignalingError::TimedOut)?
-            })),
+            waiting: Some(Box::pin(delivery)),
         });
         self.bytes += bytes;
         Ok(())
