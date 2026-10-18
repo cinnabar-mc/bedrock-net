@@ -455,6 +455,139 @@ fn external_read() -> (PendingServerChunkRead<Grant>, Instant) {
     (read, now)
 }
 
+/// Reaches a real one-chunk request through original signed Login and generated pack metadata.
+fn memory_chunk_request(
+    max_metadata_bytes: usize,
+    requested_version: Option<&str>,
+) -> (ServerPacks<Grant>, packets::Packet, Instant) {
+    let mut source = snapshot();
+    source.offer.resource_packs.truncate(1);
+    let info = &mut source.offer.resource_packs[0];
+    info.pack_size = wire::U64LE(u64::from(CHUNK_BYTES));
+    let id = info.pack_id_version.pack_uuid.to_string();
+    source
+        .stack
+        .texture_pack_list
+        .retain(|pack| pack.pack_id.to_str().unwrap() == id);
+    source.contents = vec![ServerPackContent::new(
+        vec![0; CHUNK_BYTES as usize],
+        6,
+        false,
+    )];
+    let (server, _client, provider, now, utc) = ready_with_client(false);
+    let (server, initial) = server
+        .start_packs(
+            source,
+            ServerPackDelivery {
+                chunk_size: CHUNK_BYTES,
+                max_metadata_bytes,
+                ..Default::default()
+            },
+            &provider,
+            now,
+            utc,
+        )
+        .unwrap();
+    let offer = initial
+        .into_iter()
+        .find_map(|packet| match on_wire(packet, wire::Peer::Server) {
+            packets::Packet::ResourcePacksInfo(offer) => Some(offer),
+            _ => None,
+        })
+        .unwrap();
+    let (mut client, response) = PackOffer::new(offer, PackTransferLimits::default())
+        .unwrap()
+        .start()
+        .unwrap();
+    let ServerPackEvent::Send {
+        session: server,
+        packets: infos,
+    } = server
+        .receive(on_wire(response.into(), wire::Peer::Client), now)
+        .unwrap()
+    else {
+        panic!("missing original memory archive metadata")
+    };
+    assert_eq!(infos.len(), 1);
+    let PackEvent::Send(mut requests) = client
+        .receive(on_wire(
+            infos.into_iter().next().unwrap(),
+            wire::Peer::Server,
+        ))
+        .unwrap()
+    else {
+        panic!("missing actual memory archive chunk request")
+    };
+    assert_eq!(requests.len(), 1);
+    let mut request = requests.remove(0);
+    if let Some(version) = requested_version {
+        assert!(version.len() <= PackTransferLimits::default().max_version_bytes);
+        let packets::Packet::ResourcePackChunkRequest(request) = &mut request else {
+            panic!("missing generated chunk request")
+        };
+        request.resource_name = format!("{id}_{version}").into();
+    }
+    (server, on_wire(request, wire::Peer::Client), now)
+}
+
+/// Measures the actual generated response, including its frame prefix and packet header.
+fn chunk_frame_len(chunk: &PendingServerChunk<Grant>) -> usize {
+    let mut encoded = Vec::new();
+    packets::Packet::from(chunk.packet().clone())
+        .encode_frame(wire::Peer::Server, 0, 0, &mut encoded)
+        .unwrap();
+    encoded.len()
+}
+
+#[test]
+fn typed_accepting_echoed_chunk_name_respects_actual_response_wire_budget() {
+    let (server, request, now) =
+        memory_chunk_request(ServerPackDelivery::default().max_metadata_bytes, None);
+    let ServerPackEvent::Chunk(canonical) = server.receive(request, now).unwrap() else {
+        panic!("missing canonical memory chunk")
+    };
+    let budget = chunk_frame_len(&canonical);
+    for version in [None, Some("2.0.0")] {
+        let (server, request, now) = memory_chunk_request(budget, version);
+        let packets::Packet::ResourcePackChunkRequest(original) = &request else {
+            panic!("missing generated chunk request")
+        };
+        let name = original.resource_name.clone();
+        let ServerPackEvent::Chunk(chunk) = server.receive(request, now).unwrap() else {
+            panic!("a fitting UUID-only request must remain accepted")
+        };
+        assert_eq!(chunk.packet().resource_name, name);
+        assert!(chunk_frame_len(&chunk) <= budget);
+    }
+    let (server, request, now) = memory_chunk_request(budget, Some(CHUNK_REQUEST_VERSION));
+    let deadline = server.deadline();
+    let grant = server.grant() as *const Grant;
+    match server.receive(request.clone(), now) {
+        Ok(ServerPackEvent::Chunk(chunk)) => {
+            assert!(
+                chunk_frame_len(&chunk) <= budget,
+                "the actual response with its echoed request name exceeded its wire budget"
+            );
+        }
+        Err(failed) => {
+            let (server, error) = failed.into_parts();
+            assert!(matches!(error, ServerSessionError::InvalidData(_)));
+            assert_eq!(server.deadline(), deadline);
+            assert_eq!(server.grant() as *const Grant, grant);
+            assert_eq!(server.login().xuid(), "123");
+            assert_eq!(server.login().nonce(), "original-nonce");
+            let Err(failed) = server.receive(request, now) else {
+                panic!("a failed output budget must not reopen the original owner")
+            };
+            assert!(matches!(
+                failed.into_parts().1,
+                ServerSessionError::InvalidState
+            ));
+        }
+        _ => panic!("memory request did not retain its original chunk or failure"),
+    }
+}
+
 #[test]
 fn typed_external_read_checks_original_sha_length_deadline_and_sealed_failure() {
     let (read, now) = external_read();
