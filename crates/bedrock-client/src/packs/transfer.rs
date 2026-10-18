@@ -32,8 +32,7 @@ impl Budget {
         let mut retained = 0_u64;
         let mut skipped = 0_usize;
         for offer in offers {
-            let first = seen.insert(offer.pack_id_version.pack_uuid);
-            if !first
+            if seen.contains(&offer.pack_id_version.pack_uuid)
                 || downloads.len() >= limits.max_packs
                 || offer.pack_size.0 > limits.max_archive_bytes
                 || offer.pack_size.0 > limits.max_stack_bytes - retained
@@ -43,6 +42,7 @@ impl Budget {
             }
             match Download::new(offer, limits) {
                 Ok(download) => {
+                    seen.insert(download.offer.pack_id_version.pack_uuid);
                     retained += download.size;
                     downloads.push(download);
                 }
