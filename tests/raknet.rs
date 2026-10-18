@@ -109,6 +109,98 @@ impl Peer {
 }
 
 #[tokio::test]
+async fn go_peer_connects_when_a_smaller_probe_is_required_after_the_initial_grant() {
+    let Some(peer) = Peer::start(0).await else {
+        return;
+    };
+    let peer_address = peer.address;
+    let socket = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
+    let relay_address = socket.local_addr().unwrap();
+    let client_cap = 1400;
+    let path_mtu = 1200;
+    // This fixture uses IPv4 UDP without IP options.
+    let headers = 20 + usize::from(::raknet::prelude::constants::UDP_HEADER_SIZE);
+    let payload_limit = path_mtu - headers;
+    let mut blocked_request_two = false;
+    let mut smaller_probe_arrived = false;
+    let exchange = async {
+        let mut connection = RakNetConnection::connect(
+            relay_address,
+            RakNetOptions {
+                max_mtu: client_cap,
+                ..RakNetOptions::default()
+            },
+        )
+        .await
+        .unwrap();
+        let message = Bytes::from(vec![0xfe; 4096]);
+        connection.queue_send(message.clone()).unwrap();
+        assert_eq!(connection.recv().await.unwrap(), message);
+        connection.close().await.unwrap();
+        peer.finish().await;
+    };
+    {
+        let forwarding = async {
+            let mut client = None;
+            let mut initial_probe = true;
+            let mut buffer = [0; 65536];
+            loop {
+                let (length, from) = socket.recv_from(&mut buffer).await.unwrap();
+                let target = if from == peer_address {
+                    client.expect("client sent the first handshake datagram")
+                } else {
+                    client = Some(from);
+                    let packet = &buffer[..length];
+                    if packet.first() == Some(&0x05) {
+                        if initial_probe {
+                            assert_eq!(length + headers, usize::from(client_cap));
+                            initial_probe = false;
+                        } else if length <= payload_limit {
+                            smaller_probe_arrived = true;
+                        } else {
+                            continue;
+                        }
+                    }
+                    if packet.first() == Some(&0x07) {
+                        // Request 2 ends in its big-endian MTU and eight-byte GUID.
+                        let mtu_at = packet.len() - 10;
+                        let grant =
+                            u16::from_be_bytes(packet[mtu_at..mtu_at + 2].try_into().unwrap());
+                        if !smaller_probe_arrived || usize::from(grant) > path_mtu {
+                            blocked_request_two = true;
+                            continue;
+                        }
+                    }
+                    if smaller_probe_arrived {
+                        assert!(
+                            length <= payload_limit,
+                            "connected datagram exceeds the path MTU"
+                        );
+                    }
+                    peer_address
+                };
+                socket.send_to(&buffer[..length], target).await.unwrap();
+            }
+        };
+        tokio::pin!(forwarding);
+        tokio::select! {
+            result = timeout(Duration::from_secs(30), exchange) => {
+                result.expect("a smaller probe unblocks the offline handshake");
+            }
+            _ = &mut forwarding => panic!("relay unexpectedly terminated"),
+        }
+    }
+    assert!(
+        blocked_request_two,
+        "the first grant did not complete the handshake"
+    );
+    assert!(
+        smaller_probe_arrived,
+        "discovery continued after the initial grant"
+    );
+}
+
+#[tokio::test]
 async fn go_peer_preserves_message_boundaries_fragmentation_and_fifo() {
     let Some(peer) = Peer::start(0).await else {
         return;

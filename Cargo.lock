@@ -1750,13 +1750,15 @@ checksum = "f8dcc9c7d52a811697d2151c701e0d08956f92b0e24136cf4cf27b57a6a0d9bf"
 [[package]]
 name = "raknet"
 version = "0.1.0"
-source = "git+https://github.com/cinnabar-mc/raknet?rev=af959ae3b6c5868fe5c55d7d71f06828b2769ce5#af959ae3b6c5868fe5c55d7d71f06828b2769ce5"
+source = "git+https://github.com/cinnabar-mc/raknet?rev=a58f1b18a187ab928c02eb934832107986f4b3e6#a58f1b18a187ab928c02eb934832107986f4b3e6"
 dependencies = [
  "byteorder",
  "facet",
+ "libc",
  "rand",
  "thiserror 2.0.21",
  "tracing",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

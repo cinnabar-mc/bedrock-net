@@ -45,7 +45,8 @@ Key exchange and authentication are separate, pending work.
 
 Enable the `raknet` feature for `raknet::RakNetConnection`, a Tokio driver over a
 pinned [bedrock-crustaceans/raknet](https://github.com/bedrock-crustaceans/raknet)
-protocol engine, with a queued ordering-window fix in the Cinnabar fork. Sustained
+protocol engine, with queued ordering-window and offline negotiation fixes in the
+Cinnabar fork. Sustained
 application traffic follows congestion control and sends ready datagrams without
 a fixed flush delay. One connection owns its socket and protocol state and spawns no
 background tasks. Queue complete messages with `queue_send`, then keep `recv`
@@ -53,7 +54,11 @@ polled in the session network loop to service acknowledgements and timers. `flus
 sends immediately available datagrams. Cancelling these waits retains pending
 state; dropping a dial or connection releases its socket. Transport messages
 retain their batch marker. Receive queue capacities and handshake/close deadlines
-are explicit options. `wait_send_capacity` services ACKs when the outgoing byte
+are explicit options. `max_mtu` caps probes and connected datagrams for local
+tunnels or VPNs; invalid caps fail before socket creation. Probe size failures
+advance discovery, and Request 1 discovery continues independently while Request 2
+retries. These deterministic transitions still need validation on real network
+paths and devices. `wait_send_capacity` services ACKs when the outgoing byte
 budget is full, retaining inbound messages for the next `recv`. Complete earlier
 messages drain before terminal errors.
 
