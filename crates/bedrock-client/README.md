@@ -33,8 +33,10 @@ the outgoing stream. The byte-oriented codec and directional ciphers remain in
 before `start`, produces bounded chunk requests, verifies in-band SHA-256, and
 returns owned archives in final server-selected stack order. Route its unhandled
 packets through the retained handshake to handle late LoginSuccess or server key
-exchange. Cache writers must release shared archive references before the final
-stack. Handle Disconnect and Transfer at the application boundary.
+exchange. Retain its returned startup packets, including early PlayerSpawn, in
+the caller's bounded FIFO for the spawn owner. Cache writers must release shared
+archive references before the final stack. Handle Disconnect and Transfer at the
+application boundary.
 
 After packs, drive `spawn::SpawnNegotiation` with a caller-selected
 `RequestChunkRadius`. It emits that request exactly once after StartGame, hands

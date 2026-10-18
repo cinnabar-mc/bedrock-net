@@ -189,3 +189,119 @@ fn early_refusal_and_terminal_packets_preserve_their_meaning() {
         ))
     ));
 }
+
+#[test]
+fn deferred_spawn_neither_sends_cache_status_nor_consumes_the_verified_exchange() {
+    let mut client = handshake(true);
+    let signed_login = login(&mut client);
+    let spawn = packets::Packet::PlayStatus(packets::PlayStatus {
+        status: PlayStatusType::Playerspawn,
+    });
+    assert!(
+        matches!(client.receive(spawn.clone()).unwrap(), HandshakeEvent::Unhandled(packet) if *packet == spawn)
+    );
+    assert!(matches!(
+        client
+            .receive(packets::Packet::ServerToClientHandshake(
+                packets::ServerToClientHandshake {
+                    handshake_web_token: exchange_token(&signed_login).into(),
+                },
+            ))
+            .unwrap(),
+        HandshakeEvent::KeyExchange {
+            ciphers: Some(_),
+            ..
+        }
+    ));
+    let success = || {
+        packets::Packet::PlayStatus(packets::PlayStatus {
+            status: PlayStatusType::Loginsuccess,
+        })
+    };
+    let HandshakeEvent::Send(sent) = client.receive(success()).unwrap() else {
+        panic!("LoginSuccess must still emit the initial capability");
+    };
+    assert!(matches!(
+        sent.as_slice(),
+        [packets::Packet::ClientCacheStatus(status)] if status.is_cache_supported
+    ));
+    assert!(
+        matches!(client.receive(spawn.clone()).unwrap(), HandshakeEvent::Unhandled(packet) if *packet == spawn)
+    );
+    assert!(matches!(
+        client.receive(success()).unwrap(),
+        HandshakeEvent::Send(sent) if sent.is_empty()
+    ));
+    assert!(matches!(
+        client
+            .receive(packets::Packet::ResourcePacksInfo(Default::default()))
+            .unwrap(),
+        HandshakeEvent::Packs {
+            cache_status: None,
+            ..
+        }
+    ));
+}
+
+#[test]
+fn refusal_and_unknown_statuses_still_end_the_handshake_during_packs() {
+    for status in [
+        PlayStatusType::LoginfailedServerfullsubclient,
+        PlayStatusType::Unknown(i32::MAX),
+    ] {
+        let mut client = handshake(true);
+        login(&mut client);
+        let HandshakeEvent::Packs {
+            mut negotiation, ..
+        } = client
+            .receive(packets::Packet::ResourcePacksInfo(Default::default()))
+            .unwrap()
+        else {
+            panic!("actual pack owner");
+        };
+        negotiation.start().unwrap();
+        let PackEvent::Unhandled(packet) = negotiation
+            .receive(packets::Packet::PlayStatus(packets::PlayStatus { status }))
+            .unwrap()
+        else {
+            panic!("the pack owner must preserve handshake-owned statuses");
+        };
+        assert!(matches!(
+            client.receive(*packet),
+            Err(HandshakeError::LoginRefused(received)) if received == status
+        ));
+        assert!(matches!(
+            client.receive(packets::Packet::PlayStatus(packets::PlayStatus {
+                status: PlayStatusType::Playerspawn,
+            })),
+            Err(HandshakeError::InvalidState)
+        ));
+    }
+}
+
+#[test]
+fn deferred_spawn_does_not_admit_login_before_settings_or_login_construction() {
+    let mut client = handshake(true);
+    client.start().unwrap();
+    let spawn = packets::Packet::PlayStatus(packets::PlayStatus {
+        status: PlayStatusType::Playerspawn,
+    });
+    assert!(
+        matches!(client.receive(spawn.clone()).unwrap(), HandshakeEvent::Unhandled(packet) if *packet == spawn)
+    );
+    assert!(matches!(
+        client
+            .receive(packets::Packet::NetworkSettings(Default::default()))
+            .unwrap(),
+        HandshakeEvent::Compression(_)
+    ));
+    assert!(
+        matches!(client.receive(spawn.clone()).unwrap(), HandshakeEvent::Unhandled(packet) if *packet == spawn)
+    );
+    assert!(matches!(
+        client.receive(packets::Packet::PlayStatus(packets::PlayStatus {
+            status: PlayStatusType::Loginsuccess,
+        })),
+        Err(HandshakeError::InvalidState)
+    ));
+}

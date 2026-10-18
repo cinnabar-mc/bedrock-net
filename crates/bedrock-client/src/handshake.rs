@@ -88,7 +88,7 @@ pub enum HandshakeEvent {
         /// Bounded transfer and stack state; cache and CDN I/O remain external.
         negotiation: PackNegotiation,
     },
-    /// The packet is owned by the caller, including Disconnect and Transfer.
+    /// The packet is owned by the caller, including early PlayerSpawn, Disconnect and Transfer.
     Unhandled(Box<packets::Packet>),
 }
 
@@ -108,8 +108,9 @@ enum Phase {
 /// compression before calling one of the Login methods. They sign with this
 /// same key. After the offer, drive the returned [`PackNegotiation`]; route its
 /// unhandled packets through this handshake so late LoginSuccess and key
-/// exchange remain on the same owner. Handle Disconnect and Transfer at the
-/// application boundary. Any received-packet error ends this handshake.
+/// exchange remain on the same owner. Retain returned startup packets for the
+/// spawn owner; handle Disconnect and Transfer at the application boundary.
+/// Any received-packet error ends this handshake.
 ///
 /// The caller owns transport I/O, endpoint/account trust, client-data schema,
 /// UTC, deadline, cancellation and bounded buffering of unread packet siblings.
@@ -261,6 +262,9 @@ impl ClientHandshake {
                     ciphers: self.options.batch_encryption.then(|| Box::new(ciphers)),
                     response: packets::ClientToServerHandshake {},
                 })
+            }
+            packets::Packet::PlayStatus(status) if status.status == PlayStatusType::Playerspawn => {
+                Ok(HandshakeEvent::Unhandled(Box::new(status.into())))
             }
             packets::Packet::PlayStatus(status) => {
                 if status.status != PlayStatusType::Loginsuccess {
