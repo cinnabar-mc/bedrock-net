@@ -2,6 +2,7 @@
 
 mod batch;
 mod compression;
+pub mod encryption;
 mod error;
 
 pub use batch::{BatchCodec, BatchHeader, BatchLimits, DecodeOutcome};
