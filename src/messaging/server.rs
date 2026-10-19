@@ -10,14 +10,15 @@
 //! keeps its original credential expirations: the transport checks them for each new
 //! offer. Updating ICE never renews an already admitted peer's allocation.
 
-use super::{Error, driver::Driver};
-use bedrock_services::signaling::websocket::MessagingSocket;
+use super::{Error, TurnRefresh, driver::Driver};
+use bedrock_services::signaling::{TurnCredentials, websocket::MessagingSocket};
 use futures::future::pending;
+use nethernet::identity::{SdpIdentity, TokenTrust};
 use nethernet_tokio::{
     AcceptedSession, CallerServerSignaling, CallerServerSignalingConfig, ConnectionConfig,
     NetherServer, ServerIceConfig,
 };
-use std::time::Instant;
+use std::{sync::Arc, time::Instant};
 
 /// A protected service socket before accepting transport admission exists.
 /// The network ID must be the exact value supplied at the socket's original upgrade.
@@ -130,6 +131,56 @@ impl MessagingServer {
     /// Completes only when the retained service driver fails or closes.
     pub async fn maintain(&mut self) -> Result<(), Error> {
         self.driver.run(pending::<()>()).await
+    }
+
+    /// Admits one fresh TURN request on this server's original JSON-RPC service socket.
+    /// No request is retried automatically. Finish or cancel the receipt, or close this server before
+    /// requesting another refresh; a canceled finish wait keeps the original request owned.
+    ///
+    /// # Errors
+    /// Refuses an elapsed deadline, closed service, existing refresh or unavailable local capacity.
+    pub fn begin_turn_refresh(&mut self, deadline: Instant) -> Result<TurnRefresh, Error> {
+        self.driver.begin_turn_refresh(deadline)
+    }
+
+    /// Drives the original request while signaling, heartbeats and receipts continue progressing.
+    /// Returns the actual zeroizing SDK credential owner once, with its receipt-anchored expiry.
+    /// Cancellation preserves partial writes, the original deadline and any completed result.
+    /// The caller resolves and installs these endpoints explicitly; this does not update ICE
+    /// or renew an already admitted peer. A receipt from another server is refused before I/O.
+    ///
+    /// # Errors
+    /// Returns wrong/consumed receipt, original deadline, correlated service response or driver errors.
+    pub async fn finish_turn_refresh(
+        &mut self,
+        receipt: &TurnRefresh,
+    ) -> Result<TurnCredentials, Error> {
+        self.driver.finish_turn_refresh(receipt).await
+    }
+
+    /// Retires this server's exact refresh request and immediately drops its owned result.
+    /// An unsent frame is removed; an admitted partial write stays owned and may reach the
+    /// service. Late responses are ignored. This performs no I/O, retry or remote acknowledgment.
+    /// Other cached credentials, signaling routes and the original service error stay unchanged.
+    ///
+    /// # Errors
+    /// Rejects a wrong, consumed or already canceled receipt before any state mutation.
+    pub fn cancel_turn_refresh(&mut self, receipt: &TurnRefresh) -> Result<(), Error> {
+        self.driver.cancel_turn_refresh(receipt)
+    }
+
+    /// Supplies the caller's freshly qualified answer identity for later offers on this listener.
+    /// Pending and accepted peers retain their original signer and transport lifetimes.
+    /// This performs no mint, signaling refresh or change to offer trust.
+    pub fn set_identity(&self, identity: Arc<dyn SdpIdentity>) {
+        self.server.set_identity(identity);
+    }
+
+    /// Supplies explicit caller-qualified trust for later offers on this same listener.
+    /// Present identities keep their original token and fingerprint verification requirements.
+    /// This does not replace answer identity or authenticate Minecraft Login.
+    pub fn set_token_trust(&self, trust: TokenTrust) {
+        self.server.set_token_trust(Some(trust));
     }
 
     /// Supplies freshly acquired caller-owned ICE configuration for later offers only.

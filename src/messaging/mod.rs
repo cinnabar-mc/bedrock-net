@@ -11,6 +11,7 @@ mod incoming;
 mod lifecycle;
 pub use lifecycle::{ClosedMessaging, ClosingMessagingConnection, MessagingConnection};
 mod recipient;
+pub use driver::TurnRefresh;
 mod retirement;
 pub use recipient::Recipient;
 pub mod server;

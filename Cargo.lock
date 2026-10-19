@@ -272,7 +272,7 @@ dependencies = [
 [[package]]
 name = "bedrock-services"
 version = "0.1.0"
-source = "git+https://github.com/cinnabar-mc/bedrock-services?rev=775fb94aa61807d1537669e7a8926249b07d779b#775fb94aa61807d1537669e7a8926249b07d779b"
+source = "git+https://github.com/cinnabar-mc/bedrock-services?rev=c4e7d8744ee003d8a431cc40ae6093b48fc43808#c4e7d8744ee003d8a431cc40ae6093b48fc43808"
 dependencies = [
  "aws-lc-rs",
  "base64 0.22.1",
@@ -1631,7 +1631,7 @@ checksum = "bc0287524726960e07b119cebd01678f852f147742ae0d925e6a520dca956126"
 [[package]]
 name = "nethernet"
 version = "0.0.1"
-source = "git+https://github.com/cinnabar-mc/nethernet?rev=b11f163fa1d62da912adecd6d26573569520566c#b11f163fa1d62da912adecd6d26573569520566c"
+source = "git+https://github.com/cinnabar-mc/nethernet?rev=f75fa954871e349ff13285ca88c5d54446dac6b2#f75fa954871e349ff13285ca88c5d54446dac6b2"
 dependencies = [
  "aes 0.9.3",
  "base64 0.23.1",
@@ -1655,7 +1655,7 @@ dependencies = [
 [[package]]
 name = "nethernet-tokio"
 version = "0.2.0"
-source = "git+https://github.com/cinnabar-mc/nethernet?rev=b11f163fa1d62da912adecd6d26573569520566c#b11f163fa1d62da912adecd6d26573569520566c"
+source = "git+https://github.com/cinnabar-mc/nethernet?rev=f75fa954871e349ff13285ca88c5d54446dac6b2#f75fa954871e349ff13285ca88c5d54446dac6b2"
 dependencies = [
  "bytes",
  "futures",
@@ -1664,6 +1664,7 @@ dependencies = [
  "hyper",
  "hyper-util",
  "nethernet",
+ "p384",
  "rand",
  "reqwest",
  "rtc",
