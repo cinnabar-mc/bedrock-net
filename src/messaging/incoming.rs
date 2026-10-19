@@ -109,6 +109,11 @@ impl Batch {
 
     /// Releases an envelope only after the SDK admitted its single receipt operation.
     pub(super) fn acknowledged(&mut self) {
+        self.discard();
+    }
+
+    /// Releases the original front and its wire budget without creating delivery evidence.
+    pub(super) fn discard(&mut self) {
         if let Some(front) = self.queue.pop_front() {
             self.bytes -= front.bytes;
         }
