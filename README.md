@@ -120,6 +120,20 @@ underlying NetherNet Tokio adapter owns its bounded transport workers. Accepting
 `MessagingServer` needs `accept` or `maintain` polled and takes caller-supplied
 ICE configuration. It publishes no world or activity and does not authorize Login.
 
+An accepting JSON-RPC server can request fresh TURN credentials with
+`begin_turn_refresh(deadline)` and finish that exact request with
+`finish_turn_refresh(&receipt)`. Keep the receipt across canceled waits; it belongs
+to that server and cannot be reused on another one. Finish the request or close
+the server before abandoning it. The result moves the actual SDK credential
+owner once and preserves its expiry. This operation does not refresh account
+authentication, replace ICE configuration or renew an existing allocation.
+
+The caller can install a qualified answer identity, offer trust and ICE
+configuration with `set_identity`, `set_token_trust` and `set_server_ice`.
+Coordinate these changes before accepting another offer. Pending and accepted
+peers retain their original transport and signer owners; the setters perform no
+service requests or atomic renewal transaction.
+
 Choose the service dialect from the acquired route before connecting.
 `PreparedMessaging::new` takes a Player Messaging UUID;
 `PreparedMessaging::new_legacy` takes the original legacy string recipient and a
