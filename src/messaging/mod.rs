@@ -177,7 +177,8 @@ impl PreparedMessaging {
 impl Engine {
     /// Connects once to an explicit peer using the same local network ID supplied at socket upgrade.
     ///
-    /// Supply signed SDP identity and peer trust in `config`; unsigned answers are refused.
+    /// Supply signed SDP identity and peer trust in `config`. Missing answers require the
+    /// explicit legacy route and client allowance; present identities always use that trust.
     /// The original deadline bounds TURN acquisition, DNS and connection establishment.
     /// TURN lifetimes are handed off unchanged. No automatic ambiguous retry occurs.
     async fn connect(
@@ -190,6 +191,7 @@ impl Engine {
         if config.identity.is_none()
             || config.server_trust.is_none()
             || config.allow_unsigned_answers
+            || (config.allow_anonymous_answers && !peer.is_legacy())
         {
             return Err(Error::Configuration);
         }
