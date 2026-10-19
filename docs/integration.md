@@ -134,9 +134,10 @@ cache/CDN preloads. Send the returned cache status once when present. Consume
 `start` only after preload policy is settled; `ClientPacks` then owns transfer and
 late Login controls together. It has no preload method.
 
-The transfer bounds retained archive bytes and request work, validates in-band
-integrity and processes the server's final stack in its declared order, including
-subpacks, required status and recognized built-ins. Cache/CDN reads, persistence,
+Archive count and byte caps are explicit `PackTransferLimits` options, defaulting
+to `None`. The transfer always bounds its chunk-request window, validates
+in-band integrity and processes the server's final stack in its declared order,
+including subpacks, required status and recognized built-ins. Cache/CDN reads, persistence,
 archive validation/application and presentation remain external.
 
 Only actual final-stack processing returns `PackComplete`. Its `start_spawn`
@@ -149,8 +150,9 @@ construct another completion capability.
 Each `SpawnUpdate` may contain several effects. Dispatch `request_radius`, start
 application preparation from `startup`, preserve/handle `deferred`, and retain
 `ready` without losing siblings. Definitions become available before all network
-prerequisites complete so loading can progress concurrently. Only actual startup
-input produces `SpawnReady`; after presentation is ready, consume
+prerequisites complete so loading can progress concurrently. StartGame, the first
+item registry and PlayerSpawn produce `SpawnReady` without waiting for a radius
+reply; preserve that reply for play if it arrives later. After presentation is ready, consume
 `finish_loading` once and send its initialization acknowledgment.
 
 The standalone `PackOffer` → `PackNegotiation` flow uses the same transfer engine
