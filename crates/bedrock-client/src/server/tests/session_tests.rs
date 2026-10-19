@@ -1,5 +1,7 @@
 //! Real generated client/server pack exchange, original file IO and selected-world initialization.
 
+mod relay_tests;
+
 use super::{
     Provider,
     lifecycle_tests::{Grant, ready_with_client},

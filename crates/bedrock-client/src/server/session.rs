@@ -2,6 +2,7 @@
 
 mod lifecycle;
 mod packs;
+mod relay;
 mod spawn;
 
 pub use lifecycle::{
@@ -12,6 +13,7 @@ pub use lifecycle::{
 
 use packs::ServerChunkRequest;
 pub use packs::{ServerPackContent, ServerPackDelivery, ServerPackSnapshot};
+pub use relay::{PendingServerRelay, ServerRelayInitialized, ServerRelayProgress, ServerRelaying};
 pub use spawn::ServerWorld;
 
 use super::{AuthenticatedLogin, LoginError, LoginVerifier, ServerHandshakeError};
