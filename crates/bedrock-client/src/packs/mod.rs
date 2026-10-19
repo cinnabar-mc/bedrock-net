@@ -3,6 +3,9 @@
 pub(crate) mod builtins;
 mod transfer;
 
+#[cfg(test)]
+mod retention_tests;
+
 pub use builtins::{behavioral_baseline, builtin_packs};
 
 use bedrock_packs::ResourcePackHandoff;
