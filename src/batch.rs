@@ -32,6 +32,8 @@ pub struct BatchLimits {
     /// Maximum wire message size, including envelope bytes.
     pub max_encoded_bytes: usize,
     /// Maximum total length-prefixed packet bytes after decompression.
+    /// Also the incoming ceiling until a negotiated codec's
+    /// [`BatchCodec::with_incoming_decoded_limit`] overrides that direction.
     pub max_decoded_bytes: usize,
     /// Maximum packets in one outgoing batch; larger groups split in order.
     pub max_packets: usize,
@@ -52,13 +54,14 @@ impl Default for BatchLimits {
     }
 }
 
-/// One fully validated batch, or a compression failure the caller must count and skip.
+/// One length-validated batch, or a compression failure the caller must count and skip.
 #[derive(Debug)]
 pub enum DecodeOutcome {
     /// Encoded packets in wire order and diagnostics for skipped empty entries.
     #[non_exhaustive]
     Packets {
-        /// Fully validated packet headers and bodies, sliced lazily from the original allocation.
+        /// Length-validated encoded packets, sliced lazily from the original allocation.
+        /// Packet-header and body decoding remain the caller's responsibility.
         packets: BatchPackets,
         /// Empty incoming entries skipped; the caller should count/log these.
         skipped_empty_packets: usize,
@@ -67,11 +70,11 @@ pub enum DecodeOutcome {
     Dropped(DropReason),
 }
 
-/// One fully validated batch body, retaining only its unread cursor and packet count.
+/// One length-validated batch body, retaining only its unread cursor and packet count.
 ///
-/// Each yielded packet shares the original allocation. No per-packet metadata is
-/// allocated until the caller advances the iterator. Dropping or exhausting it
-/// releases its unread body; previously yielded packets keep their own slices.
+/// Each yielded packet shares the original allocation, without a per-packet
+/// collection. Dropping or exhausting the iterator releases its unread body;
+/// a previously yielded slice can still retain the entire batch allocation.
 pub struct BatchPackets {
     body: Bytes,
     remaining: usize,
@@ -265,8 +268,9 @@ impl<S: BatchPhase> BatchCodec<S> {
 
     /// Decodes a complete transport message without decoding packet bodies.
     ///
-    /// Successful packets share the batch allocation. Validation completes before
-    /// returning any packets, so a framing error cannot dispatch a partial batch.
+    /// Successful packets share the batch allocation. All entry lengths are
+    /// validated before returning any packets, so a framing error cannot dispatch
+    /// a partial batch. Packet headers and bodies are not decoded here.
     /// Empty server entries are skipped and counted, retaining the byte bounds.
     ///
     /// # Errors

@@ -114,7 +114,7 @@ fn client_data(
         .map_err(io::Error::other)?;
     let device_id = uuid::Builder::from_random_bytes(random).into_uuid();
     let server_address = match kind {
-        "nethernet" => format!("http://{address}:{}", address.port()),
+        "nethernet" => format!("http://{address}"),
         _ => address.to_string(),
     };
     let document = bedrock_auth::ClientData {

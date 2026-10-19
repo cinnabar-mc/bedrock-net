@@ -18,7 +18,8 @@ impl Drop for ResourcePackContentKey {
     }
 }
 
-/// One verified compressed archive in server-selected application order.
+/// One compressed archive and its declared pack identity.
+/// Constructors retain the supplied data without validating the archive or its manifest.
 /// It has no `Debug`, so diagnostic formatting cannot emit its content key.
 pub struct ResourcePackArchive {
     /// Identity selected by the server stack.

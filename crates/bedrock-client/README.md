@@ -47,8 +47,10 @@ the same bounded transfer implementation when no Login control is needed.
 
 `PackTransferLimits` defaults its archive count and byte caps to `None`, so
 network selections do not inherit local import limits. Callers can select explicit
-`Some` caps. Framing, representable lengths, identity, SHA-256 and the bounded
-chunk-request window remain checked for every transfer.
+`Some` caps. In-band transfers still check framing, representable lengths,
+identity, SHA-256 and the bounded chunk-request window. Preloads require caller
+archive/manifest validation against the offer; the offer contains no archive
+hash, and `supply_preloaded` checks byte bounds rather than authenticating content.
 
 Actual final-stack processing creates `PackComplete`, which has no public
 constructor. Send its original stack acknowledgment before entering startup.

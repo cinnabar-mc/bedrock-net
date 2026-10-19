@@ -20,7 +20,7 @@ pub const DEFAULT_REQUEST_WINDOW: u32 = 1024;
 
 /// Caller-selected archive, transfer and request bounds, validated before admission.
 /// Defaults admit complete server selections without inheriting local import policy;
-/// framing, representable lengths, identity, hash and request-window checks always apply.
+/// framing, representable lengths, identity and in-band hash/request-window checks remain.
 #[derive(Clone, Copy, Debug)]
 pub struct PackTransferLimits {
     /// Optional maximum distinct valid offers retained from one server.
@@ -131,7 +131,8 @@ impl PackOffer {
     }
 
     /// Installs caller-validated original bytes; a failure preserves in-band fallback.
-    /// Manifest/identity validation remains the caller's responsibility.
+    /// Validate the archive and manifest identity against the offer before calling.
+    /// Offers contain no archive hash; this method checks byte bounds, not content.
     pub fn supply_preloaded(&mut self, id: uuid::Uuid, archive: Vec<u8>) -> Result<(), PackError> {
         self.transfer.supply_preloaded(id, archive)
     }
