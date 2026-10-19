@@ -3,7 +3,7 @@
 mod handoff;
 pub mod jsonc;
 
-pub use handoff::{ResourcePackArchive, ResourcePackContentKey, ResourcePackHandoff};
+pub use handoff::{RelayPack, ResourcePackArchive, ResourcePackContentKey, ResourcePackHandoff};
 
 /// Default maximum archives retained from one server offer.
 pub const MAX_PACKS: usize = 32;
