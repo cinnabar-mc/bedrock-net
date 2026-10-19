@@ -142,6 +142,42 @@ async fn connected_pair() -> (RakNetConnection, UdpSocket, RakSession<Establishe
 }
 
 #[tokio::test]
+async fn active_receive_drains_a_legal_datagram_larger_than_its_staging_count() {
+    let (mut connection, peer, mut sender) = connected_pair().await;
+    let count = connection.engine.options.receive_buffer_messages + 1;
+    let now = Instant::now().into_std();
+    for index in 0..count {
+        let mut message = vec![0xfe];
+        message.extend_from_slice(&u32::try_from(index).unwrap().to_le_bytes());
+        sender
+            .send(
+                message.into_boxed_slice(),
+                RakReliability::ReliableOrdered,
+                RakPriority::Normal,
+                now,
+            )
+            .unwrap();
+    }
+    sender.tick(now).unwrap();
+    let mut sent = 0;
+    while let Some(output) = sender.poll() {
+        if let RakSessionOutput::Datagram(datagram, _) = output {
+            peer.send(&datagram).await.unwrap();
+            sent += 1;
+        }
+    }
+    assert_eq!(
+        sent, 1,
+        "the real core packed the complete controlled burst"
+    );
+    for index in 0..count {
+        let message = connection.recv().await.unwrap();
+        assert_eq!(message[0], 0xfe);
+        assert_eq!(&message[1..], &u32::try_from(index).unwrap().to_le_bytes());
+    }
+}
+
+#[tokio::test]
 async fn receive_overflow_returns_only_the_prefix_before_the_rejected_message() {
     let (mut connection, peer, mut sender) = connected_pair().await;
     connection.engine.options.receive_buffer_bytes = 64;
