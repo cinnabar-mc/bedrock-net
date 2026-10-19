@@ -80,6 +80,8 @@ async fn accepting_transport(anonymous: bool) {
         server_config.server_ice = Some(ServerIceConfig {
             ice: Default::default(),
             bind_addr: SocketAddr::new(Ipv4Addr::LOCALHOST.into(), 0),
+            turn_streams: Vec::new(),
+            turn_tls: None,
         });
         let signaling = CallerServerSignalingConfig {
             signaling: CallerSignalingConfig { ice_mode: IceMode::Full, ..Default::default() },
@@ -95,6 +97,8 @@ async fn accepting_transport(anonymous: bool) {
         client_config.client_ice = Some(ClientIceConfig {
             ice: Default::default(),
             bind_addr: Some(SocketAddr::new(Ipv4Addr::LOCALHOST.into(), 0)),
+            turn_streams: Vec::new(),
+            turn_tls: None,
         });
         let application = async {
             let (client, accepted) = tokio::join!(

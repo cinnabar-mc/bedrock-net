@@ -389,13 +389,17 @@ async fn acquire_ice(
                 policy: configured.ice.policy,
             },
             bind_addr: configured.bind_addr,
+            turn_streams: Vec::new(),
+            turn_tls: configured.turn_tls.clone(),
         },
         None => ClientIceConfig {
             ice: nethernet::session::IceConfig::default(),
             bind_addr: None,
+            turn_streams: Vec::new(),
+            turn_tls: None,
         },
     };
-    let resolution = nethernet_tokio::resolve_ice_servers(
+    let resolution = nethernet_tokio::resolve_ice_targets(
         &servers.0,
         ice.bind_addr
             .unwrap_or(SocketAddr::from((Ipv4Addr::UNSPECIFIED, 0))),
@@ -403,12 +407,14 @@ async fn acquire_ice(
         deadline,
     );
     tokio::pin!(resolution);
-    ice.ice.servers = loop {
+    let targets = loop {
         tokio::select! {
             result = &mut resolution => break result.map_err(|_| Error::Ice)?,
             event = socket.drive() => { event?; },
         }
     };
+    ice.ice.servers = targets.datagrams;
+    ice.turn_streams = targets.turn_streams;
     Ok(ice)
 }
 
