@@ -379,7 +379,9 @@ pub(super) fn finish(
             .collect();
         PackMetadata {
             offer: metadata.offer,
-            stack: retained_stack.expect("opt-in metadata retains the original stack"),
+            stack: super::retained::stack(
+                retained_stack.expect("opt-in metadata retains the original stack"),
+            ),
             data,
         }
     });

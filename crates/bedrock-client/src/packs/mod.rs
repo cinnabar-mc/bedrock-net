@@ -1,6 +1,7 @@
 //! Resource-pack negotiation without network, filesystem or runtime ownership.
 
 pub(crate) mod builtins;
+mod retained;
 mod transfer;
 
 #[cfg(test)]
@@ -272,7 +273,13 @@ impl Transfer {
         retain_metadata: bool,
     ) -> Result<Self, PackError> {
         limits.validate()?;
-        let (downloads, budget) = Budget::offers(std::mem::take(&mut offer.resource_packs), limits);
+        let (mut downloads, budget) =
+            Budget::offers(std::mem::take(&mut offer.resource_packs), limits);
+        if retain_metadata {
+            for download in &mut downloads {
+                download.offer = retained::pack(std::mem::take(&mut download.offer));
+            }
+        }
         let offer_order = downloads
             .iter()
             .map(|download| download.offer.pack_id_version.pack_uuid)
@@ -287,7 +294,7 @@ impl Transfer {
             limits,
             offer_required: offer.resource_pack_required,
             metadata: retain_metadata.then(|| RetainedOffer {
-                offer,
+                offer: retained::offer(offer),
                 data: BTreeMap::new(),
             }),
             phase: Phase::Preloading,
@@ -390,7 +397,7 @@ impl Transfer {
                 let retained = self.metadata.as_ref().map(|_| info.clone());
                 let requests = self.budget.begin(download, info)?;
                 if let (Some(metadata), Some(info)) = (&mut self.metadata, retained) {
-                    metadata.data.insert(id, info);
+                    metadata.data.insert(id, retained::data(info));
                 }
                 Ok(PackEvent::Send(
                     requests.into_iter().map(packets::Packet::from).collect(),
