@@ -206,5 +206,6 @@ running-world attachment and ongoing play belong to the application.
 
 The root crate offers MIT or Apache-2.0. Extracted `bedrock-client` and
 `bedrock-packs` code retains its separately identified
-[PolyForm Noncommercial license](LICENSE-CINNABAR). See [NOTICE](NOTICE) for
+[PolyForm Noncommercial license](LICENSE-CINNABAR). See
+[NOTICE](https://github.com/cinnabar-mc/bedrock-net/blob/dev/NOTICE) for
 implementation references and the retained dependency/adaptation notices.
