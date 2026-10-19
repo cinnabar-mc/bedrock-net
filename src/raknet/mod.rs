@@ -422,7 +422,7 @@ impl Engine {
 
     /// Retires local admission before returning the same drainable protocol owner.
     fn begin_close(&mut self) -> Result<(), RakNetError> {
-        self.rtt.send_replace(None);
+        let _ = self.rtt.send_replace(None);
         if self.socket.is_none() {
             return Ok(());
         }
@@ -540,7 +540,7 @@ impl Engine {
 
     /// Releases I/O and retains the original bounded core output for subsequent receive calls.
     fn end(&mut self, error: RakNetError) {
-        self.rtt.send_replace(None);
+        let _ = self.rtt.send_replace(None);
         self.failure.get_or_insert(error);
         self.socket = None;
         self.pending_datagram = None;
