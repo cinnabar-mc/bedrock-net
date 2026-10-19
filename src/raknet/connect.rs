@@ -135,7 +135,7 @@ impl RakNetConnection {
                                 next_tick: Instant::now(),
                                 close_deadline: None,
                                 failure: None,
-                                rtt: tokio::sync::watch::channel(None).0,
+                                rtt: super::RttObservation::new(),
                             }),
                         };
                         connection.engine.publish_rtt();

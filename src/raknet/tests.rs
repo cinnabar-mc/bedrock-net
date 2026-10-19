@@ -125,7 +125,7 @@ async fn connected_pair() -> (RakNetConnection, UdpSocket, RakSession<Establishe
                                 next_tick: Instant::now(),
                                 close_deadline: None,
                                 failure: None,
-                                rtt: watch::channel(None).0,
+                                rtt: RttObservation::new(),
                             }),
                         },
                         peer,
@@ -485,8 +485,8 @@ async fn ready_connection_cannot_escape_original_connect_deadline() {
 #[tokio::test(start_paused = true)]
 async fn rtt_observation_uses_original_ack_estimate_and_retires_with_owner() {
     let (mut connection, peer, mut sender) = connected_pair().await;
-    let observation = connection.subscribe_rtt();
-    assert_eq!(*observation.borrow(), None);
+    let observation = connection.observe_rtt();
+    assert_eq!(observation.get(), None);
     connection
         .queue_send(Bytes::from_static(b"measure actual reliable delivery"))
         .unwrap();
@@ -518,38 +518,36 @@ async fn rtt_observation_uses_original_ack_estimate_and_retires_with_owner() {
         !original.is_zero(),
         "the original ACK did not measure a round trip"
     );
-    assert_eq!(*observation.borrow(), Some(original));
+    assert_eq!(observation.get(), Some(original));
     let closing = connection.begin_close().unwrap();
-    assert_eq!(*observation.borrow(), None);
+    assert_eq!(observation.get(), None);
     drop(closing);
-    assert!(
-        observation.has_changed().is_err(),
-        "read-only observation retained the original owner"
+    assert_eq!(
+        observation.get(),
+        None,
+        "retired observation retained a measurement"
     );
     let (connection, _peer, _sender) = connected_pair().await;
-    let abrupt = connection.subscribe_rtt();
+    let abrupt = connection.observe_rtt();
     drop(connection);
-    assert!(
-        abrupt.has_changed().is_err(),
-        "abrupt drop left the observation live"
-    );
+    assert_eq!(abrupt.get(), None, "abrupt drop retained a measurement");
 }
 
 /// The original consuming close must stay callable while an RTT observation is retained.
 #[tokio::test]
 async fn rtt_observation_does_not_block_synchronous_retirement() {
     let (connection, peer, sender) = connected_pair().await;
-    let observation = connection.subscribe_rtt();
-    let held = observation.borrow();
+    let observation = connection.observe_rtt();
+    let held = observation.get();
     let (completed, completion) = std::sync::mpsc::channel();
     let closer = std::thread::spawn(move || {
         let closing = connection.begin_close();
         let _ = completed.send(());
         closing
     });
-    // Release the borrowed baseline lock and join its actual owner before checking liveness.
+    // Retaining a copied snapshot never delays the original owner's close.
     let closed_while_observed = completion.recv_timeout(Duration::from_secs(1)).is_ok();
-    drop(held);
+    let _ = held;
     let closing = closer.join().expect("owned close thread panicked");
     let close_succeeded = closing.is_ok();
     drop((closing, peer, sender, observation));

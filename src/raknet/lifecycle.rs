@@ -32,13 +32,10 @@ impl RakNetConnection {
         self.engine.max_message_len()
     }
 
-    /// Subscribes to the original congestion controller's full round-trip estimate.
-    ///
-    /// `None` means unmeasured or locally retired. A closed channel also means
-    /// withdrawn, even if its last borrowed value was measured. Observing never
-    /// drives I/O or keeps this connection alive.
-    pub fn subscribe_rtt(&self) -> tokio::sync::watch::Receiver<Option<std::time::Duration>> {
-        self.engine.rtt.subscribe()
+    /// Observes the original congestion controller's full round-trip estimate.
+    /// The returned handle reads without locks and cannot retain this connection.
+    pub fn observe_rtt(&self) -> super::RttObservation {
+        self.engine.rtt.clone()
     }
 
     /// Admits one complete reliable ordered message without a fixed flush delay.

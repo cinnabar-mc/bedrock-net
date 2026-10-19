@@ -7,10 +7,12 @@
 
 mod connect;
 mod lifecycle;
+mod observation;
 
 pub use lifecycle::{
     ClosedRakNetConnection, ClosingRakNetConnection, RakNetCloseError, RakNetConnection,
 };
+pub use observation::RttObservation;
 
 #[cfg(test)]
 mod tests;
@@ -25,7 +27,6 @@ use ::raknet::prelude::{
 };
 use bytes::Bytes;
 use tokio::net::UdpSocket;
-use tokio::sync::watch;
 use tokio::time::{Instant, sleep_until};
 
 pub use ::raknet::prelude::RakDisconnectReason as DisconnectReason;
@@ -192,7 +193,13 @@ struct Engine {
     next_tick: Instant,
     close_deadline: Option<Instant>,
     failure: Option<RakNetError>,
-    rtt: watch::Sender<Option<Duration>>,
+    rtt: RttObservation,
+}
+
+impl Drop for Engine {
+    fn drop(&mut self) {
+        self.rtt.retire();
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -233,13 +240,7 @@ impl Engine {
                 .then(|| session.rtt())
                 .filter(|sample| !sample.is_zero())
         });
-        self.rtt.send_if_modified(|current| {
-            if *current == sample {
-                return false;
-            }
-            *current = sample;
-            true
-        });
+        self.rtt.publish(sample);
     }
 
     /// Admits a complete message for reliable, ordered delivery without a fixed flush delay.
@@ -422,7 +423,7 @@ impl Engine {
 
     /// Retires local admission before returning the same drainable protocol owner.
     fn begin_close(&mut self) -> Result<(), RakNetError> {
-        let _ = self.rtt.send_replace(None);
+        self.rtt.retire();
         if self.socket.is_none() {
             return Ok(());
         }
@@ -540,7 +541,7 @@ impl Engine {
 
     /// Releases I/O and retains the original bounded core output for subsequent receive calls.
     fn end(&mut self, error: RakNetError) {
-        let _ = self.rtt.send_replace(None);
+        self.rtt.retire();
         self.failure.get_or_insert(error);
         self.socket = None;
         self.pending_datagram = None;
