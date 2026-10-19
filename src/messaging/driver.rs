@@ -284,6 +284,11 @@ impl Driver {
             Step::Service(progress) => {
                 match progress.admitted {
                     Some(Ok(())) => self.incoming.admitted(),
+                    Some(Err(CallerSignalingError::RouteMismatch))
+                        if matches!(&self.caller, Caller::Server(_)) =>
+                    {
+                        self.incoming.discard();
+                    }
                     Some(Err(CallerSignalingError::TimedOut)) => return Err(Error::TimedOut),
                     Some(Err(CallerSignalingError::Closed)) => return Err(Error::Closed),
                     Some(Err(_)) => return Err(Error::Signaling),
