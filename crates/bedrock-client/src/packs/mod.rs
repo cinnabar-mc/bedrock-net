@@ -182,7 +182,7 @@ impl PackNegotiation {
 pub struct PackComplete {
     response: packets::ResourcePackClientResponse,
     handoff: ResourcePackHandoff,
-    metadata: Option<PackMetadata>,
+    metadata: Option<Box<PackMetadata>>,
 }
 
 /// Actual admitted metadata projected onto acquired selections; no diagnostics expose content keys.
@@ -229,7 +229,11 @@ impl PackComplete {
         ResourcePackHandoff,
         Option<PackMetadata>,
     ) {
-        (self.response, self.handoff, self.metadata)
+        (
+            self.response,
+            self.handoff,
+            self.metadata.map(|metadata| *metadata),
+        )
     }
 }
 
@@ -256,7 +260,7 @@ struct Transfer {
     budget: Budget,
     limits: PackTransferLimits,
     offer_required: bool,
-    metadata: Option<RetainedOffer>,
+    metadata: Option<Box<RetainedOffer>>,
     phase: Phase,
 }
 
@@ -293,9 +297,11 @@ impl Transfer {
             budget,
             limits,
             offer_required: offer.resource_pack_required,
-            metadata: retain_metadata.then(|| RetainedOffer {
-                offer: retained::offer(offer),
-                data: BTreeMap::new(),
+            metadata: retain_metadata.then(|| {
+                Box::new(RetainedOffer {
+                    offer: retained::offer(offer),
+                    data: BTreeMap::new(),
+                })
             }),
             phase: Phase::Preloading,
         })
@@ -442,7 +448,7 @@ impl Transfer {
                     stack,
                     self.offer_required,
                     self.limits,
-                    self.metadata.take(),
+                    self.metadata.take().map(|metadata| *metadata),
                     &self.offer_order,
                 )?;
                 self.phase = Phase::Complete;
@@ -453,7 +459,7 @@ impl Transfer {
                         },
                     },
                     handoff,
-                    metadata,
+                    metadata: metadata.map(Box::new),
                 }))
             }
             other => Ok(PackEvent::Unhandled(Box::new(other))),

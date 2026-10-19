@@ -46,7 +46,6 @@ fn completed_pack_metadata_keeps_actual_headers_order_and_data_only_when_request
                     pack
                 })
                 .collect(),
-            ..Default::default()
         };
         let packets::Packet::ResourcePacksInfo(offer) = server_wire(original.clone().into()) else {
             panic!("original generated offer changed its role");
@@ -112,7 +111,6 @@ fn completed_pack_metadata_keeps_actual_headers_order_and_data_only_when_request
                 }],
                 experiments_ever_toggled: true,
             },
-            ..Default::default()
         };
         let PackEvent::Finished(complete) =
             transfer.receive(server_wire(stack.clone().into())).unwrap()
