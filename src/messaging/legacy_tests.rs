@@ -101,7 +101,7 @@ async fn legacy_service_socket_establishes_signed_peer_and_retires_original_rout
                         let retired = accepted.close();
                         // These observe shared closure, not accepted worker JoinHandles.
                         tokio::join!(sender.closed(), retired.session.closed());
-                        result.and_then(|()| {
+                        result.and({
                             if locally_done && matches!(terminal, Ok(None)) {
                                 Ok(())
                             } else {

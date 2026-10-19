@@ -152,7 +152,7 @@ impl MessagingServer {
         self.driver.begin_close();
         ClosingMessagingServer {
             server: self.server,
-            driver: self.driver,
+            driver: Box::new(self.driver),
             service: None,
             joined: false,
         }
@@ -163,7 +163,7 @@ impl MessagingServer {
 #[must_use = "finish retiring the original listener or explicitly drop it"]
 pub struct ClosingMessagingServer {
     server: Box<NetherServer>,
-    driver: Driver,
+    driver: Box<Driver>,
     service: Option<Result<(), Error>>,
     joined: bool,
 }
