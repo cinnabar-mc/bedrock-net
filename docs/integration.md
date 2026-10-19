@@ -24,6 +24,11 @@ be scheduled by the caller; the pure owners impose no executor or task model.
    the owner when the error exposes `into_parts` and retire the same connection.
    Recovering ownership does not restart a sealed phase or its cipher stream.
 
+Retain pending protocol owners outside cancelable I/O waits. Dropping an adapter
+future that owns a continuation also drops that continuation. The optional
+transport edges document which borrowed waits preserve their retained work;
+canceling one does not undo a message already admitted for sending.
+
 The [probe](../examples/client/src/main.rs) demonstrates the client loop. Its
 [session owner](../examples/client/src/session.rs) shows the codec/FIFO boundary;
 its [transport owner](../examples/client/src/transport.rs) shows concrete I/O.
@@ -40,10 +45,37 @@ entries in order and decode bodies with the matching protocolgen crate. Feed onl
 the relevant generated packet to the active negotiation owner. A phase change
 must preserve unread siblings from the same batch ahead of later network input.
 
+`DecodeOutcome::Packets` returns an owning `BatchPackets` iterator, not a packet
+vector. Keep that cursor between calls instead of collecting an unread batch.
+All entry lengths have been validated, but packet headers and bodies still need
+the generated decoder. Each yielded `Bytes` shares the batch allocation: even a
+small retained slice can keep that allocation alive after the cursor is dropped.
+
 Actual NetworkSettings yields `CompressionSettings`. Install it by consuming the
 retained plain codec into `BatchCodec<Negotiated>` before Login. There is no reset
 or second negotiation method. Outgoing compression uses the selected algorithm
 and threshold; incoming compression follows each batch's declaration.
+
+If an upstream's permitted decoded size differs from your outgoing budget,
+configure only the negotiated incoming direction:
+
+```rust
+use bedrock_net::{BatchCodec, CompressionSettings, Negotiated};
+
+fn install_settings(
+    plain: BatchCodec,
+    settings: CompressionSettings,
+    incoming_decoded_bytes: usize,
+) -> BatchCodec<Negotiated> {
+    plain.negotiate(settings)
+        .with_incoming_decoded_limit(incoming_decoded_bytes)
+}
+```
+
+The supplied limit is caller policy. This leaves outgoing decoded/count limits,
+the encoded-wire ceiling and `max_incoming_packets` unchanged. Plain decoding
+keeps the original `BatchLimits::max_decoded_bytes`. Transport receive, packet
+body and deferred-input budgets remain separate caller responsibilities.
 
 | Decode result | Caller action |
 | --- | --- |
@@ -139,6 +171,13 @@ to `None`. The transfer always bounds its chunk-request window, validates
 in-band integrity and processes the server's final stack in its declared order,
 including subpacks, required status and recognized built-ins. Cache/CDN reads, persistence,
 archive validation/application and presentation remain external.
+
+Validate a cache/CDN archive and its manifest identity against the matching offer
+before calling `supply_preloaded`. Offers provide no archive hash to compare:
+in-band chunks are checked against their actual `ResourcePackDataInfo` hash,
+while preloads depend on the caller's source/validation policy. With opt-in
+`PackMetadata`, a preloaded archive's aligned `data` entry is `None`; do not invent
+a wire hash, classification or premium flag for it.
 
 Only actual final-stack processing returns `PackComplete`. Its `start_spawn`
 transfers the original stack acknowledgment and archive handoff alongside a

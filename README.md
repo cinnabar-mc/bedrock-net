@@ -54,8 +54,9 @@ Incoming negotiated batches select their declared algorithm independently of the
 outgoing threshold.
 
 `DecodeOutcome::Dropped` means count/log the compression failure and continue.
-Framing and size violations return `BatchError`; a malformed batch never exposes
-partial packets. Empty incoming entries are skipped and counted. Limits are
+Batch framing and size violations return `BatchError`; all entry lengths are
+validated before any packet is exposed. Packet headers and bodies still need
+decoding. Empty incoming entries are skipped and counted. Limits are
 explicit library policy, adjustable for an application's pack-transfer budget.
 Decoded packets are an owning iterator over one validated body; consume it as
 needed rather than collecting unread packets. `max_packets` controls outgoing
