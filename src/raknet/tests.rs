@@ -125,6 +125,7 @@ async fn connected_pair() -> (RakNetConnection, UdpSocket, RakSession<Establishe
                                 next_tick: Instant::now(),
                                 close_deadline: None,
                                 failure: None,
+                                rtt: RttObservation::new(),
                             }),
                         },
                         peer,
@@ -478,4 +479,81 @@ async fn ready_connection_cannot_escape_original_connect_deadline() {
             .await
             .expect("expired or dropped connection releases its socket");
     }
+}
+
+/// Uses actual acknowledged traffic and the runtime clock, then retains the observation across retirement.
+#[tokio::test(start_paused = true)]
+async fn rtt_observation_uses_original_ack_estimate_and_retires_with_owner() {
+    let (mut connection, peer, mut sender) = connected_pair().await;
+    let observation = connection.observe_rtt();
+    assert_eq!(observation.get(), None);
+    connection
+        .queue_send(Bytes::from_static(b"measure actual reliable delivery"))
+        .unwrap();
+    connection.flush().await.unwrap();
+    let mut buffer = [0; UDP_BUFFER_BYTES];
+    let length = peer.recv(&mut buffer).await.unwrap();
+    tokio::time::advance(Duration::from_millis(25)).await;
+    let now = Instant::now().into_std();
+    sender
+        .handle(RakSessionInput::Datagram(buffer[..length].into(), now))
+        .unwrap();
+    sender
+        .send(
+            b"acknowledged marker".as_slice().into(),
+            RakReliability::ReliableOrdered,
+            RakPriority::Normal,
+            now,
+        )
+        .unwrap();
+    sender.tick(now).unwrap();
+    while let Some(output) = sender.poll() {
+        if let RakSessionOutput::Datagram(datagram, _) = output {
+            peer.send(&datagram).await.unwrap();
+        }
+    }
+    assert_eq!(connection.recv().await.unwrap(), "acknowledged marker");
+    let original = connection.engine.session.as_ref().unwrap().rtt();
+    assert!(
+        !original.is_zero(),
+        "the original ACK did not measure a round trip"
+    );
+    assert_eq!(observation.get(), Some(original));
+    let closing = connection.begin_close().unwrap();
+    assert_eq!(observation.get(), None);
+    drop(closing);
+    assert_eq!(
+        observation.get(),
+        None,
+        "retired observation retained a measurement"
+    );
+    let (connection, _peer, _sender) = connected_pair().await;
+    let abrupt = connection.observe_rtt();
+    drop(connection);
+    assert_eq!(abrupt.get(), None, "abrupt drop retained a measurement");
+}
+
+/// The original consuming close must stay callable while an RTT observation is retained.
+#[tokio::test]
+async fn rtt_observation_does_not_block_synchronous_retirement() {
+    let (connection, peer, sender) = connected_pair().await;
+    let observation = connection.observe_rtt();
+    let held = observation.get();
+    let (completed, completion) = std::sync::mpsc::channel();
+    let closer = std::thread::spawn(move || {
+        let closing = connection.begin_close();
+        let _ = completed.send(());
+        closing
+    });
+    // Retaining a copied snapshot never delays the original owner's close.
+    let closed_while_observed = completion.recv_timeout(Duration::from_secs(1)).is_ok();
+    let _ = held;
+    let closing = closer.join().expect("owned close thread panicked");
+    let close_succeeded = closing.is_ok();
+    drop((closing, peer, sender, observation));
+    assert!(close_succeeded, "original consuming close failed");
+    assert!(
+        closed_while_observed,
+        "RTT observation blocked synchronous retirement"
+    );
 }

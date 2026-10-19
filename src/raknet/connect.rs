@@ -121,7 +121,7 @@ impl RakNetConnection {
                             .ok_or(RakNetError::InvalidOption("handshake timer is too large"))?;
                     }
                     RakClientOutput::SessionConnected(session) => {
-                        return Ok(Self {
+                        let connection = Self {
                             engine: Box::new(Engine {
                                 socket: Some(socket),
                                 local,
@@ -135,8 +135,11 @@ impl RakNetConnection {
                                 next_tick: Instant::now(),
                                 close_deadline: None,
                                 failure: None,
+                                rtt: super::RttObservation::new(),
                             }),
-                        });
+                        };
+                        connection.engine.publish_rtt();
+                        return Ok(connection);
                     }
                     RakClientOutput::SessionClosing(_) => {
                         return Err(RakClientError::ConnectionFailed.into());

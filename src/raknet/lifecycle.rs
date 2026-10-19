@@ -32,6 +32,12 @@ impl RakNetConnection {
         self.engine.max_message_len()
     }
 
+    /// Observes the original congestion controller's full round-trip estimate.
+    /// The returned handle reads without locks and cannot retain this connection.
+    pub fn observe_rtt(&self) -> super::RttObservation {
+        self.engine.rtt.clone()
+    }
+
     /// Admits one complete reliable ordered message without a fixed flush delay.
     /// Retrying after admission duplicates the message; a full queue can be retried
     /// after `wait_send_capacity` services the original connection.
