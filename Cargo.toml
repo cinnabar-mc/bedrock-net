@@ -8,9 +8,9 @@ rust-version = "1.93"
 
 [workspace.dependencies]
 bedrock-protocol = { package = "bedrock-protocol-1-26-51", git = "https://github.com/cinnabar-mc/protocolgen", rev = "4e9626abbb51b8fa842f49b4aea0fb4d3c01a682" }
-bedrock-services = { git = "https://github.com/cinnabar-mc/bedrock-services", rev = "b8ca29d5b301ce251b6b2d264de7b63d1b2a8d11", features = ["signaling-tokio"] }
-nethernet = { git = "https://github.com/cinnabar-mc/nethernet", rev = "e56dffe4c363c83f2bce2fd163ae3e405dc3378b" }
-nethernet-tokio = { git = "https://github.com/cinnabar-mc/nethernet", rev = "e56dffe4c363c83f2bce2fd163ae3e405dc3378b" }
+bedrock-services = { git = "https://github.com/cinnabar-mc/bedrock-services", rev = "ab8583490ba2cb8fd5b8b07d650fc2ae0adffbdf", features = ["signaling-tokio"] }
+nethernet = { git = "https://github.com/cinnabar-mc/nethernet", rev = "f75fa954871e349ff13285ca88c5d54446dac6b2" }
+nethernet-tokio = { git = "https://github.com/cinnabar-mc/nethernet", rev = "f75fa954871e349ff13285ca88c5d54446dac6b2" }
 p384 = { version = "0.14", default-features = false, features = ["alloc", "ecdsa", "ecdh", "pkcs8"] }
 raknet = { git = "https://github.com/cinnabar-mc/raknet", rev = "4cb7fac06c2a530e0f98899637e1949e1037c553" }
 
