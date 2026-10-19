@@ -23,6 +23,12 @@ pub use lifecycle::{
     ServerTransitionError, VerifiedLogin,
 };
 
+/// The acknowledgment continuation and its exact outgoing/incoming cipher streams after plaintext flush.
+pub type ServerKeyExchangeHandoff<A> = (
+    ServerAcknowledgment<A>,
+    Box<(BatchEncryptor, BatchDecryptor)>,
+);
+
 /// Fixed accepting capabilities; the caller supplies the original deadline and server proof key.
 #[derive(Clone, Copy, Debug)]
 pub struct ServerHandshakeOptions {

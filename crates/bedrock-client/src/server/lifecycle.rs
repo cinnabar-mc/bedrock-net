@@ -2,7 +2,8 @@
 
 use super::{
     AuthenticatedLogin, BatchDecryptor, BatchEncryptor, CompressionSettings, Engine, EngineEvent,
-    LoginVerifier, ServerHandshakeError, ServerHandshakeOptions, SigningKey, VerifyingKey, packets,
+    LoginVerifier, ServerHandshakeError, ServerHandshakeOptions, ServerKeyExchangeHandoff,
+    SigningKey, VerifyingKey, packets,
 };
 use std::{
     fmt,
@@ -309,13 +310,7 @@ impl<A> PendingServerKeyExchange<A> {
     pub fn flushed(
         mut self,
         now: Instant,
-    ) -> Result<
-        (
-            ServerAcknowledgment<A>,
-            Box<(BatchEncryptor, BatchDecryptor)>,
-        ),
-        ServerTransitionError<Self>,
-    > {
+    ) -> Result<ServerKeyExchangeHandoff<A>, ServerTransitionError<Self>> {
         if let Err(error) = self.engine.encryption_installed(now) {
             return Err(ServerTransitionError {
                 owner: Box::new(self),
