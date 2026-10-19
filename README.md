@@ -61,6 +61,9 @@ Decoded packets are an owning iterator over one validated body; consume it as
 needed rather than collecting unread packets. `max_packets` controls outgoing
 splitting. Incoming batches use the byte bounds by default; set
 `max_incoming_packets` to enforce a separate nonempty packet-count ceiling.
+After negotiating compression, `with_incoming_decoded_limit` can set a separate
+incoming decoded-byte ceiling. It preserves the original outgoing, wire and
+packet-count limits; the initial plaintext phase keeps its original byte policy.
 
 ## Typed connection flow
 
