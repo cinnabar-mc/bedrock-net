@@ -188,3 +188,55 @@ async fn service(
     client.close();
     let _ = peer.close().await;
 }
+
+/// Canceling a close wait preserves the original service handshake and listener join owner.
+/// The plain peer observes Close/EOF only; this does not establish verified TLS shutdown.
+#[tokio::test]
+async fn cancelled_server_close_resumes_original_service_and_listener_retirement() {
+    use futures::FutureExt;
+    use std::time::Duration;
+
+    tokio::time::timeout(Duration::from_secs(10), async {
+        let network_id = 7;
+        let (socket, mut peer) = test_support::pair(network_id).await;
+        let server = PreparedMessagingServer::new(socket, network_id)
+            .bind(
+                test_config(),
+                CallerServerSignalingConfig::default(),
+                Instant::now() + Duration::from_secs(10),
+            )
+            .await
+            .unwrap();
+        let mut closing = server.begin_close();
+        let initial = closing.finish_close().now_or_never();
+        let mut closing = match closing.try_finish() {
+            Err(owner) => owner,
+            Ok(_) => {
+                let _ = peer.close().await;
+                panic!("cancelled close lost its original service ownership");
+            }
+        };
+        let service = async {
+            let terminal = peer.recv_text().await;
+            let closed = peer.close().await;
+            (terminal, closed)
+        };
+        let (closed, (terminal, peer_closed)) = tokio::join!(closing.finish_close(), service);
+        let repeated = closing.finish_close().await;
+        let retired = closing.try_finish().is_ok();
+        assert!(
+            initial.is_none(),
+            "close did not retain its original peer wait"
+        );
+        assert!(
+            matches!(terminal, Ok(None)),
+            "plain peer terminal: {terminal:?}"
+        );
+        assert!(peer_closed.is_ok(), "plain peer close: {peer_closed:?}");
+        assert!(closed.is_ok(), "original service close: {closed:?}");
+        assert!(repeated.is_ok());
+        assert!(retired);
+    })
+    .await
+    .expect("finite cancelled accepting close fixture stalled");
+}

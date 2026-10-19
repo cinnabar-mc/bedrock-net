@@ -102,6 +102,32 @@ impl Driver {
         self.cancellation = None;
     }
 
+    /// Seals original routes while retaining the same socket's bounded close handshake.
+    pub(super) fn begin_close(&mut self) {
+        self.terminal.get_or_insert(Error::Closed);
+        self.caller.close();
+        self.socket.close();
+        self.pending.clear();
+        self.incoming.clear();
+        self.outgoing = None;
+        self.cancellation = None;
+    }
+
+    /// Drains the original socket and its completions; cancellation retains its close cutoff.
+    pub(super) async fn finish_close(&mut self) -> Result<(), Error> {
+        let result = loop {
+            match self.socket.drive().await {
+                Ok(_) => {}
+                Err(bedrock_services::signaling::websocket::SocketError::Closed) => break Ok(()),
+                Err(error) => break Err(Error::Messaging(error)),
+            }
+        };
+        match self.terminal {
+            Some(error) if !matches!(error, Error::Closed) => Err(error),
+            _ => result,
+        }
+    }
+
     /// Ends only the setup deadline; already retained envelope deadlines never restart.
     pub(super) fn established(&mut self) {
         self.attempt_deadline = None;
