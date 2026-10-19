@@ -13,11 +13,12 @@
 use super::{Error, TurnRefresh, driver::Driver};
 use bedrock_services::signaling::{TurnCredentials, websocket::MessagingSocket};
 use futures::future::pending;
+use nethernet::identity::{SdpIdentity, TokenTrust};
 use nethernet_tokio::{
     AcceptedSession, CallerServerSignaling, CallerServerSignalingConfig, ConnectionConfig,
     NetherServer, ServerIceConfig,
 };
-use std::time::Instant;
+use std::{sync::Arc, time::Instant};
 
 /// A protected service socket before accepting transport admission exists.
 /// The network ID must be the exact value supplied at the socket's original upgrade.
@@ -155,6 +156,20 @@ impl MessagingServer {
         receipt: &TurnRefresh,
     ) -> Result<TurnCredentials, Error> {
         self.driver.finish_turn_refresh(receipt).await
+    }
+
+    /// Supplies the caller's freshly qualified answer identity for later offers on this listener.
+    /// Pending and accepted peers retain their original signer and transport lifetimes.
+    /// This performs no mint, signaling refresh or change to offer trust.
+    pub fn set_identity(&self, identity: Arc<dyn SdpIdentity>) {
+        self.server.set_identity(identity);
+    }
+
+    /// Supplies explicit caller-qualified trust for later offers on this same listener.
+    /// Present identities keep their original token and fingerprint verification requirements.
+    /// This does not replace answer identity or authenticate Minecraft Login.
+    pub fn set_token_trust(&self, trust: TokenTrust) {
+        self.server.set_token_trust(Some(trust));
     }
 
     /// Supplies freshly acquired caller-owned ICE configuration for later offers only.
