@@ -18,6 +18,9 @@ use std::{
 use uuid::Uuid;
 
 mod race;
+mod refresh;
+use refresh::Refresh;
+pub use refresh::TurnRefresh;
 
 pub(super) struct Driver {
     socket: MessagingSocket,
@@ -25,6 +28,7 @@ pub(super) struct Driver {
     peer: Option<Recipient>,
     pending: HashMap<RequestId, SignalRequest>,
     terminal: Option<Error>,
+    refresh: Option<Refresh>,
     incoming: Batch,
     admission_timeout: Duration,
     outgoing: Option<Outgoing>,
@@ -83,6 +87,7 @@ impl Driver {
             peer,
             pending: HashMap::new(),
             terminal: None,
+            refresh: None,
             incoming: Batch::default(),
             admission_timeout,
             outgoing: None,
@@ -111,6 +116,7 @@ impl Driver {
         self.incoming.clear();
         self.outgoing = None;
         self.cancellation = None;
+        self.refresh = None;
     }
 
     /// Drains the original socket and its completions; cancellation retains its close cutoff.
@@ -360,6 +366,17 @@ impl Driver {
             }
             SocketStep::Event(Err(error)) => Err(Error::Messaging(error)),
             SocketStep::Event(Ok(Event::Completed { request, result })) => {
+                if let Some(refresh) = self.refresh.as_mut()
+                    && refresh.request == request
+                    && refresh.result.is_none()
+                {
+                    refresh.result = Some(
+                        result
+                            .map_err(refresh::failure)
+                            .and_then(|()| self.socket.take_credentials().ok_or(Error::Ice)),
+                    );
+                    return Ok(());
+                }
                 if let Some(wait) = self.pending.remove(&request) {
                     complete(wait, result);
                 }

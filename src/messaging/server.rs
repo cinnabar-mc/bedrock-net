@@ -10,8 +10,8 @@
 //! keeps its original credential expirations: the transport checks them for each new
 //! offer. Updating ICE never renews an already admitted peer's allocation.
 
-use super::{Error, driver::Driver};
-use bedrock_services::signaling::websocket::MessagingSocket;
+use super::{Error, TurnRefresh, driver::Driver};
+use bedrock_services::signaling::{TurnCredentials, websocket::MessagingSocket};
 use futures::future::pending;
 use nethernet_tokio::{
     AcceptedSession, CallerServerSignaling, CallerServerSignalingConfig, ConnectionConfig,
@@ -130,6 +130,31 @@ impl MessagingServer {
     /// Completes only when the retained service driver fails or closes.
     pub async fn maintain(&mut self) -> Result<(), Error> {
         self.driver.run(pending::<()>()).await
+    }
+
+    /// Admits one fresh TURN request on this server's original JSON-RPC service socket.
+    /// No request is retried automatically. Finish the receipt or close this server before
+    /// requesting another refresh; a canceled finish wait keeps the original request owned.
+    ///
+    /// # Errors
+    /// Refuses an elapsed deadline, closed service, existing refresh or unavailable local capacity.
+    pub fn begin_turn_refresh(&mut self, deadline: Instant) -> Result<TurnRefresh, Error> {
+        self.driver.begin_turn_refresh(deadline)
+    }
+
+    /// Drives the original request while signaling, heartbeats and receipts continue progressing.
+    /// Returns the actual zeroizing SDK credential owner once, with its receipt-anchored expiry.
+    /// Cancellation preserves partial writes, the original deadline and any completed result.
+    /// The caller resolves and installs these endpoints explicitly; this does not update ICE
+    /// or renew an already admitted peer. A receipt from another server is refused before I/O.
+    ///
+    /// # Errors
+    /// Returns wrong/consumed receipt, original deadline, correlated service response or driver errors.
+    pub async fn finish_turn_refresh(
+        &mut self,
+        receipt: &TurnRefresh,
+    ) -> Result<TurnCredentials, Error> {
+        self.driver.finish_turn_refresh(receipt).await
     }
 
     /// Supplies freshly acquired caller-owned ICE configuration for later offers only.
