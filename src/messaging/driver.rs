@@ -97,6 +97,7 @@ impl Driver {
     }
 
     /// Retires the exact socket and its correlated waits without a detached cleanup task.
+    /// Only refresh correlation survives, so its original terminal error remains observable.
     pub(super) fn close(&mut self) {
         self.terminal.get_or_insert(Error::Closed);
         self.caller.close();
@@ -105,6 +106,9 @@ impl Driver {
         self.incoming.clear();
         self.outgoing = None;
         self.cancellation = None;
+        if let Some(refresh) = &mut self.refresh {
+            refresh.result = None;
+        }
     }
 
     /// Seals original routes while retaining the same socket's bounded close handshake.
