@@ -534,3 +534,28 @@ async fn rtt_observation_uses_original_ack_estimate_and_retires_with_owner() {
         "abrupt drop left the observation live"
     );
 }
+
+/// The original consuming close must stay callable while an RTT observation is retained.
+#[tokio::test]
+async fn rtt_observation_does_not_block_synchronous_retirement() {
+    let (connection, peer, sender) = connected_pair().await;
+    let observation = connection.subscribe_rtt();
+    let held = observation.borrow();
+    let (completed, completion) = std::sync::mpsc::channel();
+    let closer = std::thread::spawn(move || {
+        let closing = connection.begin_close();
+        let _ = completed.send(());
+        closing
+    });
+    // Release the borrowed baseline lock and join its actual owner before checking liveness.
+    let closed_while_observed = completion.recv_timeout(Duration::from_secs(1)).is_ok();
+    drop(held);
+    let closing = closer.join().expect("owned close thread panicked");
+    let close_succeeded = closing.is_ok();
+    drop((closing, peer, sender, observation));
+    assert!(close_succeeded, "original consuming close failed");
+    assert!(
+        closed_while_observed,
+        "RTT observation blocked synchronous retirement"
+    );
+}
