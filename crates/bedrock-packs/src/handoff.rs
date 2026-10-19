@@ -62,11 +62,20 @@ impl ResourcePackArchive {
     }
 }
 
+/// One unencrypted resource pack archive a packet relay adds to a session.
+pub struct RelayPack {
+    /// Original compressed archive bytes, before admission or application.
+    pub archive: Vec<u8>,
+    /// Applies above the server's packs rather than below them.
+    pub above_server: bool,
+}
+
 /// Archives a login captured, in stack order; they are never parsed or applied here.
 #[derive(Default)]
 pub struct ResourcePackHandoff {
     archives: Vec<ResourcePackArchive>,
     required: bool,
+    relay_packs: Vec<RelayPack>,
 }
 
 impl ResourcePackHandoff {
@@ -75,7 +84,19 @@ impl ResourcePackHandoff {
         Self {
             archives,
             required: false,
+            relay_packs: Vec::new(),
         }
+    }
+
+    /// Adds relay-provided packs for separate admission from the required server stack.
+    pub fn with_relay_packs(mut self, packs: Vec<RelayPack>) -> Self {
+        self.relay_packs = packs;
+        self
+    }
+
+    /// Transfers the relay's original archives once, leaving the server archives untouched.
+    pub fn take_relay_packs(&mut self) -> Vec<RelayPack> {
+        std::mem::take(&mut self.relay_packs)
     }
 
     /// Marks the packs server-required, so a client that cannot apply one refuses the join.
@@ -104,3 +125,6 @@ impl ResourcePackHandoff {
         self.archives
     }
 }
+
+#[cfg(test)]
+mod tests;
