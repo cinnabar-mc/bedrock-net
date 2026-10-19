@@ -125,6 +125,7 @@ async fn connected_pair() -> (RakNetConnection, UdpSocket, RakSession<Establishe
                                 next_tick: Instant::now(),
                                 close_deadline: None,
                                 failure: None,
+                                rtt: watch::channel(None).0,
                             }),
                         },
                         peer,
@@ -478,4 +479,58 @@ async fn ready_connection_cannot_escape_original_connect_deadline() {
             .await
             .expect("expired or dropped connection releases its socket");
     }
+}
+
+/// Uses actual acknowledged traffic and the runtime clock, then retains the observation across retirement.
+#[tokio::test(start_paused = true)]
+async fn rtt_observation_uses_original_ack_estimate_and_retires_with_owner() {
+    let (mut connection, peer, mut sender) = connected_pair().await;
+    let observation = connection.subscribe_rtt();
+    assert_eq!(*observation.borrow(), None);
+    connection
+        .queue_send(Bytes::from_static(b"measure actual reliable delivery"))
+        .unwrap();
+    connection.flush().await.unwrap();
+    let mut buffer = [0; UDP_BUFFER_BYTES];
+    let length = peer.recv(&mut buffer).await.unwrap();
+    tokio::time::advance(Duration::from_millis(25)).await;
+    let now = Instant::now().into_std();
+    sender
+        .handle(RakSessionInput::Datagram(buffer[..length].into(), now))
+        .unwrap();
+    sender
+        .send(
+            b"acknowledged marker".as_slice().into(),
+            RakReliability::ReliableOrdered,
+            RakPriority::Normal,
+            now,
+        )
+        .unwrap();
+    sender.tick(now).unwrap();
+    while let Some(output) = sender.poll() {
+        if let RakSessionOutput::Datagram(datagram, _) = output {
+            peer.send(&datagram).await.unwrap();
+        }
+    }
+    assert_eq!(connection.recv().await.unwrap(), "acknowledged marker");
+    let original = connection.engine.session.as_ref().unwrap().rtt();
+    assert!(
+        !original.is_zero(),
+        "the original ACK did not measure a round trip"
+    );
+    assert_eq!(*observation.borrow(), Some(original));
+    let closing = connection.begin_close().unwrap();
+    assert_eq!(*observation.borrow(), None);
+    drop(closing);
+    assert!(
+        observation.has_changed().is_err(),
+        "read-only observation retained the original owner"
+    );
+    let (connection, _peer, _sender) = connected_pair().await;
+    let abrupt = connection.subscribe_rtt();
+    drop(connection);
+    assert!(
+        abrupt.has_changed().is_err(),
+        "abrupt drop left the observation live"
+    );
 }

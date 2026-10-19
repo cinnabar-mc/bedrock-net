@@ -25,6 +25,7 @@ use ::raknet::prelude::{
 };
 use bytes::Bytes;
 use tokio::net::UdpSocket;
+use tokio::sync::watch;
 use tokio::time::{Instant, sleep_until};
 
 pub use ::raknet::prelude::RakDisconnectReason as DisconnectReason;
@@ -136,6 +137,14 @@ impl SessionSlot {
         }
     }
 
+    /// Reads the original congestion-controller round-trip estimate.
+    fn rtt(&self) -> Duration {
+        match self {
+            Self::Established(session) => session.rtt(),
+            Self::Closing(session) => session.rtt(),
+        }
+    }
+
     /// Reads the original retained outgoing byte count.
     fn outbound_bytes(&self) -> usize {
         match self {
@@ -183,6 +192,7 @@ struct Engine {
     next_tick: Instant,
     close_deadline: Option<Instant>,
     failure: Option<RakNetError>,
+    rtt: watch::Sender<Option<Duration>>,
 }
 
 #[derive(Clone, Copy)]
@@ -212,6 +222,24 @@ impl Engine {
                 .max_message_len()
                 .min(self.options.send_buffer_bytes)
         })
+    }
+
+    /// Publishes only positive estimates while the original connection admits work.
+    fn publish_rtt(&self) {
+        let sample = self.session.as_ref().and_then(|session| {
+            (self.socket.is_some()
+                && self.close_deadline.is_none()
+                && session.state() == RakSessionState::Connected)
+                .then(|| session.rtt())
+                .filter(|sample| !sample.is_zero())
+        });
+        self.rtt.send_if_modified(|current| {
+            if *current == sample {
+                return false;
+            }
+            *current = sample;
+            true
+        });
     }
 
     /// Admits a complete message for reliable, ordered delivery without a fixed flush delay.
@@ -394,6 +422,7 @@ impl Engine {
 
     /// Retires local admission before returning the same drainable protocol owner.
     fn begin_close(&mut self) -> Result<(), RakNetError> {
+        self.rtt.send_replace(None);
         if self.socket.is_none() {
             return Ok(());
         }
@@ -464,6 +493,9 @@ impl Engine {
             .as_mut()
             .ok_or(RakNetError::Closed)?
             .handle(input);
+        if result.is_ok() {
+            self.publish_rtt();
+        }
         result.map_err(Into::into)
     }
 
@@ -508,6 +540,7 @@ impl Engine {
 
     /// Releases I/O and retains the original bounded core output for subsequent receive calls.
     fn end(&mut self, error: RakNetError) {
+        self.rtt.send_replace(None);
         self.failure.get_or_insert(error);
         self.socket = None;
         self.pending_datagram = None;
