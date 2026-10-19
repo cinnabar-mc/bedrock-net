@@ -205,12 +205,13 @@ generated packets to `ServerPacks::receive`:
 | `ServerPackEvent` | Adapter action |
 | --- | --- |
 | `Send { session, packets }` | Dispatch all packets, then retain that session for the next input. |
-| `ReadChunk(read)` | Read exactly its `archive_index`, `offset` and `byte_len` from the retained source lease; consume `supply` into the pending chunk. |
-| `Chunk(chunk)` | Send its borrowed `packet`, then consume `flushed` after actual I/O; preserve the returned session and follow-up packets. |
+| `ReadChunk(read)` | Read exactly its `archive_index`, `offset` and `byte_len` from the retained source lease. Successful `supply` returns a `PendingServerChunk` directly; handle it as in the `Chunk` row. |
+| `Chunk(chunk)` | Send its borrowed `packet`, then consume `flushed` after actual I/O. Dispatch all returned follow-up packets before feeding more input to the returned session. |
 | `WorldReady(ready)` | Supply the selected world's definitions through `start_world`. |
 | `Unhandled { session, packet }` | Handle terminal input promptly; preserve other input and the returned session. |
 
 Both memory and external archives follow the same sequential chunk contract.
+The flush follow-up can advertise the next archive's `ResourcePackDataInfo`.
 An external snapshot records the original size/hash; the adapter retains the
 immutable source and performs its reads. A pending read or chunk owns the whole
 session, so keep pipelined input in the existing bounded FIFO until it completes.
