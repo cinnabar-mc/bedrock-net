@@ -63,13 +63,11 @@ fn first_startup_definitions_prepare_early_and_radius_is_requested_once() {
         "first"
     );
     assert!(update.ready.is_none());
-    assert!(
-        client
-            .receive(start(RUNTIME_ID))
-            .unwrap()
-            .request_radius
-            .is_none()
-    );
+    assert!(client
+        .receive(start(RUNTIME_ID))
+        .unwrap()
+        .request_radius
+        .is_none());
     assert!(client.receive(player_spawn()).unwrap().ready.is_none());
     let update = client.receive(radius(8)).unwrap();
     let ready = update.ready.unwrap();
@@ -154,4 +152,65 @@ fn startup_returns_non_spawn_play_status_without_claiming_readiness() {
     }
     let ready = client.receive(player_spawn()).unwrap().ready.unwrap();
     assert_eq!(ready.finish_loading().player_id.0, RUNTIME_ID);
+}
+
+/// All original startup facts remain required, but a server's radius reply may arrive in play.
+#[test]
+fn startup_ready_does_not_require_a_radius_reply_in_any_fact_order() {
+    for order in [
+        [0, 1, 2],
+        [0, 2, 1],
+        [1, 0, 2],
+        [1, 2, 0],
+        [2, 0, 1],
+        [2, 1, 0],
+    ] {
+        let mut client = negotiation();
+        client
+            .receive_deferred(packets::PacketId::LevelChunk)
+            .unwrap();
+        let mut requests = 0;
+        let mut definitions = 0;
+        let mut ready = None;
+        for (position, fact) in order.into_iter().enumerate() {
+            let packet = match fact {
+                0 => start(RUNTIME_ID),
+                1 => registry("first"),
+                2 => player_spawn(),
+                _ => unreachable!("the three original startup facts"),
+            };
+            let update = client.receive(packet).unwrap();
+            if let Some(request) = update.request_radius {
+                requests += 1;
+                assert_eq!(request.chunk_radius.0, 12);
+                assert_eq!(request.max_chunk_radius.0, 16);
+            }
+            if let Some(startup) = update.startup {
+                definitions += 1;
+                assert_eq!(startup.start_game.runtime_id.0, RUNTIME_ID);
+                assert_eq!(
+                    startup.item_registry.item_data[0]
+                        .item_name
+                        .to_str()
+                        .unwrap(),
+                    "first"
+                );
+            }
+            assert!(update.deferred.is_none());
+            if position < 2 {
+                assert!(
+                    update.ready.is_none(),
+                    "missing startup fact in order {order:?}"
+                );
+            }
+            ready = update.ready.or(ready);
+        }
+        assert_eq!(requests, 1);
+        assert_eq!(definitions, 1);
+        let ready =
+            ready.expect("all real startup facts must complete while the radius reply is withheld");
+        assert_eq!(ready.runtime_id(), RUNTIME_ID);
+        assert!(ready.terrain_received());
+        assert_eq!(ready.finish_loading().player_id.0, RUNTIME_ID);
+    }
 }
