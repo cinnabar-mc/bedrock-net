@@ -33,8 +33,11 @@ pub struct BatchLimits {
     pub max_encoded_bytes: usize,
     /// Maximum total length-prefixed packet bytes after decompression.
     pub max_decoded_bytes: usize,
-    /// Maximum nonempty packets in one decoded or encoded batch.
+    /// Maximum packets in one outgoing batch; larger groups split in order.
     pub max_packets: usize,
+    /// Optional maximum nonempty packets in one incoming batch.
+    /// None retains the byte bounds without imposing the outgoing split ceiling.
+    pub max_incoming_packets: Option<usize>,
 }
 
 impl Default for BatchLimits {
@@ -44,6 +47,7 @@ impl Default for BatchLimits {
             max_encoded_bytes: DEFAULT_DECODED_BYTES * 2,
             max_decoded_bytes: DEFAULT_DECODED_BYTES,
             max_packets: DEFAULT_PACKET_COUNT,
+            max_incoming_packets: None,
         }
     }
 }
@@ -54,13 +58,71 @@ pub enum DecodeOutcome {
     /// Encoded packets in wire order and diagnostics for skipped empty entries.
     #[non_exhaustive]
     Packets {
-        /// Packet headers and undecoded bodies, sharing the batch allocation.
-        packets: Vec<Bytes>,
+        /// Fully validated packet headers and bodies, sliced lazily from the original allocation.
+        packets: BatchPackets,
         /// Empty incoming entries skipped; the caller should count/log these.
         skipped_empty_packets: usize,
     },
     /// A discarded batch; later batches on the same connection remain readable.
     Dropped(DropReason),
+}
+
+/// One fully validated batch body, retaining only its unread cursor and packet count.
+///
+/// Each yielded packet shares the original allocation. No per-packet metadata is
+/// allocated until the caller advances the iterator. Dropping or exhausting it
+/// releases its unread body; previously yielded packets keep their own slices.
+pub struct BatchPackets {
+    body: Bytes,
+    remaining: usize,
+}
+
+impl BatchPackets {
+    /// Reports whether every nonempty packet has been consumed.
+    pub fn is_empty(&self) -> bool {
+        self.remaining == 0
+    }
+}
+
+impl Iterator for BatchPackets {
+    type Item = Bytes;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.remaining == 0 {
+            return None;
+        }
+        loop {
+            let (length, prefix) = read_length(&self.body, 0)
+                .expect("the complete immutable batch was validated before iteration");
+            self.body.advance(prefix);
+            if length == 0 {
+                continue;
+            }
+            let length = usize::try_from(length).expect("validated packet length fits usize");
+            let packet = self.body.split_to(length);
+            self.remaining -= 1;
+            if self.remaining == 0 {
+                self.body = Bytes::new();
+            }
+            return Some(packet);
+        }
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        (self.remaining, Some(self.remaining))
+    }
+}
+
+impl ExactSizeIterator for BatchPackets {}
+impl std::iter::FusedIterator for BatchPackets {}
+
+impl std::fmt::Debug for BatchPackets {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("BatchPackets")
+            .field("remaining", &self.remaining)
+            .field("unread_bytes", &self.body.len())
+            .finish()
+    }
 }
 
 mod phase_private {
@@ -221,7 +283,12 @@ impl<S: BatchPhase> BatchCodec<S> {
                 maximum: self.limits.max_decoded_bytes,
             });
         }
-        let (packets, skipped_empty_packets) = split_packets(message, self.limits.max_packets)?;
+        let (count, skipped_empty_packets) =
+            validate_packets(&message, self.limits.max_incoming_packets)?;
+        let packets = BatchPackets {
+            body: if count == 0 { Bytes::new() } else { message },
+            remaining: count,
+        };
         Ok(DecodeOutcome::Packets {
             packets,
             skipped_empty_packets,
@@ -265,9 +332,9 @@ impl<S: BatchPhase> BatchCodec<S> {
     }
 }
 
-/// Validates packet boundaries in full, keeping each packet as a slice of the input.
-fn split_packets(body: Bytes, maximum: usize) -> Result<(Vec<Bytes>, usize), BatchError> {
-    let mut packets = Vec::new();
+/// Validates all boundaries and counts before exposing a cursor, without allocating packet metadata.
+fn validate_packets(body: &[u8], maximum: Option<usize>) -> Result<(usize, usize), BatchError> {
+    let mut count = 0;
     let mut skipped_empty_packets = 0;
     let mut offset = 0;
     while offset < body.len() {
@@ -281,7 +348,9 @@ fn split_packets(body: Bytes, maximum: usize) -> Result<(Vec<Bytes>, usize), Bat
             skipped_empty_packets += 1;
             continue;
         }
-        if packets.len() == maximum {
+        if let Some(maximum) = maximum
+            && count == maximum
+        {
             return Err(BatchError::TooManyPackets { maximum });
         }
         if length > body.len() - offset {
@@ -290,10 +359,10 @@ fn split_packets(body: Bytes, maximum: usize) -> Result<(Vec<Bytes>, usize), Bat
                 remaining: body.len() - offset,
             });
         }
-        packets.push(body.slice(offset..offset + length));
+        count += 1;
         offset += length;
     }
-    Ok((packets, skipped_empty_packets))
+    Ok((count, skipped_empty_packets))
 }
 
 /// Reads a bounded u32 envelope length; packet headers remain the protocol codec's responsibility.

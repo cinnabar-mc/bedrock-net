@@ -21,7 +21,7 @@ fn negotiated(algorithm: CompressionAlgorithm, limits: BatchLimits) -> BatchCode
 /// Extracts the packets, failing the test if a batch unexpectedly drops.
 fn packets<S: BatchPhase>(codec: &BatchCodec<S>, wire: Bytes) -> Vec<Bytes> {
     match codec.decode(wire).unwrap() {
-        DecodeOutcome::Packets { packets, .. } => packets,
+        DecodeOutcome::Packets { packets, .. } => packets.collect(),
         DecodeOutcome::Dropped(reason) => panic!("unexpected dropped batch: {reason}"),
     }
 }
@@ -45,6 +45,7 @@ fn incoming_empty_entries_preserve_packets_and_do_not_consume_packet_capacity() 
         CompressionAlgorithm::Deflate,
         BatchLimits {
             max_packets: 2,
+            max_incoming_packets: Some(2),
             ..BatchLimits::default()
         },
     );
@@ -65,13 +66,14 @@ fn incoming_empty_entries_preserve_packets_and_do_not_consume_packet_capacity() 
         else {
             panic!("empty-entry fixture was dropped");
         };
-        assert_eq!(packets, expected);
+        assert_eq!(packets.collect::<Vec<_>>(), expected);
         assert_eq!(skipped_empty_packets, 3);
     }
     let initial = BatchCodec::new(
         BatchHeader::RakNet,
         BatchLimits {
             max_packets: 0,
+            max_incoming_packets: Some(0),
             ..BatchLimits::default()
         },
     );
@@ -149,6 +151,75 @@ fn splits_count_and_byte_limited_batches_without_reordering() {
 }
 
 #[test]
+fn client_batch_count_accepts_a_server_batch_above_the_outgoing_ceiling() {
+    let outgoing = BatchLimits::default();
+    let input: Vec<_> = (0..outgoing.max_packets + 1)
+        .map(|index| Bytes::from(index.to_le_bytes().to_vec()))
+        .collect();
+    let incoming = BatchLimits {
+        max_packets: input.len(),
+        ..outgoing
+    };
+    for header in [BatchHeader::RakNet, BatchHeader::NetherNet] {
+        let client = BatchCodec::new(header, outgoing);
+        let split = client.encode(&input).unwrap();
+        assert_eq!(split.len(), 2);
+        assert_eq!(
+            packets(&client, split[0].clone()).len(),
+            outgoing.max_packets
+        );
+        assert_eq!(
+            packets(&client, split[1].clone()),
+            input[outgoing.max_packets..]
+        );
+
+        let mut original = BatchCodec::new(header, incoming).encode(&input).unwrap();
+        assert_eq!(original.len(), 1);
+        assert!(original[0].len() < outgoing.max_decoded_bytes);
+        assert_eq!(packets(&client, original.remove(0)), input);
+    }
+}
+
+#[test]
+fn client_batch_count_preserves_declared_compression_and_decoded_byte_limits() {
+    let outgoing = BatchLimits::default();
+    let input: Vec<_> = (0..outgoing.max_packets + 1)
+        .map(|index| Bytes::from(index.to_le_bytes().to_vec()))
+        .collect();
+    let incoming = BatchLimits {
+        max_packets: input.len(),
+        ..outgoing
+    };
+    let body = BatchCodec::new(BatchHeader::NetherNet, incoming)
+        .encode(&input)
+        .unwrap()
+        .pop()
+        .unwrap();
+    for algorithm in [
+        CompressionAlgorithm::Deflate,
+        CompressionAlgorithm::Snappy,
+        CompressionAlgorithm::None,
+    ] {
+        let mut original = negotiated(algorithm, incoming).encode(&input).unwrap();
+        assert_eq!(original.len(), 1);
+        let original = original.remove(0);
+        let bounded = negotiated(
+            CompressionAlgorithm::Deflate,
+            BatchLimits {
+                max_decoded_bytes: body.len() - 1,
+                ..outgoing
+            },
+        );
+        assert!(matches!(
+            bounded.decode(original.clone()),
+            Err(BatchError::DecodedTooLarge { .. })
+        ));
+        let client = negotiated(CompressionAlgorithm::Deflate, outgoing);
+        assert_eq!(packets(&client, original), input);
+    }
+}
+
+#[test]
 fn malformed_tail_never_exposes_a_partial_batch() {
     let codec = BatchCodec::new(BatchHeader::RakNet, BatchLimits::default());
     for tail in [
@@ -166,6 +237,7 @@ fn malformed_tail_never_exposes_a_partial_batch() {
         BatchHeader::RakNet,
         BatchLimits {
             max_packets: 1,
+            max_incoming_packets: Some(1),
             ..BatchLimits::default()
         },
     );
@@ -342,5 +414,108 @@ fn integrity_and_truncation_failures_permanently_invalidate_the_direction() {
             decryptor.decrypt(subsequent).unwrap_err(),
             EncryptionError::Invalidated
         );
+    }
+}
+
+#[test]
+fn incoming_cursor_validates_full_body_and_explicit_count_before_exposure() {
+    let limits = BatchLimits::default();
+    let count = limits.max_packets + 1;
+    let input: Vec<_> = (0..count)
+        .map(|index| Bytes::from(index.to_le_bytes().to_vec()))
+        .collect();
+    let wire = BatchCodec::new(
+        BatchHeader::RakNet,
+        BatchLimits {
+            max_packets: count,
+            ..limits
+        },
+    )
+    .encode(&input)
+    .unwrap()
+    .remove(0);
+    for maximum in [None, Some(count)] {
+        let client = BatchCodec::new(
+            BatchHeader::RakNet,
+            BatchLimits {
+                max_packets: 1,
+                max_incoming_packets: maximum,
+                ..limits
+            },
+        );
+        let DecodeOutcome::Packets { packets, .. } = client.decode(wire.clone()).unwrap() else {
+            panic!("valid cursor batch was dropped");
+        };
+        assert_eq!(packets.len(), count);
+        assert!(packets.eq(input.iter().cloned()));
+    }
+    for maximum in [0, count - 1] {
+        let client = BatchCodec::new(
+            BatchHeader::RakNet,
+            BatchLimits {
+                max_incoming_packets: Some(maximum),
+                ..limits
+            },
+        );
+        assert!(matches!(
+            client.decode(wire.clone()),
+            Err(BatchError::TooManyPackets { maximum: actual }) if actual == maximum
+        ));
+    }
+    let mut malformed = wire.to_vec();
+    malformed.push(0x80);
+    assert!(matches!(
+        BatchCodec::new(BatchHeader::RakNet, limits).decode(Bytes::from(malformed)),
+        Err(BatchError::InvalidPacketLength { .. })
+    ));
+}
+
+#[test]
+fn incoming_cursor_retains_unread_bytes_and_releases_them_on_drop_or_exhaustion() {
+    let limits = BatchLimits::default();
+    let count = limits.max_packets * 8 + 1;
+    let input: Vec<_> = (0..count)
+        .map(|index| Bytes::from(index.to_le_bytes().to_vec()))
+        .collect();
+    let wire = BatchCodec::new(
+        BatchHeader::RakNet,
+        BatchLimits {
+            max_packets: count,
+            ..limits
+        },
+    )
+    .encode(&input)
+    .unwrap()
+    .remove(0);
+    for finish in [false, true] {
+        let owner: std::sync::Arc<[u8]> = wire.as_ref().into();
+        let lifetime = std::sync::Arc::downgrade(&owner);
+        let DecodeOutcome::Packets { mut packets, .. } =
+            BatchCodec::new(BatchHeader::RakNet, limits)
+                .decode(Bytes::from_owner(owner))
+                .unwrap()
+        else {
+            panic!("owned cursor batch was dropped");
+        };
+        assert_eq!(packets.size_hint(), (count, Some(count)));
+        let first = packets.next().unwrap();
+        assert_eq!(first, input[0]);
+        assert_eq!(packets.len(), count - 1);
+        if finish {
+            drop(first);
+            for (index, expected) in input.iter().enumerate().skip(1) {
+                let packet = packets.next().unwrap();
+                assert_eq!(&packet, expected);
+                assert_eq!(packets.len(), count - index - 1);
+            }
+            assert!(packets.is_empty());
+            assert!(packets.next().is_none());
+            assert!(lifetime.upgrade().is_none());
+        } else {
+            drop(packets);
+            assert!(lifetime.upgrade().is_some());
+            drop(first);
+            assert!(lifetime.upgrade().is_none());
+        }
     }
 }

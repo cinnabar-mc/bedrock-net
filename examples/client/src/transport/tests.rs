@@ -136,7 +136,8 @@ async fn generated_probe_send_emits_without_a_later_receive_or_close() {
             .await
             .expect("completed probe send retained its packet until a later receive or close");
         let DecodeOutcome::Packets {
-            packets: frames, ..
+            packets: mut frames,
+            ..
         } = BatchCodec::new(BatchHeader::RakNet, BatchLimits::default())
             .decode(message)
             .unwrap()
@@ -144,7 +145,8 @@ async fn generated_probe_send_emits_without_a_later_receive_or_close() {
             panic!("generated probe request was not a valid batch");
         };
         assert_eq!(frames.len(), 1);
-        let mut reader = Reader::from_shared(&frames[0]);
+        let frame = frames.next().unwrap();
+        let mut reader = Reader::from_shared(&frame);
         let header = PacketHeader::from_raw(reader.read_var_u32().unwrap());
         let packets::Packet::RequestNetworkSettings(request) =
             packets::Packet::decode_from(header.id, Peer::Client, &mut reader).unwrap()

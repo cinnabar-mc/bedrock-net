@@ -1,13 +1,12 @@
 //! Probe packet pump with retained FIFO and one pair of cipher directions.
 
-use std::collections::VecDeque;
 use std::error::Error;
 use std::io;
 
 use bedrock_net::encryption::{BatchDecryptor, BatchEncryptor};
 use bedrock_net::{
-    BatchCodec, BatchError, BatchLimits, BatchPhase, CompressionSettings, DecodeOutcome,
-    Negotiated, Plain,
+    BatchCodec, BatchError, BatchLimits, BatchPackets, BatchPhase, CompressionSettings,
+    DecodeOutcome, Negotiated, Plain,
 };
 use bedrock_protocol::{
     packets,
@@ -21,7 +20,7 @@ pub(super) struct Session<S = Plain> {
     pub(super) transport: Transport,
     codec: BatchCodec<S>,
     limits: BatchLimits,
-    pending: VecDeque<Bytes>,
+    pending: Option<BatchPackets>,
     ciphers: Option<(BatchEncryptor, BatchDecryptor)>,
 }
 
@@ -33,7 +32,7 @@ impl Session<Plain> {
             codec: BatchCodec::new(transport.header(), limits),
             transport,
             limits,
-            pending: VecDeque::new(),
+            pending: None,
             ciphers: None,
         }
     }
@@ -91,9 +90,10 @@ impl<S: BatchPhase> Session<S> {
     /// Drains the current batch before reading another; compression drops still consume cipher state.
     pub(super) async fn next_packet(&mut self) -> Result<Bytes, Box<dyn Error>> {
         loop {
-            if let Some(packet) = self.pending.pop_front() {
+            if let Some(packet) = self.pending.as_mut().and_then(Iterator::next) {
                 return Ok(packet);
             }
+            self.pending = None;
             let mut message = self.transport.recv().await?;
             check_wire_size(&message, self.limits)?;
             if let Some((_, decryptor)) = &mut self.ciphers {
@@ -118,7 +118,7 @@ impl<S: BatchPhase> Session<S> {
                     if skipped_empty_packets != 0 {
                         eprintln!("skipped {skipped_empty_packets} empty batch entries");
                     }
-                    self.pending.extend(packets);
+                    self.pending = Some(packets);
                 }
                 DecodeOutcome::Dropped(reason) => eprintln!("dropped batch: {reason:?}"),
             }
