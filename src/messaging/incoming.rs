@@ -1,7 +1,7 @@
 //! One bounded service batch retained across transport admission and receipt capacity waits.
 
 use super::Error;
-use bedrock_services::signaling::{self, ReceivedSignal};
+use bedrock_services::signaling::{self, ReceivedLegacySignal, ReceivedSignal};
 use futures::future::BoxFuture;
 use nethernet_tokio::{CallerServerSignalingDriver, CallerSignalingDriver, CallerSignalingError};
 use std::future::Future;
@@ -11,12 +11,31 @@ use uuid::Uuid;
 /// Largest retained envelope count, derived from the SDK's nested callback batch bounds.
 pub(super) const MAX_SIGNALS: usize = signaling::MAX_BATCH_MESSAGES * signaling::MAX_BATCH_MESSAGES;
 
+pub(super) enum Envelope {
+    Messaging(ReceivedSignal),
+    Legacy(ReceivedLegacySignal),
+}
+
 pub(super) struct Incoming {
-    pub(super) signal: ReceivedSignal,
+    pub(super) signal: Envelope,
     pub(super) receipt: Uuid,
     pub(super) deadline: Instant,
     pub(super) waiting: Option<BoxFuture<'static, Result<(), CallerSignalingError>>>,
     bytes: usize,
+}
+
+impl Envelope {
+    /// Borrows receipt metadata only for a Player Messaging envelope already handed off by the caller.
+    pub(super) fn receipt(
+        &self,
+        receipt: Uuid,
+        deadline: Instant,
+    ) -> Option<(&ReceivedSignal, Uuid, Instant)> {
+        match self {
+            Self::Messaging(signal) => Some((signal, receipt, deadline)),
+            Self::Legacy(_) => None,
+        }
+    }
 }
 
 #[derive(Default)]
@@ -35,7 +54,7 @@ impl Batch {
     ) -> Result<(), Error> {
         let delivery =
             caller.prepare_delivery_before(&signal.sender().to_string(), signal.signal(), deadline);
-        self.retain(signal, deadline, delivery)
+        self.retain(Envelope::Messaging(signal), deadline, delivery)
     }
 
     /// Uses the same envelope budget with the accepting bridge's actual route reservation.
@@ -51,13 +70,24 @@ impl Batch {
             // An offer outside the accepting route limit cannot retire unrelated peers.
             return Ok(());
         }
-        self.retain(signal, deadline, delivery)
+        self.retain(Envelope::Messaging(signal), deadline, delivery)
+    }
+
+    /// Prepares the same retained route admission using the actual legacy string sender.
+    pub(super) fn push_legacy(
+        &mut self,
+        caller: &CallerSignalingDriver,
+        signal: ReceivedLegacySignal,
+        deadline: Instant,
+    ) -> Result<(), Error> {
+        let delivery = caller.prepare_delivery_before(signal.sender(), signal.signal(), deadline);
+        self.retain(Envelope::Legacy(signal), deadline, delivery)
     }
 
     /// Retains one prepared admission in the original bounded allocation, regardless of route direction.
     fn retain(
         &mut self,
-        signal: ReceivedSignal,
+        signal: Envelope,
         deadline: Instant,
         delivery: Result<
             impl Future<Output = Result<(), CallerSignalingError>> + Send + 'static,
@@ -71,11 +101,13 @@ impl Batch {
             }
             Err(_) => return Err(Error::Signaling),
         };
-        let bytes = signal
-            .signal()
-            .len()
-            .checked_add(signal.network_id().len())
-            .ok_or(Error::Capacity)?;
+        let bytes = match &signal {
+            Envelope::Messaging(signal) => {
+                signal.signal().len().checked_add(signal.network_id().len())
+            }
+            Envelope::Legacy(signal) => signal.signal().len().checked_add(signal.sender().len()),
+        }
+        .ok_or(Error::Capacity)?;
         if self.queue.len() >= MAX_SIGNALS
             || bytes > signaling::MAX_MESSAGE_BYTES.saturating_sub(self.bytes)
         {
@@ -102,7 +134,13 @@ impl Batch {
 
     /// Records actual handoff before attempting a receipt; it can never deliver that signal again.
     pub(super) fn admitted(&mut self) {
-        if let Some(front) = self.queue.front_mut() {
+        if self
+            .queue
+            .front()
+            .is_some_and(|front| matches!(front.signal, Envelope::Legacy(_)))
+        {
+            self.discard();
+        } else if let Some(front) = self.queue.front_mut() {
             front.waiting = None;
         }
     }

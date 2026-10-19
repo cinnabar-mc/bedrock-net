@@ -2,7 +2,7 @@
 
 use super::incoming::Batch;
 use super::socket::{Outgoing, SocketStep, socket_step};
-use super::{Error, caller::Caller};
+use super::{Error, Recipient, caller::Caller};
 use bedrock_services::signaling::{Event, RequestId, websocket::MessagingSocket};
 use futures::future::{BoxFuture, pending, select_all};
 use nethernet_tokio::{
@@ -22,7 +22,7 @@ mod race;
 pub(super) struct Driver {
     socket: MessagingSocket,
     caller: Caller,
-    peer: Option<Uuid>,
+    peer: Option<Recipient>,
     pending: HashMap<RequestId, SignalRequest>,
     terminal: Option<Error>,
     incoming: Batch,
@@ -37,7 +37,7 @@ impl Driver {
     pub(super) fn new(
         socket: MessagingSocket,
         caller: CallerSignalingDriver,
-        peer: Uuid,
+        peer: Recipient,
         admission_timeout: Duration,
         attempt_deadline: Instant,
     ) -> Self {
@@ -72,7 +72,7 @@ impl Driver {
     fn with_caller(
         socket: MessagingSocket,
         caller: Caller,
-        peer: Option<Uuid>,
+        peer: Option<Recipient>,
         admission_timeout: Duration,
         attempt_deadline: Option<Instant>,
         cancellation: Option<BoxFuture<'static, ()>>,
@@ -100,6 +100,32 @@ impl Driver {
         self.incoming.clear();
         self.outgoing = None;
         self.cancellation = None;
+    }
+
+    /// Seals original routes while retaining the same socket's bounded close handshake.
+    pub(super) fn begin_close(&mut self) {
+        self.terminal.get_or_insert(Error::Closed);
+        self.caller.close();
+        self.socket.close();
+        self.pending.clear();
+        self.incoming.clear();
+        self.outgoing = None;
+        self.cancellation = None;
+    }
+
+    /// Drains the original socket and its completions; cancellation retains its close cutoff.
+    pub(super) async fn finish_close(&mut self) -> Result<(), Error> {
+        let result = loop {
+            match self.socket.drive().await {
+                Ok(_) => {}
+                Err(bedrock_services::signaling::websocket::SocketError::Closed) => break Ok(()),
+                Err(error) => break Err(Error::Messaging(error)),
+            }
+        };
+        match self.terminal {
+            Some(error) if !matches!(error, Error::Closed) => Err(error),
+            _ => result,
+        }
     }
 
     /// Ends only the setup deadline; already retained envelope deadlines never restart.
@@ -207,11 +233,11 @@ impl Driver {
             let has_outgoing = self.outgoing.is_some();
             let (receipt, waiting, deadline) = match front {
                 Some(front) => {
-                    let receipt = front.waiting.is_none().then_some((
-                        &front.signal,
-                        front.receipt,
-                        front.deadline,
-                    ));
+                    let receipt = if front.waiting.is_none() {
+                        front.signal.receipt(front.receipt, front.deadline)
+                    } else {
+                        None
+                    };
                     (
                         receipt,
                         Some(&mut front.waiting),
@@ -270,14 +296,17 @@ impl Driver {
                 if request.is_cancelled() {
                     return Ok(());
                 }
-                let peer = match self.peer {
-                    Some(peer) => peer,
-                    None => Uuid::parse_str(&request.signal().network_id)
-                        .map_err(|_| Error::Signaling)?,
+                let peer = match &self.peer {
+                    Some(peer) => peer.clone(),
+                    None => {
+                        let peer = Uuid::parse_str(&request.signal().network_id)
+                            .map_err(|_| Error::Signaling)?;
+                        if peer.is_nil() {
+                            return Err(Error::Signaling);
+                        }
+                        Recipient::Messaging(peer)
+                    }
                 };
-                if peer.is_nil() {
-                    return Err(Error::Signaling);
-                }
                 self.outgoing = Some(Outgoing::new(request, peer));
                 Ok(())
             }
@@ -300,6 +329,16 @@ impl Driver {
             }
             Step::AdmissionTimeout => Err(Error::TimedOut),
         }
+    }
+
+    /// Caps either dialect's retained incoming handoff at the same original attempt cutoff.
+    fn incoming_deadline(&self) -> Result<Instant, Error> {
+        let deadline = Instant::now()
+            .checked_add(self.admission_timeout)
+            .ok_or(Error::Configuration)?;
+        Ok(self
+            .attempt_deadline
+            .map_or(deadline, |attempt| attempt.min(deadline)))
     }
 
     /// Applies socket progress after recording any handoff completed in the same poll.
@@ -327,13 +366,13 @@ impl Driver {
                 Ok(())
             }
             SocketStep::Event(Ok(Event::Signal(signal))) => {
-                let deadline = Instant::now()
-                    .checked_add(self.admission_timeout)
-                    .ok_or(Error::Configuration)?;
-                let deadline = self
-                    .attempt_deadline
-                    .map_or(deadline, |attempt| attempt.min(deadline));
+                let deadline = self.incoming_deadline()?;
                 self.caller.receive(&mut self.incoming, signal, deadline)
+            }
+            SocketStep::Event(Ok(Event::LegacySignal(signal))) => {
+                let deadline = self.incoming_deadline()?;
+                self.caller
+                    .receive_legacy(&mut self.incoming, signal, deadline)
             }
             SocketStep::Event(Ok(_)) => Ok(()),
         }

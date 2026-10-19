@@ -54,7 +54,8 @@ impl PreparedMessagingServer {
         if Instant::now() >= deadline {
             return Err(Error::TimedOut);
         }
-        if config.identity.is_none()
+        if self.socket.legacy_network_id().is_some()
+            || config.identity.is_none()
             || config.token_trust.is_none()
             || config.allow_unsigned_answers
         {
@@ -138,7 +139,8 @@ impl MessagingServer {
     }
 
     /// Consumes accepting capability and synchronously closes the original service routes.
-    /// Existing accepted session receivers remain with their callers; no queue is moved here.
+    /// Retains the same service socket for its bounded close handshake. Existing accepted
+    /// session receivers remain with their callers; no queue is moved here.
     ///
     /// ```compile_fail
     /// fn accept_after_close(server: bedrock_net::messaging::server::MessagingServer) {
@@ -147,39 +149,61 @@ impl MessagingServer {
     /// }
     /// ```
     pub fn begin_close(mut self) -> ClosingMessagingServer {
-        self.driver.close();
-        drop(self.driver);
+        self.driver.begin_close();
         ClosingMessagingServer {
             server: self.server,
+            driver: Box::new(self.driver),
+            service: None,
             joined: false,
         }
     }
 }
 
-/// Local accepting permission ended; the original listener task still has an explicit join owner.
+/// Local accepting permission ended; the original service close and listener join remain owned.
 #[must_use = "finish retiring the original listener or explicitly drop it"]
 pub struct ClosingMessagingServer {
     server: Box<NetherServer>,
+    driver: Box<Driver>,
+    service: Option<Result<(), Error>>,
     joined: bool,
 }
 
 impl ClosingMessagingServer {
-    /// Joins the same listener and its unaccepted workers. Cancellation retains that join.
+    /// Drives the original bounded service close and joins the listener and its unaccepted workers.
+    /// Cancellation retains both operations, their completed results and the first close cutoff.
     /// Previously returned session receivers and their accepted data remain caller-owned.
     ///
     /// # Errors
-    /// Returns a transport retirement failure without discarding this close owner.
+    /// Returns the first service failure or listener retirement failure after attempting both owners.
     pub async fn finish_close(&mut self) -> Result<(), Error> {
-        if !self.joined {
-            self.server.close().await.map_err(|_| Error::Transport)?;
-            self.joined = true;
-        }
-        Ok(())
+        let Self {
+            server,
+            driver,
+            service,
+            joined,
+        } = self;
+        let (service, listener) = tokio::join!(
+            async {
+                if service.is_none() {
+                    *service = Some(driver.finish_close().await);
+                }
+                service.expect("completed original service close")
+            },
+            async {
+                if !*joined {
+                    server.close().await.map_err(|_| Error::Transport)?;
+                    *joined = true;
+                }
+                Ok(())
+            },
+        );
+        service.and(listener)
     }
 
-    /// Consumes this owner only after actual listener retirement completed.
+    /// Consumes this owner only after the service socket retired and listener join completed.
+    /// Retirement does not change an error previously reported by `finish_close` into success.
     pub fn try_finish(self) -> Result<ClosedMessagingServer, Self> {
-        if self.joined {
+        if self.service.is_some() && self.joined {
             Ok(ClosedMessagingServer { _private: () })
         } else {
             Err(self)

@@ -1,10 +1,10 @@
 //! Transactional SDK admission while its existing socket owner drives wire/control progress.
 
-use super::Error;
+use super::{Error, Recipient};
 use bedrock_services::signaling::{
     self, Event, ReceivedSignal, RequestId, websocket::MessagingSocket,
 };
-use nethernet_tokio::SignalRequest;
+use nethernet_tokio::{SignalRequest, SignalType};
 use std::{
     future::{Future, poll_fn},
     task::Poll,
@@ -16,13 +16,13 @@ use zeroize::Zeroizing;
 pub(super) struct Outgoing {
     pub(super) request: SignalRequest,
     message: Uuid,
-    peer: Uuid,
+    peer: Recipient,
     wire: Zeroizing<String>,
 }
 
 impl Outgoing {
     /// Captures one existing bounded request without replacing its deadline or retrying written bytes.
-    pub(super) fn new(request: SignalRequest, peer: Uuid) -> Self {
+    pub(super) fn new(request: SignalRequest, peer: Recipient) -> Self {
         let wire = Zeroizing::new(request.signal().to_string());
         Self {
             request,
@@ -98,13 +98,23 @@ fn admit(
         if outgoing.request.is_cancelled() {
             return Ok(Some(SocketStep::OutgoingCancelled));
         }
-        match socket.send_signal(
-            outgoing.peer,
-            outgoing.message,
-            &outgoing.wire,
-            outgoing.request.requires_peer_receipt(),
-            outgoing.request.deadline(),
-        ) {
+        let admitted = match &outgoing.peer {
+            Recipient::Messaging(peer) => socket.send_signal(
+                *peer,
+                outgoing.message,
+                &outgoing.wire,
+                outgoing.request.requires_peer_receipt(),
+                outgoing.request.deadline(),
+            ),
+            Recipient::Legacy(peer) => socket.send_legacy_signal(
+                peer,
+                outgoing.message,
+                &outgoing.wire,
+                outgoing.request.signal().signal_type == SignalType::Offer,
+                outgoing.request.deadline(),
+            ),
+        };
+        match admitted {
             Ok(id) => return Ok(Some(SocketStep::Outgoing(id))),
             Err(signaling::Error::Limit) => {}
             Err(_) => return Err(Error::Admission),

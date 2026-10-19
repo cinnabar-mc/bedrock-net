@@ -120,11 +120,24 @@ underlying NetherNet Tokio adapter owns its bounded transport workers. Accepting
 `MessagingServer` needs `accept` or `maintain` polled and takes caller-supplied
 ICE configuration. It publishes no world or activity and does not authorize Login.
 
+Choose the service dialect from the acquired route before connecting.
+`PreparedMessaging::new` takes a Player Messaging UUID;
+`PreparedMessaging::new_legacy` takes the original legacy string recipient and a
+matching legacy SDK socket. `recipient()` preserves that typed distinction.
+Legacy offer completion uses the service delivery outcome; it does not invent a
+peer receipt. Supply signed identity and explicit answer trust in both cases.
+Only the explicit legacy route may opt into missing answer assertions; any
+present assertion still passes the configured verification.
+
 Local transport close consumes send capability and retains a closing owner.
 Borrowed drain/close waits keep accepted input and pending work across
 cancellation. Completion describes local retirement; it does not acknowledge
 remote delivery. Shared established Messaging senders observe global closure at
 the runtime admission gate.
+For an accepting Messaging server, `begin_close` seals its routes immediately and
+retains the original service socket. Keep calling the resulting owner's
+`finish_close` to drive its bounded WebSocket close and join the listener.
+Canceling that wait preserves both owners and the original close cutoff.
 
 The crates currently use Git/path dependencies rather than crates.io releases.
 Select one reviewed revision of this repository for its library crates and use
