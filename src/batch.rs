@@ -163,6 +163,7 @@ impl BatchPhase for Negotiated {
 pub struct BatchCodec<S = Plain> {
     header: BatchHeader,
     limits: BatchLimits,
+    max_incoming_decoded_bytes: usize,
     phase: S,
 }
 
@@ -172,6 +173,7 @@ impl BatchCodec<Plain> {
         Self {
             header,
             limits,
+            max_incoming_decoded_bytes: limits.max_decoded_bytes,
             phase: Plain(()),
         }
     }
@@ -189,8 +191,21 @@ impl BatchCodec<Plain> {
         BatchCodec {
             header: self.header,
             limits: self.limits,
+            max_incoming_decoded_bytes: self.max_incoming_decoded_bytes,
             phase: Negotiated(settings),
         }
+    }
+}
+
+impl BatchCodec<Negotiated> {
+    /// Sets the incoming decoded-byte ceiling after compression negotiation.
+    ///
+    /// Outgoing byte/count limits, the wire ceiling and incoming packet-count
+    /// policy stay unchanged. Zero permits only an empty decoded body.
+    #[must_use]
+    pub const fn with_incoming_decoded_limit(mut self, maximum: usize) -> Self {
+        self.max_incoming_decoded_bytes = maximum;
+        self
     }
 }
 
@@ -273,14 +288,14 @@ impl<S: BatchPhase> BatchCodec<S> {
                 .copied()
                 .ok_or(BatchError::MissingCompressionHeader)?;
             message.advance(1);
-            message = match compression::decompress(id, message, self.limits.max_decoded_bytes)? {
+            message = match compression::decompress(id, message, self.max_incoming_decoded_bytes)? {
                 Ok(body) => body,
                 Err(reason) => return Ok(DecodeOutcome::Dropped(reason)),
             };
         }
-        if message.len() > self.limits.max_decoded_bytes {
+        if message.len() > self.max_incoming_decoded_bytes {
             return Err(BatchError::DecodedTooLarge {
-                maximum: self.limits.max_decoded_bytes,
+                maximum: self.max_incoming_decoded_bytes,
             });
         }
         let (count, skipped_empty_packets) =

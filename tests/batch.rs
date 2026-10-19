@@ -519,3 +519,137 @@ fn incoming_cursor_retains_unread_bytes_and_releases_them_on_drop_or_exhaustion(
         }
     }
 }
+
+#[test]
+fn negotiated_incoming_decoded_limit_preserves_defaults_and_output_policy() {
+    let limits = BatchLimits {
+        max_decoded_bytes: 8,
+        max_encoded_bytes: 128,
+        max_packets: 2,
+        ..BatchLimits::default()
+    };
+    let input = [Bytes::from_static(&[2; 9])];
+    // One byte of length framing is part of the decoded ceiling.
+    let decoded_len = input[0].len() + 1;
+    for header in [BatchHeader::RakNet, BatchHeader::NetherNet] {
+        let plain = BatchCodec::new(header, limits);
+        let initial = BatchCodec::new(
+            header,
+            BatchLimits {
+                max_decoded_bytes: decoded_len,
+                ..limits
+            },
+        )
+        .encode(&input)
+        .unwrap()
+        .remove(0);
+        assert!(matches!(
+            plain.decode(initial),
+            Err(BatchError::DecodedTooLarge { maximum: 8 })
+        ));
+        for algorithm in [
+            CompressionAlgorithm::Deflate,
+            CompressionAlgorithm::Snappy,
+            CompressionAlgorithm::None,
+        ] {
+            let settings = CompressionSettings {
+                algorithm,
+                threshold: 0,
+            };
+            let wire = BatchCodec::new(
+                header,
+                BatchLimits {
+                    max_decoded_bytes: decoded_len,
+                    ..limits
+                },
+            )
+            .negotiate(settings)
+            .encode(&input)
+            .unwrap()
+            .remove(0);
+            let original = BatchCodec::new(header, limits).negotiate(settings);
+            assert!(matches!(
+                original.decode(wire.clone()),
+                Err(BatchError::DecodedTooLarge { maximum: 8 })
+            ));
+            let at = BatchCodec::new(header, limits)
+                .negotiate(settings)
+                .with_incoming_decoded_limit(decoded_len);
+            assert_eq!(packets(&at, wire.clone()), input);
+            assert!(matches!(
+                at.encode(&input),
+                Err(BatchError::DecodedTooLarge { maximum: 8 })
+            ));
+            let below = BatchCodec::new(header, limits)
+                .negotiate(settings)
+                .with_incoming_decoded_limit(decoded_len - 1);
+            assert!(matches!(
+                below.decode(wire),
+                Err(BatchError::DecodedTooLarge { maximum }) if maximum == decoded_len - 1
+            ));
+            let outgoing: [Bytes; 3] = std::array::from_fn(|_| Bytes::from_static(&[2; 3]));
+            let original_batches = original.encode(&outgoing).unwrap();
+            assert_eq!(original_batches.len(), 2);
+            assert_eq!(at.encode(&outgoing).unwrap(), original_batches);
+        }
+    }
+}
+
+#[test]
+fn negotiated_incoming_decoded_limit_keeps_wire_count_and_framing_validation() {
+    let limits = BatchLimits {
+        max_decoded_bytes: 8,
+        max_encoded_bytes: 128,
+        max_incoming_packets: Some(1),
+        ..BatchLimits::default()
+    };
+    let input: [Bytes; 2] = std::array::from_fn(|_| Bytes::from_static(&[2; 4]));
+    let wire = negotiated(
+        CompressionAlgorithm::None,
+        BatchLimits {
+            max_decoded_bytes: 10,
+            ..limits
+        },
+    )
+    .encode(&input)
+    .unwrap()
+    .remove(0);
+    let counted = negotiated(CompressionAlgorithm::None, limits).with_incoming_decoded_limit(10);
+    assert!(matches!(
+        counted.decode(wire.clone()),
+        Err(BatchError::TooManyPackets { maximum: 1 })
+    ));
+    let bounded_wire = negotiated(
+        CompressionAlgorithm::None,
+        BatchLimits {
+            max_encoded_bytes: wire.len() - 1,
+            ..limits
+        },
+    )
+    .with_incoming_decoded_limit(10);
+    assert!(matches!(
+        bounded_wire.decode(wire.clone()),
+        Err(BatchError::EncodedTooLarge { .. })
+    ));
+    let mut malformed = wire.to_vec();
+    malformed.push(0x80);
+    let validated = negotiated(
+        CompressionAlgorithm::None,
+        BatchLimits {
+            max_incoming_packets: None,
+            ..limits
+        },
+    )
+    .with_incoming_decoded_limit(11);
+    assert!(matches!(
+        validated.decode(Bytes::from(malformed)),
+        Err(BatchError::InvalidPacketLength { .. })
+    ));
+    let zero = negotiated(CompressionAlgorithm::None, limits).with_incoming_decoded_limit(0);
+    assert!(matches!(
+        zero.decode(wire.clone()),
+        Err(BatchError::DecodedTooLarge { maximum: 0 })
+    ));
+    // The actual encoded envelope without any body remains a valid empty batch.
+    assert!(packets(&zero, wire.slice(..2)).is_empty());
+}
