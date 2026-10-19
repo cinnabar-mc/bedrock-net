@@ -266,3 +266,115 @@ async fn a_complete_sdk_signal_batch_waits_for_transport_capacity_in_order() {
     assert!(signals.next().now_or_never().is_none());
     driver.close();
 }
+
+/// A retired subscription's real prepared route cannot close a fresh unrelated route or issue a receipt.
+#[tokio::test]
+async fn stale_accepting_admission_preserves_the_shared_service_and_healthy_route() {
+    use bedrock_services::signaling::websocket::test_support;
+    use nethernet_tokio::{CallerServerSignaling, CallerServerSignalingConfig};
+
+    tokio::time::timeout(Duration::from_secs(10), async {
+        let stale_peer = Uuid::from_u128(21);
+        let healthy_peer = Uuid::from_u128(22);
+        let network_id = 7;
+        let (socket, mut peer) = test_support::pair(network_id).await;
+        let (caller, caller_driver) = CallerServerSignaling::new(
+            network_id.to_string(),
+            CallerServerSignalingConfig::default(),
+        )
+        .unwrap();
+        let mut old_subscription = caller.signals().unwrap();
+        caller_driver
+            .try_deliver(
+                &stale_peer.to_string(),
+                &Signal::offer(9, "original route".into(), stale_peer.to_string()).to_string(),
+            )
+            .unwrap();
+        assert_eq!(
+            old_subscription.next().await.unwrap().data,
+            "original route"
+        );
+
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let mut sdk = Messaging::new(network_id);
+        let stale = received(
+            &mut sdk,
+            stale_peer,
+            "untrusted advertised id",
+            &Signal::candidate(9, "late candidate".into(), stale_peer.to_string()).to_string(),
+        );
+        let mut retained = Batch::default();
+        retained
+            .push_server(&caller_driver, stale, deadline)
+            .unwrap();
+        assert!(retained.front_mut().unwrap().waiting.is_some());
+
+        // The actual subscription owner removes its unclaimed route. The retained
+        // admission still carries the original route and subscription epochs.
+        drop(old_subscription);
+        let mut healthy_subscription = caller.signals().unwrap();
+        caller_driver
+            .try_deliver(
+                &healthy_peer.to_string(),
+                &Signal::offer(10, "healthy route".into(), healthy_peer.to_string()).to_string(),
+            )
+            .unwrap();
+        let mut service = Driver::server(
+            socket,
+            caller_driver,
+            Duration::from_secs(5),
+            std::future::pending(),
+        );
+        service.incoming = retained;
+        let healthy_offer = service
+            .run(healthy_subscription.next())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(healthy_offer.network_id, healthy_peer.to_string());
+        assert_eq!(healthy_offer.data, "healthy route");
+        assert!(
+            service.failure().is_none(),
+            "one stale accepting admission retired the shared service: {:?}",
+            service.failure()
+        );
+        assert!(service.incoming.front_mut().is_none());
+
+        let healthy = received(
+            &mut sdk,
+            healthy_peer,
+            "another untrusted advertised id",
+            &Signal::candidate(10, "still usable".into(), healthy_peer.to_string()).to_string(),
+        );
+        service
+            .socket_progress(Ok(SocketStep::Event(Ok(Event::Signal(healthy)))))
+            .unwrap();
+        let candidate = service
+            .run(healthy_subscription.next())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(candidate.network_id, healthy_peer.to_string());
+        assert_eq!(candidate.data, "still usable");
+        assert!(service.failure().is_none());
+
+        let receipt = service
+            .run(peer.recv_text())
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        let receipt: Value = serde_json::from_str(&receipt).unwrap();
+        assert_eq!(receipt["method"], "Signaling_SendClientMessage_v1_0");
+        assert_eq!(receipt["params"]["toPlayerId"], healthy_peer.to_string());
+        let inner: Value =
+            serde_json::from_str(receipt["params"]["message"].as_str().unwrap()).unwrap();
+        assert_eq!(inner["method"], "Signaling_DeliveryNotification_V1_0");
+        assert!(service.incoming.front_mut().is_none());
+        service.close();
+        assert!(healthy_subscription.next().await.is_none());
+        let _ = peer.close().await;
+    })
+    .await
+    .expect("finite stale accepting-route fixture stalled");
+}
