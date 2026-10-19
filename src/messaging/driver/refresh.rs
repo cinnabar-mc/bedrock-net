@@ -120,3 +120,6 @@ pub(super) fn failure(failure: Failure) -> Error {
         _ => Error::Ice,
     }
 }
+
+#[cfg(test)]
+mod tests;
