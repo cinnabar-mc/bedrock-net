@@ -63,11 +63,13 @@ fn first_startup_definitions_prepare_early_and_radius_is_requested_once() {
         "first"
     );
     assert!(update.ready.is_none());
-    assert!(client
-        .receive(start(RUNTIME_ID))
-        .unwrap()
-        .request_radius
-        .is_none());
+    assert!(
+        client
+            .receive(start(RUNTIME_ID))
+            .unwrap()
+            .request_radius
+            .is_none()
+    );
     assert!(client.receive(player_spawn()).unwrap().ready.is_none());
     let update = client.receive(radius(8)).unwrap();
     let ready = update.ready.unwrap();
