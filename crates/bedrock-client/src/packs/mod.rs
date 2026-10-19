@@ -263,7 +263,6 @@ struct Transfer {
     downloads: BTreeMap<uuid::Uuid, Download>,
     offer_order: Vec<uuid::Uuid>,
     budget: Budget,
-    limits: PackTransferLimits,
     offer_required: bool,
     metadata: Option<Box<RetainedOffer>>,
     phase: Phase,
@@ -300,7 +299,6 @@ impl Transfer {
                 .collect(),
             offer_order,
             budget,
-            limits,
             offer_required: offer.resource_pack_required,
             metadata: retain_metadata.then(|| {
                 Box::new(RetainedOffer {
@@ -452,7 +450,7 @@ impl Transfer {
                     std::mem::take(&mut self.downloads),
                     stack,
                     self.offer_required,
-                    self.limits,
+                    self.budget.limits(),
                     self.metadata.take().map(|metadata| *metadata),
                     &self.offer_order,
                 )?;

@@ -22,6 +22,11 @@ pub(super) struct Budget {
 }
 
 impl Budget {
+    /// Reuses the transfer's admitted policy for final stack assembly.
+    pub(super) fn limits(&self) -> PackTransferLimits {
+        self.limits
+    }
+
     /// Selects bounded first offers; excluded entries remain subject to final stack policy.
     pub(super) fn offers(
         offers: Vec<PackInfoData>,
