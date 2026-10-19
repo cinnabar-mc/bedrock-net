@@ -1,19 +1,20 @@
 # bedrock-net
 
-Reusable native Rust building blocks for Minecraft Bedrock connections. The
-workspace covers batch framing, Login and key exchange, client resource-pack
-negotiation, and startup prerequisites. It is developed for
-[Cinnabar](https://github.com/cinnabar-mc/cinnabar), with application policy and
-runtime integration kept outside the pure protocol owners.
+Native Rust libraries for Minecraft Bedrock batch framing, Login, resource-pack
+delivery and startup negotiation. Use the protocol owners with your own
+transport and scheduler, or enable the optional Tokio transport edges.
+
+Applications supply account and endpoint policy, credentials, pack sources,
+world definitions and ongoing play. The libraries retain protocol state and
+return the next owned continuation and its effects.
 
 ## Choose a layer
 
 | Crate | Responsibility |
 | --- | --- |
-| [`bedrock-net`](src/lib.rs) | Encoded packet batches, compression, directional ciphers and optional Login/transport helpers. |
-| [`bedrock-client`](crates/bedrock-client) | Caller-driven generated-packet client negotiation, pack transfer, startup and accepting session continuations. |
-| [`bedrock-packs`](crates/bedrock-packs) | Pack text decoding, owned archive handoffs and content-key lifetime. |
-| [`bedrock-probe`](examples/client) | Standalone settings/offline-Login probe showing concrete transport integration. |
+| [`bedrock-net`](src/lib.rs) | Encoded packet batches, compression and directional ciphers; optional Login primitives and transport edges. |
+| [`bedrock-client`](crates/bedrock-client) | Sans-I/O client and accepting negotiation over generated packets, including pack transfer and startup. |
+| [`bedrock-packs`](crates/bedrock-packs) | Runtime-independent pack text, owned archive handoffs and content-key lifetime. |
 
 [protocolgen](https://github.com/cinnabar-mc/protocolgen) owns the version-specific
 packet schemas and serializers. [bedrock-services](https://github.com/cinnabar-mc/bedrock-services)
@@ -21,10 +22,10 @@ owns account authentication and service traffic. This workspace consumes their
 outputs; applications select accounts, authorize world/session joins, acquire
 credentials and decide retry, cache, rendering and ongoing-play policy.
 
-The three library crates are the default workspace members. They create no
-runtime. The byte codec, Login helpers, pack owners and generated-packet protocol
-owners perform no socket, HTTP, filesystem or clock I/O. Optional transport edges
-are described below.
+The three libraries are the default workspace members. Their pure owners perform
+no socket, HTTP, filesystem or clock I/O and create no runtime. Callers supply
+time to operations that need it. A Bevy or custom-executor application can drive
+these owners directly; enabling an optional Tokio edge is a separate choice.
 
 ## Batch codec
 
@@ -70,11 +71,16 @@ explicit library policy, adjustable for an application's pack-transfer budget.
 | Accepting packs | `ServerPacks<Grant>` → owned chunk read/write continuations → `ServerWorldReady<Grant>` |
 | Accepting startup | `ServerSpawning<Grant>` → `ServerInitialized<Grant>` → `AcceptedSession<Grant>` |
 
-The original proof key, negotiated data and pending effects move with these
-owners. A settings owner cannot create Login; transfer has no preload method;
-startup has no initialization method until actual prerequisites produce
-`SpawnReady`. Remote refusal, malformed input, expiry and I/O failure remain
-runtime errors.
+Methods consume the current phase and return its continuation. Install returned
+compression or ciphers and dispatch effects before advancing that continuation.
+`ClientSettings` exposes no Login formatter, pack transfer exposes no preload
+method, and only `SpawnReady` exposes the initialization acknowledgment. The
+original key and negotiated data move with the owner.
+
+These types constrain local call order. Remote refusal, malformed input, expiry
+and I/O failure still return errors. Preparation errors such as Login formatting
+can return the unchanged owner for correction. Accepting transition errors retain
+their continuation for retirement. Recovery does not reset a deadline or stream.
 
 The application dispatches returned packets in order, installs compression and
 ciphers on its retained connection, and preserves unrelated packets in a bounded
@@ -89,11 +95,9 @@ The verifier can retain signed name, canonical UUID and PlayFab identifiers with
 `TrustedIdentity::with_player_identity`; `AuthenticatedLogin::player_identity`
 borrows them and revalidation rejects changes. Missing presentation stays absent.
 
-Local regressions exercise the accepting pack/world continuations through
-generated-packet exchanges, memory and file sources, provider revalidation and
-error handling. Pinned Go helpers check delivery policy and identity projection.
-No accepting listener or running-world bridge is provided; application hosting
-and live compatibility remain separate. The Login-only handoff is also available.
+The accepting APIs provide protocol continuations through `AcceptedSession`.
+The application supplies its listener, current authorization and running-world
+attachment. It can also stop at the Login-only handoff.
 
 See the [integration guide](docs/integration.md) for packet routing, cipher
 ordering, pack/startup handoffs and owner-preserving error/close handling. The
@@ -108,11 +112,11 @@ ordering, pack/startup handoffs and owner-preserving error/close handling. The
 | `raknet` | `RakNetConnection`, a caller-polled Tokio socket driver over the Cinnabar RakNet fork. |
 | `messaging` | `PreparedMessaging`/`MessagingConnection`, composing a supplied SDK service socket with NetherNet. |
 
-The optional edges start no runtime or background task of their own. RakNet owns
-one socket and must be driven through `recv`, `flush` and capacity waits.
-Messaging must keep `recv` or `maintain` polled; its underlying NetherNet Tokio
-adapter owns the connected UDP task. A Bevy or custom-runtime application can
-use the pure codec/client/pack owners with its own transport and scheduler.
+The optional edges start no runtime or task of their own. RakNet owns one socket;
+keep `recv` polled for protocol progress, use `queue_send` for admission and drive
+`flush` for local emission. `wait_send_capacity` services that same connection
+when its send budget is full. Messaging needs `recv` or `maintain` polled; its
+underlying NetherNet Tokio adapter owns the connected UDP task.
 
 Local transport close consumes send capability and retains a closing owner.
 Borrowed drain/close waits keep accepted input and pending work across
@@ -128,33 +132,37 @@ runtime dependencies only when enabled.
 
 ## Examples and checks
 
-The [probe source](examples/client/src/main.rs) shows settings, compression,
-Login, cipher installation and preserving a pack offer. It stops at the offer;
-it does not download packs or enter a world.
+The standalone `bedrock-probe` binary demonstrates settings and optional offline
+Login. Its Login path stops at the pack offer. Read its existing owners together
+when adapting it:
+
+| Example source | Shows |
+| --- | --- |
+| [main.rs](examples/client/src/main.rs) | Consuming settings/Login phases and handling returned effects. |
+| [session.rs](examples/client/src/session.rs) | One codec/cipher pair and preserving unread batch entries. |
+| [transport.rs](examples/client/src/transport.rs) | Concrete transport setup, send and retirement. |
 
 ```sh
-cargo run -p bedrock-probe -- raknet 127.0.0.1:19132
-cargo run -p bedrock-probe -- nethernet 127.0.0.1:19132 --offline-login
-cargo run -p bedrock-probe -- nethernet-lan 127.0.0.1:19132 --offline-login
+cargo run --locked -p bedrock-probe -- raknet 127.0.0.1:19132
+cargo run --locked -p bedrock-probe -- nethernet 127.0.0.1:19132 --offline-login
+cargo run --locked -p bedrock-probe -- nethernet-lan 127.0.0.1:19132 --offline-login
 cargo test --locked
 cargo test --locked -p bedrock-net --all-features
 cargo fmt --all --check
 ```
 
-The LAN probe targets the supplied IPv4 discovery endpoint. The HTTP path uses
-HTTP signaling. Both use synthetic offline identity; account credentials and
-account-specific admission remain application work. Optional RakNet Go
-interoperability checks use the loopback-only helper in
-[`tools/raknet-peer`](tools/raknet-peer) via `BEDROCK_NET_RAKNET_PEER`.
+Each probe invocation needs a peer listening at the supplied endpoint. The
+default probe only requests settings; `--offline-login` uses synthetic identity.
+The LAN mode targets an IPv4 discovery endpoint; the `nethernet` mode uses HTTP
+signaling. Account authentication, pack download and entering a world remain
+application work.
 
-## Compatibility and license
+## Protocol scope and license
 
-Packet negotiation is tied to the generated protocol revision in the workspace
-manifest. Deterministic regressions and synthetic peers do not establish full
-vanilla, real-account, WAN, device or server compatibility. Accepting offline,
-guest and legacy-chain Login and a running-world bridge are not supplied by the
-current accepting API. The library's startup observer also leaves world loading,
-presentation and ongoing play to its caller.
+Packet negotiation uses the generated protocol revision in the workspace
+manifest. The accepting APIs handle modern authenticated Login; offline, guest
+and legacy-chain accepting Login are unsupported. World loading, presentation,
+running-world attachment and ongoing play belong to the application.
 
 The root crate offers MIT or Apache-2.0. Extracted `bedrock-client` and
 `bedrock-packs` code retains its separately identified
