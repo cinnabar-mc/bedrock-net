@@ -149,6 +149,75 @@ fn splits_count_and_byte_limited_batches_without_reordering() {
 }
 
 #[test]
+fn client_batch_count_accepts_a_server_batch_above_the_outgoing_ceiling() {
+    let outgoing = BatchLimits::default();
+    let input: Vec<_> = (0..outgoing.max_packets + 1)
+        .map(|index| Bytes::from(index.to_le_bytes().to_vec()))
+        .collect();
+    let incoming = BatchLimits {
+        max_packets: input.len(),
+        ..outgoing
+    };
+    for header in [BatchHeader::RakNet, BatchHeader::NetherNet] {
+        let client = BatchCodec::new(header, outgoing);
+        let split = client.encode(&input).unwrap();
+        assert_eq!(split.len(), 2);
+        assert_eq!(
+            packets(&client, split[0].clone()).len(),
+            outgoing.max_packets
+        );
+        assert_eq!(
+            packets(&client, split[1].clone()),
+            input[outgoing.max_packets..]
+        );
+
+        let mut original = BatchCodec::new(header, incoming).encode(&input).unwrap();
+        assert_eq!(original.len(), 1);
+        assert!(original[0].len() < outgoing.max_decoded_bytes);
+        assert_eq!(packets(&client, original.remove(0)), input);
+    }
+}
+
+#[test]
+fn client_batch_count_preserves_declared_compression_and_decoded_byte_limits() {
+    let outgoing = BatchLimits::default();
+    let input: Vec<_> = (0..outgoing.max_packets + 1)
+        .map(|index| Bytes::from(index.to_le_bytes().to_vec()))
+        .collect();
+    let incoming = BatchLimits {
+        max_packets: input.len(),
+        ..outgoing
+    };
+    let body = BatchCodec::new(BatchHeader::NetherNet, incoming)
+        .encode(&input)
+        .unwrap()
+        .pop()
+        .unwrap();
+    for algorithm in [
+        CompressionAlgorithm::Deflate,
+        CompressionAlgorithm::Snappy,
+        CompressionAlgorithm::None,
+    ] {
+        let mut original = negotiated(algorithm, incoming).encode(&input).unwrap();
+        assert_eq!(original.len(), 1);
+        let original = original.remove(0);
+        let bounded = negotiated(
+            CompressionAlgorithm::Deflate,
+            BatchLimits {
+                max_decoded_bytes: body.len() - 1,
+                ..outgoing
+            },
+        );
+        assert!(matches!(
+            bounded.decode(original.clone()),
+            Err(BatchError::DecodedTooLarge { .. })
+        ));
+        let client = negotiated(CompressionAlgorithm::Deflate, outgoing);
+        assert_eq!(packets(&client, original), input);
+    }
+}
+
+#[test]
 fn malformed_tail_never_exposes_a_partial_batch() {
     let codec = BatchCodec::new(BatchHeader::RakNet, BatchLimits::default());
     for tail in [
