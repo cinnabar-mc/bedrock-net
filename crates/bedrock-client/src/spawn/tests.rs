@@ -70,15 +70,15 @@ fn first_startup_definitions_prepare_early_and_radius_is_requested_once() {
             .request_radius
             .is_none()
     );
-    assert!(client.receive(player_spawn()).unwrap().ready.is_none());
     let update = client.receive(radius(8)).unwrap();
-    let ready = update.ready.unwrap();
-    assert_eq!(ready.runtime_id(), RUNTIME_ID);
-    assert!(!ready.terrain_received());
+    assert!(update.ready.is_none());
     assert!(matches!(
         *update.deferred.unwrap(),
         packets::Packet::ChunkRadiusUpdated(_)
     ));
+    let ready = client.receive(player_spawn()).unwrap().ready.unwrap();
+    assert_eq!(ready.runtime_id(), RUNTIME_ID);
+    assert!(!ready.terrain_received());
     assert_eq!(ready.finish_loading().player_id.0, RUNTIME_ID);
 }
 
