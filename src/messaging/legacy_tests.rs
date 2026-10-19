@@ -36,6 +36,8 @@ async fn legacy_service_socket_establishes_signed_peer_and_retires_original_rout
                 server_ice: Some(ServerIceConfig {
                     ice: Default::default(),
                     bind_addr: bind,
+                    turn_streams: Vec::new(),
+                    turn_tls: None,
                 }),
                 max_sessions: 1,
                 ..Default::default()
@@ -56,6 +58,8 @@ async fn legacy_service_socket_establishes_signed_peer_and_retires_original_rout
                         client_ice: Some(ClientIceConfig {
                             ice: Default::default(),
                             bind_addr: Some(bind),
+                            turn_streams: Vec::new(),
+                            turn_tls: None,
                         }),
                         ..Default::default()
                     },
