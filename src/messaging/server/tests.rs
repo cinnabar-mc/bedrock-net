@@ -51,6 +51,17 @@ fn test_config() -> ConnectionConfig {
 /// Exercises actual SDK WebSocket envelopes, existing accepting transport and real UDP data.
 #[tokio::test]
 async fn accepting_messaging_routes_the_authenticated_peer_and_retires_actual_owners() {
+    accepting_transport(false).await;
+}
+
+/// Explicit missing-identity allowance still uses the same real service and UDP owners.
+#[tokio::test]
+async fn accepting_messaging_allows_anonymous_offers_only_by_explicit_policy() {
+    accepting_transport(true).await;
+}
+
+/// Runs one finite actual transport association without supplying game or world authority.
+async fn accepting_transport(anonymous: bool) {
     tokio::time::timeout(std::time::Duration::from_secs(15), async {
         use bytes::Bytes;
         use nethernet::connection::IceMode;
@@ -65,6 +76,7 @@ async fn accepting_messaging_routes_the_authenticated_peer_and_retires_actual_ow
         let (socket, peer) = test_support::pair(network_id).await;
         let mut server_config = test_config();
         server_config.max_sessions = 1;
+        server_config.allow_anonymous_offers = anonymous;
         server_config.server_ice = Some(ServerIceConfig {
             ice: Default::default(),
             bind_addr: SocketAddr::new(Ipv4Addr::LOCALHOST.into(), 0),
@@ -78,6 +90,7 @@ async fn accepting_messaging_routes_the_authenticated_peer_and_retires_actual_ow
             .bind(server_config, signaling, deadline).await.unwrap();
         let (caller, client_service) = CallerSignaling::new(client_id.to_string(), server_id.to_string(), signaling.signaling).unwrap();
         let mut client_config = test_config();
+        if anonymous { client_config.identity = None; }
         client_config.server_trust = Some(TokenTrust::Any);
         client_config.client_ice = Some(ClientIceConfig {
             ice: Default::default(),

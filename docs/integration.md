@@ -310,7 +310,10 @@ renew TURN credentials. Each new offer checks their original absolute expiry.
 `set_server_ice` changes the configuration for later offers without changing an
 existing peer's allocation. The application owns any renewal and explicit updates
 of those live sessions. Configure signed assertions and Login admission according
-to the application's actual service/provider policy.
+to the application's actual service/provider policy. The default requires an SDP
+identity. Explicit `ConnectionConfig::allow_anonymous_offers` accepts an absent
+assertion while retaining the selected trust and fingerprint checks for every
+present assertion. This option never authorizes a Minecraft Login.
 
 Consuming `MessagingServer::begin_close` synchronously retires the service routes.
 Its `ClosingMessagingServer` retains the original listener join; call `finish_close`
