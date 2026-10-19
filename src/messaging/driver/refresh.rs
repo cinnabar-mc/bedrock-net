@@ -6,7 +6,7 @@ use std::{sync::Arc, time::Instant};
 
 /// Opaque receipt for one refresh on the exact server that admitted it.
 /// It retains no server, socket, account or credential owner.
-#[must_use = "finish this original refresh or close its server"]
+#[must_use = "finish or explicitly cancel this original refresh, or close its server"]
 pub struct TurnRefresh(Arc<()>);
 
 pub(super) struct Refresh {
@@ -39,6 +39,22 @@ impl Refresh {
 }
 
 impl Driver {
+    /// Releases only the exact original refresh, including a completed credential result.
+    pub(in crate::messaging) fn cancel_turn_refresh(
+        &mut self,
+        receipt: &TurnRefresh,
+    ) -> Result<(), Error> {
+        let request = self
+            .refresh
+            .as_ref()
+            .filter(|refresh| refresh.matches(receipt))
+            .ok_or(Error::Admission)?
+            .request;
+        self.socket.retire_credentials(request);
+        self.refresh = None;
+        Ok(())
+    }
+
     /// Admits one genuine JSON-RPC TURN request without polling or replacing an earlier receipt.
     pub(in crate::messaging) fn begin_turn_refresh(
         &mut self,

@@ -123,8 +123,11 @@ ICE configuration. It publishes no world or activity and does not authorize Logi
 An accepting JSON-RPC server can request fresh TURN credentials with
 `begin_turn_refresh(deadline)` and finish that exact request with
 `finish_turn_refresh(&receipt)`. Keep the receipt across canceled waits; it belongs
-to that server and cannot be reused on another one. Finish the request or close
-the server before abandoning it. The result moves the actual SDK credential
+to that server and cannot be reused on another one. Finish the request, explicitly
+retire it with `cancel_turn_refresh(&receipt)`, or close the server before abandoning
+it. Explicit cancellation releases only that receipt's local wait and result;
+an admitted write can still reach the service, with late responses ignored.
+The result moves the actual SDK credential
 owner once and preserves its expiry. This operation does not refresh account
 authentication, replace ICE configuration or renew an existing allocation.
 

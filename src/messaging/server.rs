@@ -134,7 +134,7 @@ impl MessagingServer {
     }
 
     /// Admits one fresh TURN request on this server's original JSON-RPC service socket.
-    /// No request is retried automatically. Finish the receipt or close this server before
+    /// No request is retried automatically. Finish or cancel the receipt, or close this server before
     /// requesting another refresh; a canceled finish wait keeps the original request owned.
     ///
     /// # Errors
@@ -156,6 +156,17 @@ impl MessagingServer {
         receipt: &TurnRefresh,
     ) -> Result<TurnCredentials, Error> {
         self.driver.finish_turn_refresh(receipt).await
+    }
+
+    /// Retires this server's exact refresh request and immediately drops its owned result.
+    /// An unsent frame is removed; an admitted partial write stays owned and may reach the
+    /// service. Late responses are ignored. This performs no I/O, retry or remote acknowledgment.
+    /// Other cached credentials, signaling routes and the original service error stay unchanged.
+    ///
+    /// # Errors
+    /// Rejects a wrong, consumed or already canceled receipt before any state mutation.
+    pub fn cancel_turn_refresh(&mut self, receipt: &TurnRefresh) -> Result<(), Error> {
+        self.driver.cancel_turn_refresh(receipt)
     }
 
     /// Supplies the caller's freshly qualified answer identity for later offers on this listener.
