@@ -1,11 +1,14 @@
 //! Correlation between two existing bounded signaling owners.
 
-use super::Error;
 use super::incoming::Batch;
 use super::socket::{Outgoing, SocketStep, socket_step};
+use super::{Error, caller::Caller};
 use bedrock_services::signaling::{Event, RequestId, websocket::MessagingSocket};
-use futures::future::{pending, select_all};
-use nethernet_tokio::{CallerSignalingDriver, CallerSignalingError, SignalDelivery, SignalRequest};
+use futures::future::{BoxFuture, pending, select_all};
+use nethernet_tokio::{
+    CallerServerSignalingDriver, CallerSignalingDriver, CallerSignalingError, SignalDelivery,
+    SignalRequest,
+};
 use std::{
     collections::HashMap,
     future::{Future, poll_fn},
@@ -18,14 +21,15 @@ mod race;
 
 pub(super) struct Driver {
     socket: MessagingSocket,
-    caller: CallerSignalingDriver,
-    peer: Uuid,
+    caller: Caller,
+    peer: Option<Uuid>,
     pending: HashMap<RequestId, SignalRequest>,
     terminal: Option<Error>,
     incoming: Batch,
     admission_timeout: Duration,
     outgoing: Option<Outgoing>,
     attempt_deadline: Option<Instant>,
+    cancellation: Option<BoxFuture<'static, ()>>,
 }
 
 impl Driver {
@@ -37,6 +41,42 @@ impl Driver {
         admission_timeout: Duration,
         attempt_deadline: Instant,
     ) -> Self {
+        Self::with_caller(
+            socket,
+            Caller::Client(caller),
+            Some(peer),
+            admission_timeout,
+            Some(attempt_deadline),
+            None,
+        )
+    }
+
+    /// Uses the same bounded service engine for unsolicited accepting routes.
+    pub(super) fn server(
+        socket: MessagingSocket,
+        caller: CallerServerSignalingDriver,
+        admission_timeout: Duration,
+        cancellation: impl Future<Output = ()> + Send + 'static,
+    ) -> Self {
+        Self::with_caller(
+            socket,
+            Caller::Server(caller),
+            None,
+            admission_timeout,
+            None,
+            Some(Box::pin(cancellation)),
+        )
+    }
+
+    /// Captures a concrete route direction without changing queue, request or timer ownership.
+    fn with_caller(
+        socket: MessagingSocket,
+        caller: Caller,
+        peer: Option<Uuid>,
+        admission_timeout: Duration,
+        attempt_deadline: Option<Instant>,
+        cancellation: Option<BoxFuture<'static, ()>>,
+    ) -> Self {
         Self {
             socket,
             caller,
@@ -46,7 +86,8 @@ impl Driver {
             incoming: Batch::default(),
             admission_timeout,
             outgoing: None,
-            attempt_deadline: Some(attempt_deadline),
+            attempt_deadline,
+            cancellation,
         }
     }
 
@@ -58,6 +99,7 @@ impl Driver {
         self.pending.clear();
         self.incoming.clear();
         self.outgoing = None;
+        self.cancellation = None;
     }
 
     /// Ends only the setup deadline; already retained envelope deadlines never restart.
@@ -154,6 +196,7 @@ impl Driver {
             Service(race::Progress),
             AdmissionTimeout,
             Cancelled,
+            Stopped,
         }
         let step = {
             let front = self.incoming.front_mut();
@@ -183,43 +226,69 @@ impl Driver {
             if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
                 return Err(Error::TimedOut);
             }
-            tokio::select! {
-                progress = race::step(
-                    socket_step(&mut self.socket, self.peer, receipt, self.outgoing.as_mut()),
-                    async {
-                        match waiting {
-                            Some(Some(wait)) => wait.await,
-                            _ => pending().await,
+            let progress = async {
+                tokio::select! {
+                    progress = race::step(
+                        socket_step(&mut self.socket, receipt, self.outgoing.as_mut()),
+                        async {
+                            match waiting {
+                                Some(Some(wait)) => wait.await,
+                                _ => pending().await,
+                            }
                         }
+                    ) => Step::Service(progress),
+                    request = async {
+                        if has_outgoing { pending().await } else { self.caller.recv().await }
+                    } => Step::Outgoing(request),
+                    _ = async {
+                        if self.pending.is_empty() { pending::<()>().await; }
+                        let waits: Vec<_> = self.pending.values_mut()
+                            .map(|request| Box::pin(request.cancelled())).collect();
+                        select_all(waits).await;
+                    } => Step::Cancelled,
+                    _ = async {
+                        match deadline { Some(deadline) => tokio::time::sleep_until(deadline.into()).await, None => pending().await }
+                    } => Step::AdmissionTimeout,
+                }
+            };
+            tokio::pin!(progress);
+            tokio::select! { biased;
+                _ = async {
+                    match &mut self.cancellation {
+                        Some(cancellation) => cancellation.await,
+                        None => pending().await,
                     }
-                ) => Step::Service(progress),
-                request = async {
-                    if has_outgoing { pending().await } else { self.caller.recv().await }
-                } => Step::Outgoing(request),
-                _ = async {
-                    if self.pending.is_empty() { pending::<()>().await; }
-                    let waits: Vec<_> = self.pending.values_mut()
-                        .map(|request| Box::pin(request.cancelled())).collect();
-                    select_all(waits).await;
-                } => Step::Cancelled,
-                _ = async {
-                    match deadline { Some(deadline) => tokio::time::sleep_until(deadline.into()).await, None => pending().await }
-                } => Step::AdmissionTimeout,
+                } => Step::Stopped,
+                step = &mut progress => step,
             }
         };
         match step {
+            Step::Stopped => Err(Error::Closed),
             Step::Cancelled => Ok(()),
             Step::Outgoing(None) => Err(Error::Closed),
             Step::Outgoing(Some(request)) => {
                 if request.is_cancelled() {
                     return Ok(());
                 }
-                self.outgoing = Some(Outgoing::new(request));
+                let peer = match self.peer {
+                    Some(peer) => peer,
+                    None => Uuid::parse_str(&request.signal().network_id)
+                        .map_err(|_| Error::Signaling)?,
+                };
+                if peer.is_nil() {
+                    return Err(Error::Signaling);
+                }
+                self.outgoing = Some(Outgoing::new(request, peer));
                 Ok(())
             }
             Step::Service(progress) => {
                 match progress.admitted {
                     Some(Ok(())) => self.incoming.admitted(),
+                    Some(Err(CallerSignalingError::RouteMismatch))
+                        if matches!(&self.caller, Caller::Server(_)) =>
+                    {
+                        self.incoming.discard();
+                    }
                     Some(Err(CallerSignalingError::TimedOut)) => return Err(Error::TimedOut),
                     Some(Err(CallerSignalingError::Closed)) => return Err(Error::Closed),
                     Some(Err(_)) => return Err(Error::Signaling),
@@ -264,7 +333,7 @@ impl Driver {
                 let deadline = self
                     .attempt_deadline
                     .map_or(deadline, |attempt| attempt.min(deadline));
-                self.incoming.push(&self.caller, signal, deadline)
+                self.caller.receive(&mut self.incoming, signal, deadline)
             }
             SocketStep::Event(Ok(_)) => Ok(()),
         }

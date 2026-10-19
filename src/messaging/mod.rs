@@ -5,11 +5,13 @@
 //! socket alongside the existing NetherNet client and retains both through play.
 //! Dropping it retires its service socket, pending signaling and transport handles.
 
+mod caller;
 mod driver;
 mod incoming;
 mod lifecycle;
 pub use lifecycle::{ClosedMessaging, ClosingMessagingConnection, MessagingConnection};
 mod retirement;
+pub mod server;
 mod socket;
 
 use bedrock_services::signaling::{

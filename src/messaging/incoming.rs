@@ -3,7 +3,8 @@
 use super::Error;
 use bedrock_services::signaling::{self, ReceivedSignal};
 use futures::future::BoxFuture;
-use nethernet_tokio::{CallerSignalingDriver, CallerSignalingError};
+use nethernet_tokio::{CallerServerSignalingDriver, CallerSignalingDriver, CallerSignalingError};
+use std::future::Future;
 use std::{collections::VecDeque, time::Instant};
 use uuid::Uuid;
 
@@ -32,11 +33,38 @@ impl Batch {
         signal: ReceivedSignal,
         deadline: Instant,
     ) -> Result<(), Error> {
-        let delivery = match caller.prepare_delivery_before(
-            &signal.sender().to_string(),
-            signal.signal(),
-            deadline,
-        ) {
+        let delivery =
+            caller.prepare_delivery_before(&signal.sender().to_string(), signal.signal(), deadline);
+        self.retain(signal, deadline, delivery)
+    }
+
+    /// Uses the same envelope budget with the accepting bridge's actual route reservation.
+    pub(super) fn push_server(
+        &mut self,
+        caller: &CallerServerSignalingDriver,
+        signal: ReceivedSignal,
+        deadline: Instant,
+    ) -> Result<(), Error> {
+        let delivery =
+            caller.prepare_delivery_before(&signal.sender().to_string(), signal.signal(), deadline);
+        if matches!(delivery.as_ref(), Err(CallerSignalingError::Capacity)) {
+            // An offer outside the accepting route limit cannot retire unrelated peers.
+            return Ok(());
+        }
+        self.retain(signal, deadline, delivery)
+    }
+
+    /// Retains one prepared admission in the original bounded allocation, regardless of route direction.
+    fn retain(
+        &mut self,
+        signal: ReceivedSignal,
+        deadline: Instant,
+        delivery: Result<
+            impl Future<Output = Result<(), CallerSignalingError>> + Send + 'static,
+            CallerSignalingError,
+        >,
+    ) -> Result<(), Error> {
+        let delivery = match delivery {
             Ok(delivery) => delivery,
             Err(CallerSignalingError::RouteMismatch | CallerSignalingError::InvalidSignal) => {
                 return Ok(());
@@ -81,6 +109,11 @@ impl Batch {
 
     /// Releases an envelope only after the SDK admitted its single receipt operation.
     pub(super) fn acknowledged(&mut self) {
+        self.discard();
+    }
+
+    /// Releases the original front and its wire budget without creating delivery evidence.
+    pub(super) fn discard(&mut self) {
         if let Some(front) = self.queue.pop_front() {
             self.bytes -= front.bytes;
         }

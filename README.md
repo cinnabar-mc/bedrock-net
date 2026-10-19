@@ -110,13 +110,15 @@ ordering, pack/startup handoffs and owner-preserving error/close handling. The
 | Default | Synchronous batch codec and directional batch ciphers. |
 | `login` | Offline/acquired-credential request formatting, server exchange and accepting verification primitives. |
 | `raknet` | `RakNetConnection`, a caller-polled Tokio socket driver over the Cinnabar RakNet fork. |
-| `messaging` | `PreparedMessaging`/`MessagingConnection`, composing a supplied SDK service socket with NetherNet. |
+| `messaging` | `PreparedMessaging`/`MessagingConnection` and `messaging::server`, composing a supplied SDK service socket with connecting or accepting NetherNet. |
 
 The optional edges start no runtime or task of their own. RakNet owns one socket;
 keep `recv` polled for protocol progress, use `queue_send` for admission and drive
 `flush` for local emission. `wait_send_capacity` services that same connection
 when its send budget is full. Messaging needs `recv` or `maintain` polled; its
-underlying NetherNet Tokio adapter owns the connected UDP task.
+underlying NetherNet Tokio adapter owns its bounded transport workers. Accepting
+`MessagingServer` needs `accept` or `maintain` polled and takes caller-supplied
+ICE configuration. It publishes no world or activity and does not authorize Login.
 
 Local transport close consumes send capability and retains a closing owner.
 Borrowed drain/close waits keep accepted input and pending work across
