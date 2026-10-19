@@ -54,7 +54,8 @@ impl PreparedMessagingServer {
         if Instant::now() >= deadline {
             return Err(Error::TimedOut);
         }
-        if config.identity.is_none()
+        if self.socket.legacy_network_id().is_some()
+            || config.identity.is_none()
             || config.token_trust.is_none()
             || config.allow_unsigned_answers
         {
