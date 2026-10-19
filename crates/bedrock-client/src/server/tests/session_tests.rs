@@ -640,3 +640,5 @@ fn typed_external_read_checks_original_sha_length_deadline_and_sealed_failure() 
         "next original metadata follows actual flush"
     );
 }
+
+mod count_limits;
