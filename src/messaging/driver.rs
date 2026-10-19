@@ -105,7 +105,6 @@ impl Driver {
         self.incoming.clear();
         self.outgoing = None;
         self.cancellation = None;
-        self.refresh = None;
     }
 
     /// Seals original routes while retaining the same socket's bounded close handshake.
