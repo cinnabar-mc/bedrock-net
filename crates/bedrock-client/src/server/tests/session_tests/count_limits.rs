@@ -25,7 +25,7 @@ fn admits(source: ServerPackSnapshot) -> bool {
             source,
             ServerPackDelivery {
                 limits: PackTransferLimits {
-                    max_packs: 1,
+                    max_packs: Some(1),
                     ..Default::default()
                 },
                 chunk_size: CHUNK_BYTES,
@@ -65,4 +65,52 @@ fn accepting_pack_count_limits_downloads_without_counting_builtin_stack_entries(
         with_builtins,
         "recognized built-in stack entries must not consume the archive count budget"
     );
+}
+
+/// Actual typed accepting admission retains complete metadata without allocating archive bodies.
+#[test]
+fn accepting_defaults_admit_complete_external_archive_metadata() {
+    for sizes in [
+        vec![1; 33],
+        vec![65 * 1024 * 1024],
+        vec![64 * 1024 * 1024; 3],
+    ] {
+        let mut source = ServerPackSnapshot {
+            offer: packets::ResourcePacksInfo::default(),
+            stack: packets::ResourcePackStack::default(),
+            contents: Vec::new(),
+        };
+        for (index, size) in sizes.into_iter().enumerate() {
+            let id = uuid::Uuid::from_u128(index as u128 + 1);
+            let mut info = PackInfoData::default();
+            info.pack_id_version.pack_uuid = id;
+            info.pack_id_version.pack_version.version = "1.0.0".into();
+            info.pack_size = wire::U64LE(size);
+            source.offer.resource_packs.push(info);
+            source.stack.texture_pack_list.push(PackInstanceId {
+                pack_id: id.to_string().into(),
+                version: "1.0.0".into(),
+                ..Default::default()
+            });
+            source
+                .contents
+                .push(ServerPackContent::external(size, [0; 32], 6, false));
+        }
+        let (server, _client, provider, now, utc) = ready_with_client(false);
+        assert!(
+            server
+                .start_packs(
+                    source,
+                    ServerPackDelivery {
+                        chunk_size: CHUNK_BYTES,
+                        ..Default::default()
+                    },
+                    &provider,
+                    now,
+                    utc
+                )
+                .is_ok(),
+            "complete external archive metadata inherited local import limits"
+        );
+    }
 }

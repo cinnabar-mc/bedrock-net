@@ -45,6 +45,11 @@ handles both resource packets and late Login controls; it returns startup and
 terminal input unchanged. The standalone `PackOffer`→`PackNegotiation` API reuses
 the same bounded transfer implementation when no Login control is needed.
 
+`PackTransferLimits` defaults its archive count and byte caps to `None`, so
+network selections do not inherit local import limits. Callers can select explicit
+`Some` caps. Framing, representable lengths, identity, SHA-256 and the bounded
+chunk-request window remain checked for every transfer.
+
 Actual final-stack processing creates `PackComplete`, which has no public
 constructor. Send its original stack acknowledgment before entering startup.
 `start_spawn` transfers the exact ordered archives and configures the startup

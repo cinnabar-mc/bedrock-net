@@ -164,11 +164,17 @@ impl Delivery {
             .limits
             .validate()
             .map_err(|_| invalid("invalid accepting pack limits"))?;
-        if u64::from(options.chunk_size) > options.limits.max_archive_bytes
+        if options
+            .limits
+            .max_archive_bytes
+            .is_some_and(|limit| u64::from(options.chunk_size) > limit)
             || options.max_metadata_bytes == 0
             || options.chunk_size as usize > options.max_metadata_bytes
             || snapshot.offer.resource_packs.len() != snapshot.contents.len()
-            || snapshot.contents.len() > options.limits.max_packs
+            || options
+                .limits
+                .max_packs
+                .is_some_and(|limit| snapshot.contents.len() > limit)
         {
             return Err(invalid(
                 "invalid accepting pack snapshot or delivery bounds",
@@ -205,8 +211,18 @@ impl Delivery {
                 || version.len() > options.limits.max_version_bytes
                 || size == 0
                 || size != info.pack_size.0
-                || size > options.limits.max_archive_bytes
-                || total > options.limits.max_stack_bytes
+                || options
+                    .limits
+                    .max_archive_bytes
+                    .is_some_and(|limit| size > limit)
+                || options
+                    .limits
+                    .max_stack_bytes
+                    .is_some_and(|limit| total > limit)
+                || options
+                    .limits
+                    .max_transfer_bytes
+                    .is_some_and(|limit| total > limit)
                 || chunk_count(size, options.chunk_size).is_none()
             {
                 return Err(invalid(

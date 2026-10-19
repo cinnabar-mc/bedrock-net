@@ -32,10 +32,20 @@ impl Budget {
         let mut retained = 0_u64;
         let mut skipped = 0_usize;
         for offer in offers {
+            let total = retained.checked_add(offer.pack_size.0);
             if seen.contains(&offer.pack_id_version.pack_uuid)
-                || downloads.len() >= limits.max_packs
-                || offer.pack_size.0 > limits.max_archive_bytes
-                || offer.pack_size.0 > limits.max_stack_bytes - retained
+                || downloads.len() >= usize::from(u16::MAX)
+                || limits
+                    .max_packs
+                    .is_some_and(|limit| downloads.len() >= limit)
+                || limits
+                    .max_archive_bytes
+                    .is_some_and(|limit| offer.pack_size.0 > limit)
+                || total.is_none_or(|total| {
+                    total > isize::MAX as u64
+                        || limits.max_stack_bytes.is_some_and(|limit| total > limit)
+                        || limits.max_transfer_bytes.is_some_and(|limit| total > limit)
+                })
             {
                 skipped += 1;
                 continue;
@@ -43,7 +53,7 @@ impl Budget {
             match Download::new(offer, limits) {
                 Ok(download) => {
                     seen.insert(download.offer.pack_id_version.pack_uuid);
-                    retained += download.size;
+                    retained = total.expect("admitted offer total is representable");
                     downloads.push(download);
                 }
                 Err(_) => skipped += 1,
@@ -103,14 +113,28 @@ impl Budget {
             .transferred
             .checked_sub(download.size)
             .and_then(|total| total.checked_add(info.file_size.0))
-            .filter(|total| *total <= self.limits.max_transfer_bytes)
+            .filter(|total| {
+                self.limits
+                    .max_transfer_bytes
+                    .is_none_or(|limit| *total <= limit)
+            })
             .ok_or_else(|| invalid("pack transfers exceed memory budget"))?;
         let retained = self
             .retained
             .checked_sub(download.size)
             .ok_or_else(|| invalid("pack admission accounting is invalid"))?;
-        let retain = info.file_size.0 <= self.limits.max_archive_bytes
-            && info.file_size.0 <= self.limits.max_stack_bytes - retained;
+        let candidate = retained.checked_add(info.file_size.0);
+        let retain = self
+            .limits
+            .max_archive_bytes
+            .is_none_or(|limit| info.file_size.0 <= limit)
+            && candidate.is_some_and(|total| {
+                total <= isize::MAX as u64
+                    && self
+                        .limits
+                        .max_stack_bytes
+                        .is_none_or(|limit| total <= limit)
+            });
         let size = info.file_size.0;
         let requests = download.begin(info, retain)?;
         self.transferred = transferred;
@@ -148,6 +172,9 @@ impl Download {
         if version.is_empty() || version.len() > limits.max_version_bytes {
             return Err(invalid("pack version exceeds identity limit"));
         }
+        if offer.pack_size.0 > isize::MAX as u64 {
+            return Err(invalid("pack archive size is not representable"));
+        }
         let name = format!("{}_{}", offer.pack_id_version.pack_uuid, version).into();
         Ok(Self {
             size: offer.pack_size.0,
@@ -177,7 +204,11 @@ impl Download {
             return Err(invalid("repeated pack data info"));
         }
         self.check_name(&info.resource_name)?;
-        if info.file_size.0 == 0 || info.chunk_size.0 == 0 || info.file_hash.len() != 32 {
+        if info.file_size.0 == 0
+            || info.file_size.0 > isize::MAX as u64
+            || info.chunk_size.0 == 0
+            || info.file_hash.len() != 32
+        {
             return Err(invalid("invalid pack size, chunk size or SHA-256"));
         }
         let count = info.file_size.0.div_ceil(info.chunk_size.0.into());
@@ -292,7 +323,13 @@ pub(super) fn finish(
     {
         return Err(invalid("pack stack preceded completed downloads"));
     }
-    let mut archives = Vec::with_capacity(stack.texture_pack_list.len().min(limits.max_packs));
+    let mut archives = Vec::with_capacity(
+        limits
+            .max_packs
+            .map_or(stack.texture_pack_list.len(), |limit| {
+                stack.texture_pack_list.len().min(limit)
+            }),
+    );
     let entries = std::mem::take(&mut stack.texture_pack_list);
     let mut retained_stack = metadata.as_ref().map(|_| stack);
     let mut retained_offers = BTreeMap::new();

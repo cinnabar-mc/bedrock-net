@@ -19,16 +19,18 @@ use transfer::{Budget, Completion, Download};
 pub const DEFAULT_REQUEST_WINDOW: u32 = 1024;
 
 /// Caller-selected archive, transfer and request bounds, validated before admission.
+/// Defaults admit complete server selections without inheriting local import policy;
+/// framing, representable lengths, identity, hash and request-window checks always apply.
 #[derive(Clone, Copy, Debug)]
 pub struct PackTransferLimits {
-    /// Maximum distinct valid offers retained from one server.
-    pub max_packs: usize,
-    /// Maximum compressed bytes retained for one archive.
-    pub max_archive_bytes: u64,
-    /// Maximum compressed bytes retained across all offered archives.
-    pub max_stack_bytes: u64,
-    /// Maximum total in-band bytes accepted, including excluded archives.
-    pub max_transfer_bytes: u64,
+    /// Optional maximum distinct valid offers retained from one server.
+    pub max_packs: Option<usize>,
+    /// Optional maximum compressed bytes retained for one archive.
+    pub max_archive_bytes: Option<u64>,
+    /// Optional maximum compressed bytes retained across all offered archives.
+    pub max_stack_bytes: Option<u64>,
+    /// Optional maximum total in-band bytes accepted, including excluded archives.
+    pub max_transfer_bytes: Option<u64>,
     /// Maximum UTF-8 bytes retained in one advertised version.
     pub max_version_bytes: usize,
     /// Maximum outstanding requested chunks per archive, at most 65,535.
@@ -38,10 +40,10 @@ pub struct PackTransferLimits {
 impl Default for PackTransferLimits {
     fn default() -> Self {
         Self {
-            max_packs: bedrock_packs::MAX_PACKS,
-            max_archive_bytes: bedrock_packs::MAX_ARCHIVE_BYTES as u64,
-            max_stack_bytes: bedrock_packs::MAX_STACK_ARCHIVE_BYTES as u64,
-            max_transfer_bytes: 2 * bedrock_packs::MAX_STACK_ARCHIVE_BYTES as u64,
+            max_packs: None,
+            max_archive_bytes: None,
+            max_stack_bytes: None,
+            max_transfer_bytes: None,
             max_version_bytes: bedrock_packs::MAX_PACK_VERSION_BYTES,
             request_window: DEFAULT_REQUEST_WINDOW,
         }
@@ -51,12 +53,15 @@ impl Default for PackTransferLimits {
 impl PackTransferLimits {
     /// Rejects impossible sizes and request windows before retaining server data.
     pub(crate) fn validate(self) -> Result<(), PackError> {
-        if self.max_packs == 0
-            || self.max_packs > u16::MAX as usize
-            || self.max_archive_bytes == 0
-            || self.max_stack_bytes == 0
-            || self.max_stack_bytes > usize::MAX as u64
-            || self.max_transfer_bytes < self.max_stack_bytes
+        if self
+            .max_packs
+            .is_some_and(|limit| limit == 0 || limit > u16::MAX as usize)
+            || self.max_archive_bytes == Some(0)
+            || self
+                .max_stack_bytes
+                .is_some_and(|limit| limit == 0 || limit > usize::MAX as u64)
+            || self.max_transfer_bytes == Some(0)
+            || matches!((self.max_transfer_bytes, self.max_stack_bytes), (Some(transfer), Some(stack)) if transfer < stack)
             || self.max_version_bytes == 0
             || self.request_window == 0
             || self.request_window > u16::MAX.into()
