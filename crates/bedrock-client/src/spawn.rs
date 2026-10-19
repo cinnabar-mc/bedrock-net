@@ -102,6 +102,9 @@ enum Phase {
 /// in wire order under the caller's byte bound; this owner never buffers play
 /// traffic. The caller may prepare packs/world data on `startup` while continuing
 /// input. Retain the returned [`SpawnReady`] until presentation is actually ready.
+/// Readiness requires StartGame, the first item registry and PlayerSpawn. A radius
+/// reply is validated and deferred if received before readiness; a later reply belongs
+/// to ordinary play. The original radius request is still emitted exactly once.
 /// This configuration-only entry asserts no Login or pack authority; external
 /// handoff adapters still have to supply the real startup prerequisites.
 ///
@@ -118,7 +121,6 @@ pub struct SpawnNegotiation {
     item_registry: Option<packets::ItemRegistry>,
     registry_seen: bool,
     startup_delivered: bool,
-    radius_received: bool,
     player_spawn_received: bool,
     terrain_received: bool,
 }
@@ -141,7 +143,6 @@ impl SpawnNegotiation {
             item_registry: None,
             registry_seen: false,
             startup_delivered: false,
-            radius_received: false,
             player_spawn_received: false,
             terrain_received: false,
         })
@@ -164,8 +165,8 @@ impl SpawnNegotiation {
     /// Observes an unrelated raw packet without requiring its body to be decoded.
     ///
     /// The caller retains the original packet in its bounded FIFO and handles
-    /// Disconnect/Transfer immediately. Pass the four startup prerequisites
-    /// through `receive` instead; their bodies establish the checked state.
+    /// Disconnect/Transfer immediately. Pass generated startup packets through
+    /// `receive` instead; their bodies establish or validate the checked state.
     /// This method retains only whether a terrain packet arrived.
     ///
     /// # Errors
@@ -221,7 +222,6 @@ impl SpawnNegotiation {
                 if radius.chunk_radius.0 < 1 {
                     return Err(SpawnError::InvalidRadius(radius.chunk_radius.0));
                 }
-                self.radius_received = true;
                 update.deferred = Some(Box::new(packets::Packet::ChunkRadiusUpdated(radius)));
             }
             other => {
@@ -236,7 +236,7 @@ impl SpawnNegotiation {
             });
             self.startup_delivered = true;
         }
-        if self.startup_delivered && self.radius_received && self.player_spawn_received {
+        if self.startup_delivered && self.player_spawn_received {
             self.phase = Phase::Complete;
             update.ready = Some(SpawnReady {
                 runtime_id: self.runtime_id.expect("startup requires StartGame"),

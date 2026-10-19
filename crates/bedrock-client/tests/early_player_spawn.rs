@@ -116,16 +116,16 @@ fn early_player_spawn_survives_pack_and_handshake_owners_until_startup() {
         .unwrap();
     assert_eq!(update.request_radius.unwrap().chunk_radius.0, 12);
     assert!(update.ready.is_none());
-    let update = spawn
-        .receive(packets::Packet::ItemRegistry(Default::default()))
-        .unwrap();
-    assert_eq!(update.startup.unwrap().start_game.runtime_id.0, 42);
-    assert!(update.ready.is_none());
     let radius = packets::Packet::ChunkRadiusUpdated(packets::ChunkRadiusUpdated {
         chunk_radius: wire::ZigZag32(8),
     });
     let update = spawn.receive(radius.clone()).unwrap();
     assert_eq!(*update.deferred.unwrap(), radius);
+    assert!(update.ready.is_none());
+    let update = spawn
+        .receive(packets::Packet::ItemRegistry(Default::default()))
+        .unwrap();
+    assert_eq!(update.startup.unwrap().start_game.runtime_id.0, 42);
     let ready = update.ready.unwrap();
     assert_eq!(ready.runtime_id(), 42);
     assert!(!ready.terrain_received());

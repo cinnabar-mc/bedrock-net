@@ -381,6 +381,14 @@ fn final_stack_selects_order_subpack_and_offer_key_without_applying_unselected_a
 
 #[test]
 fn optional_content_admission_and_transfer_budget_are_separate() {
+    let limits = PackTransferLimits {
+        max_packs: Some(3),
+        max_archive_bytes: Some(4),
+        max_stack_bytes: Some(6),
+        max_transfer_bytes: Some(12),
+        ..Default::default()
+    };
+    let admit_bounded = |offers| transfer::Budget::offers(offers, limits);
     let id = uuid::Uuid::from_u128(1);
     let bytes = b"unsupported archive bytes";
     let mut oversized = offer(uuid::Uuid::from_u128(99), 0);
@@ -412,22 +420,27 @@ fn optional_content_admission_and_transfer_budget_are_separate() {
     assert!(!handoff.required());
     assert_eq!(handoff.into_archives()[0].archive, bytes);
 
-    let (bounded, _) = admit(
-        (1..=bedrock_packs::MAX_PACKS + 1)
+    let (bounded, _) = admit_bounded(
+        (1..=limits.max_packs.unwrap() + 1)
             .map(|index| offer(uuid::Uuid::from_u128(index as u128), 1))
             .collect(),
     );
-    assert_eq!(bounded.len(), bedrock_packs::MAX_PACKS);
+    assert_eq!(bounded.len(), limits.max_packs.unwrap());
 
     for (offer_required, stack_required) in
         [(false, false), (true, false), (false, true), (true, true)]
     {
-        let (mut downloads, mut budget) = admit(vec![
+        let (mut downloads, mut budget) = admit_bounded(vec![
             offer(id, 1),
-            offer(uuid::Uuid::from_u128(2), bedrock_packs::MAX_ARCHIVE_BYTES),
+            offer(
+                uuid::Uuid::from_u128(2),
+                limits.max_archive_bytes.unwrap() as usize,
+            ),
             offer(
                 uuid::Uuid::from_u128(3),
-                bedrock_packs::MAX_STACK_ARCHIVE_BYTES - bedrock_packs::MAX_ARCHIVE_BYTES - 1,
+                limits.max_stack_bytes.unwrap() as usize
+                    - limits.max_archive_bytes.unwrap() as usize
+                    - 1,
             ),
             offer(uuid::Uuid::from_u128(4), 1),
         ]);
@@ -460,12 +473,12 @@ fn optional_content_admission_and_transfer_budget_are_separate() {
         }
     }
 
-    let (mut downloads, mut budget) = admit(vec![offer(id, 1)]);
+    let (mut downloads, mut budget) = admit_bounded(vec![offer(id, 1)]);
     let mut download = downloads.remove(0);
     let info = packets::ResourcePackDataInfo {
         resource_name: download.name.clone(),
         chunk_size: wire::U32LE(1),
-        file_size: wire::U64LE(PackTransferLimits::default().max_transfer_bytes + 1),
+        file_size: wire::U64LE(limits.max_transfer_bytes.unwrap() + 1),
         file_hash: Bytes::from_static(&[0; 32]),
         ..Default::default()
     };
@@ -497,7 +510,7 @@ fn rejected_offer_does_not_poison_a_later_usable_uuid() {
             ..Default::default()
         },
         PackTransferLimits {
-            max_archive_bytes: bytes.len() as u64,
+            max_archive_bytes: Some(bytes.len() as u64),
             ..Default::default()
         },
     )
@@ -775,9 +788,9 @@ fn smaller_preloads_release_memory_and_in_band_transfer_reservations() {
                 ..Default::default()
             },
             PackTransferLimits {
-                max_archive_bytes: 9,
-                max_stack_bytes: 10,
-                max_transfer_bytes: transfer_limit,
+                max_archive_bytes: Some(9),
+                max_stack_bytes: Some(10),
+                max_transfer_bytes: Some(transfer_limit),
                 ..Default::default()
             },
         )
@@ -908,3 +921,5 @@ fn request_indices(packets: Vec<packets::Packet>) -> Vec<i32> {
         })
         .collect()
 }
+
+mod compatible_limits;

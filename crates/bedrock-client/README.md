@@ -14,7 +14,7 @@ The public client capabilities are consumed at each handoff:
 | `ClientLogin` | Observe post-Login controls and verified exchange | `ClientPackOffer` |
 | `ClientPackOffer` | Supply validated cache/CDN preloads; start once | `ClientPacks` |
 | `ClientPacks` | Transfer packs and handle late Login controls | `PackComplete` |
-| `SpawnNegotiation` | Observe first definitions, radius and PlayerSpawn | `SpawnReady` |
+| `SpawnNegotiation` | Observe first definitions and PlayerSpawn; defer radius updates | `SpawnReady` |
 | `SpawnReady` | Consume one presentation-ready initialization | Generated acknowledgment |
 
 `ClientHandshake::new` accepts the caller's owned signing key or an existing
@@ -45,6 +45,11 @@ handles both resource packets and late Login controls; it returns startup and
 terminal input unchanged. The standalone `PackOffer`→`PackNegotiation` API reuses
 the same bounded transfer implementation when no Login control is needed.
 
+`PackTransferLimits` defaults its archive count and byte caps to `None`, so
+network selections do not inherit local import limits. Callers can select explicit
+`Some` caps. Framing, representable lengths, identity, SHA-256 and the bounded
+chunk-request window remain checked for every transfer.
+
 Actual final-stack processing creates `PackComplete`, which has no public
 constructor. Send its original stack acknowledgment before entering startup.
 `start_spawn` transfers the exact ordered archives and configures the startup
@@ -55,8 +60,9 @@ completion. Cache writers release shared archive references before the final sta
 Startup returns the first StartGame/item registry as soon as both arrive and
 requests the caller-selected radius once. Preserve returned `deferred` packets
 in the caller's bounded FIFO ahead of unread input; handle Disconnect, Transfer
-and non-spawn PlayStatus promptly. Only actual radius/PlayerSpawn prerequisites
-produce the non-cloneable `SpawnReady`. Retain it until presentation completes,
+and non-spawn PlayStatus promptly. StartGame, the first item registry and
+PlayerSpawn produce the non-cloneable `SpawnReady`; a radius reply can arrive
+later during play. Retain readiness until presentation completes,
 then consume `finish_loading` once. Loading-screen policy remains application-owned.
 
 Adapters with externally prepared handoffs may configure `SpawnNegotiation::new`
