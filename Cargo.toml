@@ -8,7 +8,7 @@ rust-version = "1.93"
 
 [workspace.dependencies]
 bedrock-protocol = { package = "bedrock-protocol-1-26-51", git = "https://github.com/cinnabar-mc/protocolgen", rev = "4e9626abbb51b8fa842f49b4aea0fb4d3c01a682" }
-bedrock-services = { git = "https://github.com/cinnabar-mc/bedrock-services", rev = "a7eb82d88299c4942ba4d6c590ecd190573731ae", features = ["signaling-tokio"] }
+bedrock-services = { git = "https://github.com/cinnabar-mc/bedrock-services", rev = "abcb71bfbe4a340b0fa952dc4244fc0664db0dc0", features = ["signaling-tokio"] }
 nethernet = { git = "https://github.com/cinnabar-mc/nethernet", rev = "98e88005200030a92f468e429cacb1e37079f44c" }
 nethernet-tokio = { git = "https://github.com/cinnabar-mc/nethernet", rev = "98e88005200030a92f468e429cacb1e37079f44c" }
 p384 = { version = "0.14", default-features = false, features = ["alloc", "ecdsa", "ecdh", "pkcs8"] }
