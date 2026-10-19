@@ -12,7 +12,8 @@ pub mod messaging;
 pub mod raknet;
 
 pub use batch::{
-    BatchCodec, BatchHeader, BatchLimits, BatchPhase, DecodeOutcome, Negotiated, Plain,
+    BatchCodec, BatchHeader, BatchLimits, BatchPackets, BatchPhase, DecodeOutcome, Negotiated,
+    Plain,
 };
 pub use compression::{CompressionAlgorithm, CompressionSettings, UnknownCompressionAlgorithm};
 pub use error::{BatchError, DropReason};

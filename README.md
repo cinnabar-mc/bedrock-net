@@ -41,7 +41,7 @@ let plain = BatchCodec::new(BatchHeader::RakNet, BatchLimits::default());
 let packet = Bytes::from_static(&[0x02, 0, 0, 0, 0]);
 let batches = plain.encode(std::slice::from_ref(&packet))?;
 match plain.decode(batches[0].clone())? {
-    DecodeOutcome::Packets { packets, .. } => assert_eq!(packets, [packet]),
+    DecodeOutcome::Packets { packets, .. } => assert!(packets.eq([packet])),
     DecodeOutcome::Dropped(reason) => panic!("unexpected compression drop: {reason}"),
 }
 # Ok::<(), bedrock_net::BatchError>(())
@@ -57,6 +57,10 @@ outgoing threshold.
 Framing and size violations return `BatchError`; a malformed batch never exposes
 partial packets. Empty incoming entries are skipped and counted. Limits are
 explicit library policy, adjustable for an application's pack-transfer budget.
+Decoded packets are an owning iterator over one validated body; consume it as
+needed rather than collecting unread packets. `max_packets` controls outgoing
+splitting. Incoming batches use the byte bounds by default; set
+`max_incoming_packets` to enforce a separate nonempty packet-count ceiling.
 
 ## Typed connection flow
 
