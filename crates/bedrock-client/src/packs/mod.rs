@@ -101,7 +101,18 @@ impl PackOffer {
         limits: PackTransferLimits,
     ) -> Result<Self, PackError> {
         Ok(Self {
-            transfer: Transfer::new(offer, limits)?,
+            transfer: Transfer::new(offer, limits, false)?,
+        })
+    }
+
+    /// Keeps original metadata for relaying only the final acquired selections to another client.
+    /// Transfer bounds, optional-pack leniency and required-stack validation remain unchanged.
+    pub fn new_with_metadata(
+        offer: packets::ResourcePacksInfo,
+        limits: PackTransferLimits,
+    ) -> Result<Self, PackError> {
+        Ok(Self {
+            transfer: Transfer::new(offer, limits, true)?,
         })
     }
 
@@ -167,6 +178,18 @@ impl PackNegotiation {
 pub struct PackComplete {
     response: packets::ResourcePackClientResponse,
     handoff: ResourcePackHandoff,
+    metadata: Option<PackMetadata>,
+}
+
+/// Actual admitted metadata projected onto acquired selections; no diagnostics expose content keys.
+pub struct PackMetadata {
+    /// Original offer fields, selected entries in offer order, with actual verified archive sizes.
+    pub offer: packets::ResourcePacksInfo,
+    /// Original stack fields and selected entries in their original application order.
+    pub stack: packets::ResourcePackStack,
+    /// Original data information aligned with offer order; preloaded archives have no such packet.
+    /// Pack classification/premium/hash fields are never inferred from absent wire information.
+    pub data: Vec<Option<packets::ResourcePackDataInfo>>,
 }
 
 impl PackComplete {
@@ -192,6 +215,23 @@ impl PackComplete {
     pub fn into_parts(self) -> (packets::ResourcePackClientResponse, ResourcePackHandoff) {
         (self.response, self.handoff)
     }
+
+    /// Moves opt-in original metadata with the exact acknowledgment and acquired archive handoff.
+    /// None is the unchanged default path; it does not mean a retained offer contained no packs.
+    pub fn into_parts_with_metadata(
+        self,
+    ) -> (
+        packets::ResourcePackClientResponse,
+        ResourcePackHandoff,
+        Option<PackMetadata>,
+    ) {
+        (self.response, self.handoff, self.metadata)
+    }
+}
+
+struct RetainedOffer {
+    offer: packets::ResourcePacksInfo,
+    data: BTreeMap<uuid::Uuid, packets::ResourcePackDataInfo>,
 }
 
 enum Phase {
@@ -212,6 +252,7 @@ struct Transfer {
     budget: Budget,
     limits: PackTransferLimits,
     offer_required: bool,
+    metadata: Option<RetainedOffer>,
     phase: Phase,
 }
 
@@ -223,11 +264,12 @@ impl Transfer {
     /// duplicate or oversized offers are skipped and logged; final required
     /// stack selection decides whether those omissions prevent joining.
     fn new(
-        offer: packets::ResourcePacksInfo,
+        mut offer: packets::ResourcePacksInfo,
         limits: PackTransferLimits,
+        retain_metadata: bool,
     ) -> Result<Self, PackError> {
         limits.validate()?;
-        let (downloads, budget) = Budget::offers(offer.resource_packs, limits);
+        let (downloads, budget) = Budget::offers(std::mem::take(&mut offer.resource_packs), limits);
         let offer_order = downloads
             .iter()
             .map(|download| download.offer.pack_id_version.pack_uuid)
@@ -241,6 +283,10 @@ impl Transfer {
             budget,
             limits,
             offer_required: offer.resource_pack_required,
+            metadata: retain_metadata.then(|| RetainedOffer {
+                offer,
+                data: BTreeMap::new(),
+            }),
             phase: Phase::Preloading,
         })
     }
@@ -338,12 +384,13 @@ impl Transfer {
                     .downloads
                     .get_mut(&id)
                     .ok_or_else(|| invalid("pack data info was not advertised"))?;
+                let retained = self.metadata.as_ref().map(|_| info.clone());
+                let requests = self.budget.begin(download, info)?;
+                if let (Some(metadata), Some(info)) = (&mut self.metadata, retained) {
+                    metadata.data.insert(id, info);
+                }
                 Ok(PackEvent::Send(
-                    self.budget
-                        .begin(download, info)?
-                        .into_iter()
-                        .map(packets::Packet::from)
-                        .collect(),
+                    requests.into_iter().map(packets::Packet::from).collect(),
                 ))
             }
             packets::Packet::ResourcePackChunkData(chunk) => {
@@ -380,11 +427,13 @@ impl Transfer {
                 Ok(PackEvent::Send(responses))
             }
             packets::Packet::ResourcePackStack(stack) => {
-                let handoff = transfer::finish(
+                let (handoff, metadata) = transfer::finish(
                     std::mem::take(&mut self.downloads),
                     stack,
                     self.offer_required,
                     self.limits,
+                    self.metadata.take(),
+                    &self.offer_order,
                 )?;
                 self.phase = Phase::Complete;
                 Ok(PackEvent::Finished(PackComplete {
@@ -394,6 +443,7 @@ impl Transfer {
                         },
                     },
                     handoff,
+                    metadata,
                 }))
             }
             other => Ok(PackEvent::Unhandled(Box::new(other))),

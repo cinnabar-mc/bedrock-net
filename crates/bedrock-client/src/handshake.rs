@@ -127,6 +127,7 @@ struct Engine {
     phase: Phase,
     key_exchanged: bool,
     cache_sent: bool,
+    retain_pack_metadata: bool,
 }
 
 impl Engine {
@@ -148,6 +149,7 @@ impl Engine {
             phase: Phase::Initial,
             key_exchanged: false,
             cache_sent: false,
+            retain_pack_metadata: false,
         })
     }
 
@@ -286,7 +288,11 @@ impl Engine {
                 ))
             }
             packets::Packet::ResourcePacksInfo(offer) if matches!(self.phase, Phase::Login) => {
-                let negotiation = PackOffer::new(offer, self.options.packs)?;
+                let negotiation = if self.retain_pack_metadata {
+                    PackOffer::new_with_metadata(offer, self.options.packs)?
+                } else {
+                    PackOffer::new(offer, self.options.packs)?
+                };
                 let cache_status = self.cache_status();
                 self.phase = Phase::Packs;
                 Ok(EngineEvent::Packs {

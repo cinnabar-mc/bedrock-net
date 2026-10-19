@@ -1,6 +1,58 @@
 use super::*;
 use crate::packs::PackEvent;
 
+#[test]
+fn public_handshake_enables_retained_metadata_only_for_the_original_requested_owner() {
+    for retain in [false, true] {
+        let configured = ClientHandshake::new(
+            SigningKey::from_slice(&[1; 48]).unwrap(),
+            HandshakeOptions::default(),
+        )
+        .unwrap();
+        let configured = if retain {
+            configured.retain_pack_metadata()
+        } else {
+            configured
+        };
+        let (client, _) = configured.start().unwrap();
+        let SettingsEvent::Ready { login, .. } = client
+            .receive(packets::NetworkSettings::default().into())
+            .unwrap()
+        else {
+            panic!("actual public settings owner did not advance");
+        };
+        let (client, _) = login
+            .login_offline(
+                &OfflineIdentity {
+                    display_name: "Fixture",
+                    identity: "",
+                    xuid: "",
+                    playfab_id: "",
+                    playfab_title_id: "",
+                },
+                &RawValue::from_string("{}".into()).unwrap(),
+                SystemTime::UNIX_EPOCH,
+            )
+            .unwrap();
+        let LoginEvent::Packs { packs, .. } = client
+            .receive(packets::ResourcePacksInfo::default().into())
+            .unwrap()
+        else {
+            panic!("original public offer did not advance");
+        };
+        let (packs, _) = packs.start().unwrap();
+        let PacksEvent::Finished(complete) = packs
+            .receive(packets::ResourcePackStack::default().into())
+            .unwrap()
+        else {
+            panic!("original public stack did not complete");
+        };
+        let (_, handoff, metadata) = complete.into_parts_with_metadata();
+        assert!(handoff.is_empty());
+        assert_eq!(metadata.is_some(), retain);
+    }
+}
+
 /// Uses a synthetic deterministic proof key, without account or transport I/O.
 fn handshake(batch_encryption: bool) -> Engine {
     let key = Arc::new(SigningKey::from_slice(&[1; 48]).unwrap());
