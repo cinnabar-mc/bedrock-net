@@ -252,6 +252,27 @@ impl<A> ServerWorldReady<A> {
         self.engine.deadline
     }
 
+    /// Relays an actual upstream world's startup without generating world or spawn packets.
+    /// The adapter retains original bytes and acknowledges each real forward with `flushed`.
+    /// No initialized session exists until the original runtime ID and startup controls crossed
+    /// their corresponding wire boundaries and the client's final acknowledgment is forwarded.
+    pub fn relay_world(
+        mut self,
+        verifier: &impl LoginVerifier,
+        now: Instant,
+        utc: SystemTime,
+    ) -> Result<super::ServerRelaying<A>, ServerSessionTransitionError<Self>> {
+        let result = (|| {
+            self.engine.require(super::Phase::World, now)?;
+            self.engine.login.revalidate(verifier, utc)?;
+            Ok(())
+        })();
+        if let Err(cause) = self.engine.terminal(result) {
+            return Err(failure(self, cause));
+        }
+        Ok(super::ServerRelaying::new(self.engine))
+    }
+
     /// Starts only the caller-selected real world after provider revalidation.
     /// The caller rechecks current grant/world authority after waits; no default world exists.
     pub fn start_world(
@@ -403,6 +424,16 @@ pub struct AcceptedSession<A> {
 }
 
 impl<A> AcceptedSession<A> {
+    /// Takes only a relay continuation that already checked its real initialization and provider.
+    pub(super) fn from_relay(engine: SessionEngine<A>, chunk_radius: i32) -> Self {
+        Self {
+            login: engine.login,
+            grant: engine.grant,
+            client_cache_enabled: engine.cache_enabled,
+            chunk_radius,
+        }
+    }
+
     /// Borrows original provider-authenticated identity and signed client metadata.
     pub fn login(&self) -> &AuthenticatedLogin {
         &self.login
@@ -462,7 +493,7 @@ impl<C> std::error::Error for ServerSessionTransitionError<C> {
 }
 
 /// Keeps failure diagnostics independent of credential/content/grant values.
-fn failure<C>(owner: C, cause: Error) -> ServerSessionTransitionError<C> {
+pub(super) fn failure<C>(owner: C, cause: Error) -> ServerSessionTransitionError<C> {
     ServerSessionTransitionError {
         owner: Box::new(owner),
         cause,

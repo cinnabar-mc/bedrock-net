@@ -34,6 +34,13 @@ impl ClientHandshake {
         self.engine.key()
     }
 
+    /// Retains actual admitted pack offer/stack/data metadata for an upstream relay handoff.
+    /// Default desktop/client negotiation retains only its existing archive handoff.
+    pub fn retain_pack_metadata(mut self) -> Self {
+        self.engine.retain_pack_metadata = true;
+        self
+    }
+
     /// Consumes configuration into the single uncompressed settings request.
     ///
     /// ```compile_fail

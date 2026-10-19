@@ -7,6 +7,184 @@ use bedrock_protocol::{
 use bytes::Bytes;
 use sha2::{Digest, Sha256};
 
+/// Exercises the generated server wire contract before retaining its original metadata.
+fn server_wire(packet: packets::Packet) -> packets::Packet {
+    let mut encoded = Vec::new();
+    packet
+        .encode_frame(wire::Peer::Server, 0, 0, &mut encoded)
+        .unwrap();
+    let mut frames = wire::Frames::new(encoded.into(), 1);
+    let frame = frames.next().unwrap().unwrap();
+    assert!(frames.next().is_none());
+    let packets::Decoded::Known(decoded) =
+        packets::Packet::decode_frame(&frame, wire::Peer::Server, &wire::Limits::default())
+            .unwrap()
+    else {
+        panic!("metadata fixture remains a known generated server packet");
+    };
+    decoded
+}
+
+#[test]
+fn completed_pack_metadata_keeps_actual_headers_order_and_data_only_when_requested() {
+    for retain in [false, true] {
+        let original = packets::ResourcePacksInfo {
+            resource_pack_required: true,
+            has_addon_packs: true,
+            has_scripts: true,
+            force_disable_vibrant_visuals: true,
+            world_template_id_and_version: bedrock_protocol::types::PackIdVersion {
+                pack_uuid: uuid::Uuid::from_u128(99),
+                ..Default::default()
+            },
+            resource_packs: (1..=3)
+                .map(|id| {
+                    let mut pack = offer(uuid::Uuid::from_u128(id), 32);
+                    pack.content_key = format!("original-key-{id}").into();
+                    pack.subpack_name = "offered-subpack".into();
+                    pack.cdn_url = "https://example.invalid/original-pack".into();
+                    pack
+                })
+                .collect(),
+        };
+        let packets::Packet::ResourcePacksInfo(offer) = server_wire(original.clone().into()) else {
+            panic!("original generated offer changed its role");
+        };
+        let offer = if retain {
+            PackOffer::new_with_metadata(offer, PackTransferLimits::default())
+        } else {
+            PackOffer::new(offer, PackTransferLimits::default())
+        }
+        .unwrap();
+        let (mut transfer, _) = offer.start().unwrap();
+        let mut expected_data = Vec::new();
+        for id in 1..=3 {
+            let id = uuid::Uuid::from_u128(id);
+            let bytes = fixture_bytes(id);
+            let info = packets::ResourcePackDataInfo {
+                resource_name: format!("{id}_1.0.0").into(),
+                chunk_size: wire::U32LE(32),
+                number_of_chunks: wire::U32LE(1),
+                file_size: wire::U64LE(bytes.len() as u64),
+                file_hash: Bytes::copy_from_slice(&Sha256::digest(&bytes)),
+                is_premium_pack: id.as_u128() == 2,
+                pack_type: wire::U8(6),
+            };
+            expected_data.push(info.clone());
+            let PackEvent::Send(requests) = transfer.receive(server_wire(info.into())).unwrap()
+            else {
+                panic!("actual pack data did not request its original chunk");
+            };
+            assert_eq!(requests.len(), 1);
+            let packets::Packet::ResourcePackChunkRequest(request) = &requests[0] else {
+                panic!("actual data request changed its role");
+            };
+            assert_eq!(request.chunk.0, 0);
+            assert!(matches!(
+                transfer.receive(server_wire(
+                    packets::ResourcePackChunkData {
+                        resource_name: request.resource_name.clone(),
+                        chunk_id: wire::U32LE(0),
+                        byte_offset: wire::U64LE(0),
+                        chunk_data: Bytes::from(bytes),
+                    }
+                    .into()
+                )),
+                Ok(PackEvent::Send(_))
+            ));
+        }
+        let stack = packets::ResourcePackStack {
+            texture_pack_required: true,
+            texture_pack_list: [2, 1]
+                .map(|id| PackInstanceId {
+                    pack_id: uuid::Uuid::from_u128(id).to_string().into(),
+                    version: "1.0.0".into(),
+                    sub_pack_name: format!("selected-{id}").into(),
+                })
+                .into(),
+            base_game_version: "original-selected-version".into(),
+            include_editor_packs: true,
+            experiments: bedrock_protocol::types::Experiments {
+                toggles: vec![bedrock_protocol::types::ExperimentToggle {
+                    name: "original-experiment".into(),
+                    enabled: true,
+                }],
+                experiments_ever_toggled: true,
+            },
+        };
+        let PackEvent::Finished(complete) =
+            transfer.receive(server_wire(stack.clone().into())).unwrap()
+        else {
+            panic!("real final stack did not complete acquisition");
+        };
+        let (_, handoff, metadata) = complete.into_parts_with_metadata();
+        assert!(handoff.required());
+        let archives = handoff.into_archives();
+        assert_eq!(
+            archives
+                .iter()
+                .map(|pack| pack.pack_id.as_u128())
+                .collect::<Vec<_>>(),
+            [2, 1]
+        );
+        assert_eq!(archives[0].archive, fixture_bytes(uuid::Uuid::from_u128(2)));
+        assert_eq!(archives[0].content_key.expose(), b"original-key-2");
+        if retain {
+            let metadata = metadata.expect("explicit metadata retention was lost");
+            let mut projected = original;
+            projected.resource_packs.truncate(2);
+            for pack in &mut projected.resource_packs {
+                pack.pack_size = wire::U64LE(16);
+            }
+            assert_eq!(metadata.offer, projected);
+            assert_eq!(metadata.stack, stack);
+            assert_eq!(metadata.data.len(), 2);
+            assert_eq!(metadata.data[0].as_ref(), Some(&expected_data[0]));
+            assert_eq!(metadata.data[1].as_ref(), Some(&expected_data[1]));
+        } else {
+            assert!(
+                metadata.is_none(),
+                "default transfer retained relay metadata"
+            );
+        }
+    }
+}
+
+#[test]
+fn retained_preloaded_metadata_does_not_manufacture_data_information() {
+    let id = uuid::Uuid::from_u128(1);
+    let mut offer = PackOffer::new_with_metadata(
+        packets::ResourcePacksInfo {
+            resource_packs: vec![offer(id, 32)],
+            ..Default::default()
+        },
+        PackTransferLimits::default(),
+    )
+    .unwrap();
+    offer.supply_preloaded(id, fixture_bytes(id)).unwrap();
+    let (mut transfer, _) = offer.start().unwrap();
+    let PackEvent::Finished(complete) = transfer
+        .receive(
+            packets::ResourcePackStack {
+                texture_pack_list: vec![PackInstanceId {
+                    pack_id: id.to_string().into(),
+                    version: "1.0.0".into(),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }
+            .into(),
+        )
+        .unwrap()
+    else {
+        panic!("actual preloaded selection did not finish");
+    };
+    let (_, _, metadata) = complete.into_parts_with_metadata();
+    let metadata = metadata.unwrap();
+    assert_eq!(metadata.offer.resource_packs[0].pack_size.0, 16);
+    assert!(matches!(metadata.data.as_slice(), [None]));
+}
+
 /// Advertises original fixture bytes without production server identities.
 fn offer(id: uuid::Uuid, size: usize) -> PackInfoData {
     let mut offer = PackInfoData::default();
@@ -37,7 +215,15 @@ fn finish(
     stack: packets::ResourcePackStack,
     required: bool,
 ) -> Result<ResourcePackHandoff, PackError> {
-    transfer::finish(downloads, stack, required, PackTransferLimits::default())
+    transfer::finish(
+        downloads,
+        stack,
+        required,
+        PackTransferLimits::default(),
+        None,
+        &[],
+    )
+    .map(|(handoff, _)| handoff)
 }
 
 /// Borrows completed retained bytes; an excluded or pending fixture is a test failure.

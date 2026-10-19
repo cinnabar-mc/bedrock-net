@@ -165,3 +165,22 @@ observed cache/radius. The application rechecks its authority before attaching
 the player to its running world. See the
 [integration guide](../../docs/integration.md#accepting-packs-and-startup) for the
 adapter's packet, source and pending-write responsibilities.
+
+For an existing upstream world, `ServerWorldReady::relay_world` retains the same
+Login, grant and deadline without generating world or spawn responses. Pass its
+actual startup controls to `forward_server` or `forward_client`, forward the
+original packet, and consume `PendingServerRelay::flushed` only after that exact
+write finishes. The adapter keeps original raw headers and unread siblings.
+The continuation observes StartGame, item/radius/spawn controls and the matching
+client Initialized; it returns `AcceptedSession` only after the final upstream
+forward and provider revalidation. Application authority still belongs to the
+adapter at every real write and final attachment.
+
+`ClientHandshake::retain_pack_metadata` or `PackOffer::new_with_metadata` opts
+into full admitted offer/stack metadata at the original acquisition owner.
+`PackComplete::into_parts_with_metadata` moves that metadata with the ordinary
+acknowledgment and archive handoff. Offer entries keep offer order and verified
+sizes; stack entries keep application order and original metadata. Original
+data-information packets stay aligned with offer order; caller-preloaded content
+has no invented classification or premium information. The default path retains
+its ordinary archive handoff without metadata copies. No relay I/O is started.

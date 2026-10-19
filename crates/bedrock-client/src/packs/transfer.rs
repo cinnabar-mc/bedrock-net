@@ -1,6 +1,6 @@
 //! Caller-driven chunk bookkeeping and server-selected stack assembly.
 
-use super::{PackError, PackTransferLimits};
+use super::{PackError, PackMetadata, PackTransferLimits, RetainedOffer};
 use super::{invalid, pack_id};
 use bedrock_packs::{ResourcePackArchive, ResourcePackHandoff};
 use bedrock_protocol::{packets, types::PackInfoData, wire};
@@ -279,10 +279,12 @@ impl Download {
 /// Preserves final server order and per-stack subpack selection, excluding unselected offers.
 pub(super) fn finish(
     mut downloads: BTreeMap<uuid::Uuid, Download>,
-    stack: packets::ResourcePackStack,
+    mut stack: packets::ResourcePackStack,
     offer_required: bool,
     limits: PackTransferLimits,
-) -> Result<ResourcePackHandoff, PackError> {
+    metadata: Option<RetainedOffer>,
+    offer_order: &[uuid::Uuid],
+) -> Result<(ResourcePackHandoff, Option<PackMetadata>), PackError> {
     let required = offer_required || stack.texture_pack_required;
     if downloads
         .values()
@@ -291,9 +293,12 @@ pub(super) fn finish(
         return Err(invalid("pack stack preceded completed downloads"));
     }
     let mut archives = Vec::with_capacity(stack.texture_pack_list.len().min(limits.max_packs));
+    let entries = std::mem::take(&mut stack.texture_pack_list);
+    let mut retained_stack = metadata.as_ref().map(|_| stack);
+    let mut retained_offers = BTreeMap::new();
     let mut seen = std::collections::BTreeSet::new();
     let mut skipped = 0_usize;
-    for pack in stack.texture_pack_list {
+    for pack in entries {
         let id = pack
             .pack_id
             .to_str()
@@ -317,6 +322,9 @@ pub(super) fn finish(
             download.offer.pack_id_version.pack_version.version != pack.version
         }) {
             if super::builtins::contains(id, &pack.version.to_string_lossy()) {
+                if let Some(stack) = &mut retained_stack {
+                    stack.texture_pack_list.push(pack);
+                }
                 continue;
             }
             if required {
@@ -348,9 +356,37 @@ pub(super) fn finish(
             bytes,
             download.offer.content_key.as_bytes().to_vec(),
         ));
+        if let Some(stack) = &mut retained_stack {
+            let mut offer = download.offer;
+            offer.pack_size = wire::U64LE(download.size);
+            retained_offers.insert(id, offer);
+            stack.texture_pack_list.push(pack);
+        }
     }
     if skipped != 0 {
         tracing::warn!(skipped, "skipped unavailable or duplicate stack entries");
     }
-    Ok(ResourcePackHandoff::from_archives(archives).with_required(required))
+    let metadata = metadata.map(|mut metadata| {
+        metadata.offer.resource_packs = offer_order
+            .iter()
+            .filter_map(|id| retained_offers.remove(id))
+            .collect();
+        let data = metadata
+            .offer
+            .resource_packs
+            .iter()
+            .map(|offer| metadata.data.remove(&offer.pack_id_version.pack_uuid))
+            .collect();
+        PackMetadata {
+            offer: metadata.offer,
+            stack: super::retained::stack(
+                retained_stack.expect("opt-in metadata retains the original stack"),
+            ),
+            data,
+        }
+    });
+    Ok((
+        ResourcePackHandoff::from_archives(archives).with_required(required),
+        metadata,
+    ))
 }
