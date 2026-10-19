@@ -185,6 +185,12 @@ struct Engine {
     failure: Option<RakNetError>,
 }
 
+#[derive(Clone, Copy)]
+enum DriveIntent {
+    Flush,
+    Receive,
+}
+
 impl Engine {
     /// Returns the bound local address, including after close for diagnostics.
     pub fn local_addr(&self) -> SocketAddr {
@@ -198,6 +204,9 @@ impl Engine {
 
     /// Returns the negotiated outgoing message limit, or zero after close.
     pub fn max_message_len(&self) -> usize {
+        if self.socket.is_none() {
+            return 0;
+        }
         self.session.as_ref().map_or(0, |session| {
             session
                 .max_message_len()
@@ -260,6 +269,7 @@ impl Engine {
 
     /// Validates message size and checks the remaining outgoing byte budget.
     fn has_send_capacity(&self, message_bytes: usize) -> Result<bool, RakNetError> {
+        self.socket.as_ref().ok_or(RakNetError::Closed)?;
         let session = self.session.as_ref().ok_or(RakNetError::Closed)?;
         if session.state() != RakSessionState::Connected {
             return Err(RakNetError::Closed);
@@ -289,8 +299,17 @@ impl Engine {
     /// # Errors
     /// Returns socket, protocol or receive-queue failures. These end the connection.
     pub async fn flush(&mut self) -> Result<(), RakNetError> {
-        if self.expire_close() {
-            return Ok(());
+        self.flush_with(DriveIntent::Flush).await
+    }
+
+    /// Shares socket progress while active receive can drain its bounded message FIFO.
+    async fn flush_with(&mut self, intent: DriveIntent) -> Result<(), RakNetError> {
+        self.expire_close();
+        if self.socket.is_none() {
+            return match intent {
+                DriveIntent::Flush => Ok(()),
+                DriveIntent::Receive => self.collect_outputs(intent),
+            };
         }
         let result = self
             .session
@@ -301,7 +320,7 @@ impl Engine {
             return Err(error.into());
         }
         let result = if let Some(deadline) = self.close_deadline {
-            match tokio::time::timeout_at(deadline, self.flush_datagrams()).await {
+            match tokio::time::timeout_at(deadline, self.flush_datagrams(intent)).await {
                 Ok(result) => result,
                 Err(_) => {
                     self.end(RakNetError::Disconnected(DisconnectReason::Requested));
@@ -309,7 +328,7 @@ impl Engine {
                 }
             }
         } else {
-            self.flush_datagrams().await
+            self.flush_datagrams(intent).await
         };
         if result.is_err() {
             self.end(RakNetError::Closed);
@@ -318,10 +337,10 @@ impl Engine {
     }
 
     /// Retains the front datagram until the socket confirms its atomic send.
-    async fn flush_datagrams(&mut self) -> Result<(), RakNetError> {
+    async fn flush_datagrams(&mut self, intent: DriveIntent) -> Result<(), RakNetError> {
         loop {
             if self.pending_datagram.is_none() {
-                self.collect_outputs()?;
+                self.collect_outputs(intent)?;
             }
             let Some(datagram) = self.pending_datagram.as_ref() else {
                 return Ok(());
@@ -353,8 +372,12 @@ impl Engine {
     /// return [`RakNetError::Closed`].
     pub async fn recv(&mut self) -> Result<Bytes, RakNetError> {
         loop {
-            if let Err(error) = self.flush().await {
-                self.failure = Some(error);
+            if self.incoming.is_empty() {
+                if let Err(error) = self.flush_with(DriveIntent::Receive).await {
+                    self.failure = Some(error);
+                }
+            } else {
+                self.expire_close();
             }
             if let Some(message) = self.incoming.pop_front() {
                 self.incoming_bytes -= message.len();
@@ -371,7 +394,7 @@ impl Engine {
 
     /// Retires local admission before returning the same drainable protocol owner.
     fn begin_close(&mut self) -> Result<(), RakNetError> {
-        if self.session.is_none() {
+        if self.socket.is_none() {
             return Ok(());
         }
         let Some(deadline) = Instant::now().checked_add(self.options.close_timeout) else {
@@ -395,10 +418,10 @@ impl Engine {
 
     /// Drives the original close budget without changing it when this wait is cancelled.
     async fn finish_close(&mut self) -> Result<(), RakNetError> {
-        while self.session.is_some() {
+        while self.socket.is_some() {
             let result = async {
                 self.flush().await?;
-                if self.session.is_some() {
+                if self.socket.is_some() {
                     self.step().await?;
                 }
                 Ok::<(), RakNetError>(())
@@ -445,12 +468,26 @@ impl Engine {
     }
 
     /// Processes engine outputs in order, stopping before the next asynchronous socket send.
-    fn collect_outputs(&mut self) -> Result<(), RakNetError> {
-        while let Some(output) = self.session.as_mut().and_then(|session| session.poll()) {
+    /// Active receive leaves the remaining core output owned until its full FIFO drains.
+    fn collect_outputs(&mut self, intent: DriveIntent) -> Result<(), RakNetError> {
+        loop {
+            if matches!(intent, DriveIntent::Receive)
+                && self.incoming.len() >= self.options.receive_buffer_messages
+            {
+                return Ok(());
+            }
+            let Some(output) = self.session.as_mut().and_then(|session| session.poll()) else {
+                if self.socket.is_none() {
+                    self.session = None;
+                }
+                return Ok(());
+            };
             match output {
                 RakSessionOutput::Packet(message) => {
                     self.retain_message(message)?;
                 }
+                RakSessionOutput::Datagram(..) | RakSessionOutput::Wait(..)
+                    if self.socket.is_none() => {}
                 RakSessionOutput::Datagram(datagram, _) => {
                     self.pending_datagram = Some(datagram);
                     return Ok(());
@@ -467,26 +504,11 @@ impl Engine {
                 }
             }
         }
-        Ok(())
     }
 
-    /// Retains the completed output prefix, then releases protocol and socket resources.
+    /// Releases I/O and retains the original bounded core output for subsequent receive calls.
     fn end(&mut self, error: RakNetError) {
         self.failure.get_or_insert(error);
-        if let Some(mut session) = self.session.take() {
-            while let Some(output) = session.poll() {
-                match output {
-                    RakSessionOutput::Packet(message) => {
-                        if let Err(error) = self.retain_message(message) {
-                            self.failure = Some(error);
-                            break;
-                        }
-                    }
-                    RakSessionOutput::Disconnected(..) => break,
-                    RakSessionOutput::Datagram(..) | RakSessionOutput::Wait(..) => {}
-                }
-            }
-        }
         self.socket = None;
         self.pending_datagram = None;
     }
@@ -510,7 +532,7 @@ impl Engine {
 
     /// Applies a retained close deadline to every operation that drives protocol I/O.
     fn expire_close(&mut self) -> bool {
-        if self.session.is_some()
+        if self.socket.is_some()
             && self
                 .close_deadline
                 .is_some_and(|deadline| Instant::now() >= deadline)

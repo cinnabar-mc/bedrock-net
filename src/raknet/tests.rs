@@ -142,6 +142,188 @@ async fn connected_pair() -> (RakNetConnection, UdpSocket, RakSession<Establishe
 }
 
 #[tokio::test]
+async fn active_receive_drains_a_legal_datagram_larger_than_its_staging_count() {
+    let (mut connection, peer, mut sender) = connected_pair().await;
+    let count = connection.engine.options.receive_buffer_messages + 1;
+    let now = Instant::now().into_std();
+    for index in 0..count {
+        let mut message = vec![0xfe];
+        message.extend_from_slice(&u32::try_from(index).unwrap().to_le_bytes());
+        sender
+            .send(
+                message.into_boxed_slice(),
+                RakReliability::ReliableOrdered,
+                RakPriority::Normal,
+                now,
+            )
+            .unwrap();
+    }
+    sender.tick(now).unwrap();
+    let mut sent = 0;
+    while let Some(output) = sender.poll() {
+        if let RakSessionOutput::Datagram(datagram, _) = output {
+            peer.send(&datagram).await.unwrap();
+            sent += 1;
+        }
+    }
+    assert_eq!(
+        sent, 1,
+        "the real core packed the complete controlled burst"
+    );
+    for index in 0..count {
+        let message = connection.recv().await.unwrap();
+        assert_eq!(message[0], 0xfe);
+        assert_eq!(&message[1..], &u32::try_from(index).unwrap().to_le_bytes());
+    }
+}
+
+#[tokio::test]
+async fn completed_burst_precedes_the_peers_graceful_close() {
+    let (mut connection, peer, mut sender) = connected_pair().await;
+    let count = connection.engine.options.receive_buffer_messages + 1;
+    let now = Instant::now().into_std();
+    for index in 0..count {
+        let mut message = vec![0xfe];
+        message.extend_from_slice(&u32::try_from(index).unwrap().to_le_bytes());
+        sender
+            .send(
+                message.into_boxed_slice(),
+                RakReliability::ReliableOrdered,
+                RakPriority::Normal,
+                now,
+            )
+            .unwrap();
+    }
+    sender.tick(now).unwrap();
+    let mut sent = 0;
+    while let Some(output) = sender.poll() {
+        if let RakSessionOutput::Datagram(datagram, _) = output {
+            peer.send(&datagram).await.unwrap();
+            sent += 1;
+        }
+    }
+    assert_eq!(
+        sent, 1,
+        "the real core packed the complete controlled burst"
+    );
+    let mut sender = sender.close(now).unwrap();
+    let closing_peer = async {
+        let mut buffer = [0; UDP_BUFFER_BYTES];
+        loop {
+            sender
+                .handle(RakSessionInput::Update(Instant::now().into_std()))
+                .unwrap();
+            while let Some(output) = sender.poll() {
+                if let RakSessionOutput::Datagram(datagram, _) = output {
+                    peer.send(&datagram).await.unwrap();
+                }
+            }
+            if sender.state() == RakSessionState::Disconnected {
+                break;
+            }
+            let length = peer.recv(&mut buffer).await.unwrap();
+            sender
+                .handle(RakSessionInput::Datagram(
+                    buffer[..length].into(),
+                    Instant::now().into_std(),
+                ))
+                .unwrap();
+        }
+    };
+    let receiving = async {
+        for index in 0..count {
+            let message = connection.recv().await.unwrap();
+            assert_eq!(message[0], 0xfe);
+            assert_eq!(&message[1..], &u32::try_from(index).unwrap().to_le_bytes());
+        }
+        assert!(matches!(
+            connection.recv().await,
+            Err(RakNetError::Disconnected(DisconnectReason::Remote))
+        ));
+        assert!(matches!(connection.recv().await, Err(RakNetError::Closed)));
+    };
+    tokio::join!(closing_peer, receiving);
+}
+
+#[tokio::test(start_paused = true)]
+async fn expired_close_retains_the_completed_burst_before_its_original_terminal() {
+    let (mut connection, peer, mut sender) = connected_pair().await;
+    let count = connection.engine.options.receive_buffer_messages + 1;
+    connection
+        .queue_send(Bytes::from_static(&[0xfe, 0x7f]))
+        .unwrap();
+    let mut connection = connection.begin_close().unwrap();
+    let deadline = connection.engine.close_deadline.unwrap();
+    connection.flush().await.unwrap();
+    let now = Instant::now().into_std();
+    for index in 0..count {
+        let mut message = vec![0xfe];
+        message.extend_from_slice(&u32::try_from(index).unwrap().to_le_bytes());
+        sender
+            .send(
+                message.into_boxed_slice(),
+                RakReliability::ReliableOrdered,
+                RakPriority::Normal,
+                now,
+            )
+            .unwrap();
+    }
+    sender.tick(now).unwrap();
+    let mut sent = 0;
+    let mut buffer = [0; UDP_BUFFER_BYTES];
+    while let Some(output) = sender.poll() {
+        if let RakSessionOutput::Datagram(datagram, _) = output {
+            peer.send(&datagram).await.unwrap();
+            let length = connection
+                .engine
+                .socket
+                .as_ref()
+                .unwrap()
+                .recv(&mut buffer)
+                .await
+                .unwrap();
+            connection
+                .engine
+                .session
+                .as_mut()
+                .unwrap()
+                .handle(RakSessionInput::Datagram(buffer[..length].into(), now))
+                .unwrap();
+            sent += 1;
+        }
+    }
+    assert_eq!(
+        sent, 1,
+        "the real core packed the complete controlled burst"
+    );
+    tokio::time::advance(
+        deadline.saturating_duration_since(Instant::now()) + Duration::from_nanos(1),
+    )
+    .await;
+    connection.finish_close().await.unwrap();
+    let Err(mut connection) = connection.try_finish() else {
+        panic!("retirement discarded the unread accepted burst");
+    };
+    for index in 0..count {
+        let message = connection.recv().await.unwrap();
+        assert_eq!(message[0], 0xfe);
+        assert_eq!(&message[1..], &u32::try_from(index).unwrap().to_le_bytes());
+    }
+    let Err(mut connection) = connection.try_finish() else {
+        panic!("retirement discarded the original unobserved terminal");
+    };
+    assert!(matches!(
+        connection.recv().await,
+        Err(RakNetError::Disconnected(DisconnectReason::Requested))
+    ));
+    assert!(matches!(connection.recv().await, Err(RakNetError::Closed)));
+    let Ok(closed) = connection.try_finish() else {
+        panic!("drained retirement did not finish");
+    };
+    UdpSocket::bind(closed.local_addr()).await.unwrap();
+}
+
+#[tokio::test]
 async fn receive_overflow_returns_only_the_prefix_before_the_rejected_message() {
     let (mut connection, peer, mut sender) = connected_pair().await;
     connection.engine.options.receive_buffer_bytes = 64;

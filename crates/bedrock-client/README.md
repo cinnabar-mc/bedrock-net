@@ -59,17 +59,17 @@ and non-spawn PlayStatus promptly. Only actual radius/PlayerSpawn prerequisites
 produce the non-cloneable `SpawnReady`. Retain it until presentation completes,
 then consume `finish_loading` once. Loading-screen policy remains application-owned.
 
-External Go/prepared handoff adapters may configure `SpawnNegotiation::new` directly.
-That creates only a prerequisite observer and claims no Login, pack or world
-authority; the actual incoming prerequisites must still produce readiness.
+Adapters with externally prepared handoffs may configure `SpawnNegotiation::new`
+directly. That creates only a prerequisite observer and claims no Login, pack or
+world authority; the actual incoming prerequisites must still produce readiness.
 `receive_deferred` accepts only unrelated raw packet IDs, retaining a terrain fact
 while the caller keeps original bytes. StartGame, ItemRegistry, PlayStatus and
 ChunkRadiusUpdated require decoded bodies. Packet schemas/codecs remain in
 protocolgen; the byte codec and directional ciphers remain in `bedrock-net`.
 
 Malformed-wire handling, endpoint trust, credential persistence, cache/CDN I/O,
-deferred byte bounds and ongoing play stay with callers. These APIs do not claim
-live-server qualification. The extracted Cinnabar implementation retains its
+deferred byte bounds and ongoing play stay with callers.
+The extracted Cinnabar implementation retains its
 [PolyForm Noncommercial license](../../LICENSE-CINNABAR); the spawn adaptation
 preserves [Jolyne's MIT notice](LICENSE-AXOLOTL).
 
@@ -120,10 +120,7 @@ The caller preserves decoded siblings, handles terminal packets immediately and
 closes on failed transitions. No accepting listener or running-world bridge is
 provided by this API.
 
-
-Accepting pack delivery and startup continue through owned capabilities. Local
-generated-packet regressions and pinned Go delivery-policy checks exercise these
-boundaries; application hosting and live compatibility remain separate:
+Accepting pack delivery and startup continue through owned capabilities:
 
 | Owner | Available work | Next owner |
 | --- | --- | --- |
@@ -149,9 +146,8 @@ pending read or write owns the entire session, so it cannot consume another peer
 packet. Keep already decoded pipelined siblings in the adapter's existing bounded
 FIFO until the exact original chunk flush completes. No request queue or arbitrary
 `chunk_flushed` marker exists. Unrelated and terminal input is returned intact.
-Delivery defaults/cap and chunk indexing are checked against the actual pinned Go
-owner by the optional oracle built in CI; this is an identified Go compatibility
-check, not vanilla evidence. There is no added pacing delay.
+Delivery bounds and chunk indexing belong to the retained snapshot/delivery
+configuration; the core adds no pacing delay.
 
 Only the actual final stack acknowledgment permits `ServerWorldReady::start_world`.
 `ServerWorld` requires original generated StartGame/items/creative data and the
@@ -165,8 +161,7 @@ Local snapshot-validation errors before advertisement retain original Login
 readiness for a corrected local snapshot.
 
 `AcceptedSession` carries original authenticated player/nonce, caller grant and
-observed cache/radius. It proves protocol completion only, not admission to a
-running world. The bidirectional synthetic tests exercise generated framing,
-original memory/file bytes, stack order/subpack/content key and startup with the
-existing client owners. An accepting listener, real hosted authority and world
-attachment remain separate integration work; this API alone is not usable hosting.
+observed cache/radius. The application rechecks its authority before attaching
+the player to its running world. See the
+[integration guide](../../docs/integration.md#accepting-packs-and-startup) for the
+adapter's packet, source and pending-write responsibilities.

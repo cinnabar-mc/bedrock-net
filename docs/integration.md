@@ -9,6 +9,26 @@ The application retains one connection's transport, batch codec, cipher streams,
 proof key, unread packet FIFO and absolute setup deadline. Multiple sessions can
 be scheduled by the caller; the pure owners impose no executor or task model.
 
+## Drive a connection
+
+1. Create the transport and original proof key, then start the protocol owner.
+   Keep one codec, cipher pair and bounded unread-packet FIFO for that connection.
+2. Decode each transport batch once. Feed its entries to the active owner in
+   order, retaining returned continuations and unrelated packets. Drain unread
+   entries before receiving another batch.
+3. Dispatch returned effects in order. A pending settings, exchange or chunk
+   owner keeps its next transition until the adapter completes the documented
+   send/flush/install work. Recheck application authority after capacity waits
+   and immediately before actual admission.
+4. Use the caller's original deadlines. On a failed protocol transition, recover
+   the owner when the error exposes `into_parts` and retire the same connection.
+   Recovering ownership does not restart a sealed phase or its cipher stream.
+
+The [probe](../examples/client/src/main.rs) demonstrates the client loop. Its
+[session owner](../examples/client/src/session.rs) shows the codec/FIFO boundary;
+its [transport owner](../examples/client/src/transport.rs) shows concrete I/O.
+These are example application owners, not additional public library APIs.
+
 ## Framing and compression
 
 A transport message contains one batch. `BatchHeader::RakNet` includes its leading
@@ -47,8 +67,9 @@ second application cipher automatically.
 
 A verified `ClientKeyExchange<C>` owns the exact continuation, optional streams
 and acknowledgment. `into_parts` transfers them together. Install both streams,
-send the original acknowledgment, then resume its continuation. Server accepting
-exchange instead sends/flushed its token in plaintext before handing out streams.
+send the original acknowledgment, then resume its continuation. The accepting
+exchange requires sending/flushing its token in plaintext before handing out
+streams.
 The [probe session](../examples/client/src/session.rs) shows the byte boundary and
 [probe handshake](../examples/client/src/main.rs) shows the generated effects.
 
@@ -74,6 +95,10 @@ and server exchange. Entropy/key generation remains with the caller.
 4. Drive `ClientLogin::receive`, send returned effects in order and apply any
    verified exchange. `Packs` hands off the admitted offer plus the same late
    Login/key-exchange owner.
+
+The examples below use the workspace's `bedrock_protocol` alias for the generated
+packet crate. Match that dependency and revision when using these types in an
+application; its declaration is in [Cargo.toml](../Cargo.toml).
 
 Formatting can fail before dispatch while leaving the original readiness owned:
 
@@ -136,11 +161,8 @@ pack completion, account authority or world readiness.
 ## Accepting Login
 
 The Login-only handoff yields `AcceptedLogin<Grant>`. Optional `start_packs`
-continues through owned chunk read/write and caller-selected startup data. Local
-generated-packet regressions exercise that flow, with delivery policy checked
-against the pinned Go helper. This section covers the Login boundary, without an
-accepting listener or world attachment. Application hosting and live compatibility
-remain separate. See the
+continues through owned chunk read/write and caller-selected startup data. Supply
+the listener and current application authorization yourself. See the
 [accepting capability contract](../crates/bedrock-client/README.md) and
 [server API](../crates/bedrock-client/src/server/lifecycle.rs).
 
@@ -173,6 +195,41 @@ its owner and redacted cause for retirement; it does not reset a failed exchange
 Pending continuations express the real adapter's explicit flush/install contract.
 A pure owner cannot independently certify a socket operation.
 
+## Accepting packs and startup
+
+Consume `ServerPacksReady::start_packs` with the selected `ServerPackSnapshot`,
+delivery bounds and original verifier/time. It validates the snapshot before
+returning LoginSuccess and the offer. Send those effects in order, then feed
+generated packets to `ServerPacks::receive`:
+
+| `ServerPackEvent` | Adapter action |
+| --- | --- |
+| `Send { session, packets }` | Dispatch all packets, then retain that session for the next input. |
+| `ReadChunk(read)` | Read exactly its `archive_index`, `offset` and `byte_len` from the retained source lease. Successful `supply` returns a `PendingServerChunk` directly; handle it as in the `Chunk` row. |
+| `Chunk(chunk)` | Send its borrowed `packet`, then consume `flushed` after actual I/O. Dispatch all returned follow-up packets before feeding more input to the returned session. |
+| `WorldReady(ready)` | Supply the selected world's definitions through `start_world`. |
+| `Unhandled { session, packet }` | Handle terminal input promptly; preserve other input and the returned session. |
+
+Both memory and external archives follow the same sequential chunk contract.
+The flush follow-up can advertise the next archive's `ResourcePackDataInfo`.
+An external snapshot records the original size/hash; the adapter retains the
+immutable source and performs its reads. A pending read or chunk owns the whole
+session, so keep pipelined input in the existing bounded FIFO until it completes.
+Recheck the retained grant at actual dispatch after I/O waits.
+
+`ServerWorld` contains the selected world's generated definitions and radius
+policy. `ServerWorldReady::start_world` returns startup effects and
+`ServerSpawning`; send the effects before processing further peer input. Radius
+negotiation and the actual runtime-ID acknowledgment produce `ServerInitialized`.
+Its `finish` revalidates the provider and returns `AcceptedSession`, carrying the
+original Login, caller grant and observed cache/radius. Recheck application
+authority before attaching that player to the running world.
+
+Snapshot validation before advertisement can return the original Login owner
+for a corrected local snapshot. Errors during protocol progress return sealed
+continuations through `ServerSessionTransitionError::into_parts`; keep their
+original output for retirement. There is no default verifier or default world.
+
 ## Optional RakNet edge
 
 With `raknet`, `RakNetConnection::connect(peer, options)` returns only after real
@@ -187,8 +244,6 @@ MTU cap. The driver normalizes mapped IPv4 before choosing the socket family,
 uses the connected socket's local address and keeps scoped IPv6 routing local to
 the socket. Per-attempt GUIDs come from OS entropy and remain stable for retries;
 transport time uses a monotonic clock, independently of authentication UTC.
-Real path/device validation is still needed for MTU and protected-handshake
-compatibility; a local fixture cannot reproduce every network.
 
 Consume local send permission first, then borrow the retained closing owner for
 cancelable work. Even a failed transition returns that owner:
@@ -240,7 +295,7 @@ prefix and terminal while removing local sender/maintenance capability.
 senders observe shared closure at runtime. No new SDK socket, account proof or
 application backlog is created by closing.
 
-## Runtime and qualification boundaries
+## Runtime choice
 
 A custom executor or Bevy application can feed generated packets and caller time
 to the pure owners, dispatch their effects from its own transport, and retain
@@ -248,10 +303,8 @@ readiness until presentation completes. Enabling the optional edges is a separat
 choice for applications already using Tokio. Neither design requires one task
 per pure protocol owner.
 
-The checked-in [probe](../examples/client) shows concrete settings/offline-Login
-composition and stops at a pack offer. It is not an authenticated account client,
-pack downloader or hosted-world server. The generated protocol revision in the
-workspace manifest defines packet compatibility. Synthetic HTTP/socket/signature
-regressions and Go interoperability helpers exercise their owning boundaries;
-real-account, WAN/device, full vanilla and broader accepting-world qualification
-remain separate work.
+The [probe](../examples/client) supplies a Tokio runtime and concrete transport
+integration for settings and optional offline Login. Its Login path stops at a
+pack offer. Applications that need authenticated Login, complete pack transfer or
+accepting world startup compose those owners on their existing runtime and supply
+the corresponding account, source and world policy.
