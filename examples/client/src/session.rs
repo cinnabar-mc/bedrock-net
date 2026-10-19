@@ -5,21 +5,27 @@ use std::error::Error;
 use std::io;
 
 use bedrock_net::encryption::{BatchDecryptor, BatchEncryptor};
-use bedrock_net::{BatchCodec, BatchError, BatchLimits, CompressionSettings, DecodeOutcome};
-use bedrock_protocol::wire::{Encode, PacketHeader, Writer};
+use bedrock_net::{
+    BatchCodec, BatchError, BatchLimits, BatchPhase, CompressionSettings, DecodeOutcome,
+    Negotiated, Plain,
+};
+use bedrock_protocol::{
+    packets,
+    wire::{PacketHeader, Writer},
+};
 use bytes::{Bytes, BytesMut};
 
 use crate::transport::Transport;
 
-pub(super) struct Session {
+pub(super) struct Session<S = Plain> {
     pub(super) transport: Transport,
-    codec: BatchCodec,
+    codec: BatchCodec<S>,
     limits: BatchLimits,
     pending: VecDeque<Bytes>,
     ciphers: Option<(BatchEncryptor, BatchDecryptor)>,
 }
 
-impl Session {
+impl Session<Plain> {
     /// Owns the transport and preserves complete packets across handshake transitions.
     pub(super) fn new(transport: Transport) -> Self {
         let limits = BatchLimits::default();
@@ -32,11 +38,19 @@ impl Session {
         }
     }
 
-    /// Enables the negotiated compressor for subsequent transport messages.
-    pub(super) fn enable_compression(&mut self, settings: CompressionSettings) {
-        self.codec.enable_compression(settings);
+    /// Consumes the same transport/FIFO into the one negotiated compression configuration.
+    pub(super) fn negotiate(self, settings: CompressionSettings) -> Session<Negotiated> {
+        Session {
+            transport: self.transport,
+            codec: self.codec.negotiate(settings),
+            limits: self.limits,
+            pending: self.pending,
+            ciphers: self.ciphers,
+        }
     }
+}
 
+impl<S: BatchPhase> Session<S> {
     /// Installs both fresh directions only once; duplicate control packets cannot reset them.
     pub(super) fn enable_encryption(
         &mut self,
@@ -53,14 +67,10 @@ impl Session {
     }
 
     /// Serializes one generated packet and sends each resulting batch in order.
-    pub(super) async fn send(
-        &mut self,
-        id: u32,
-        packet: &impl Encode,
-    ) -> Result<(), Box<dyn Error>> {
+    pub(super) async fn send(&mut self, packet: packets::Packet) -> Result<(), Box<dyn Error>> {
         let mut bytes = Vec::new();
         let mut writer = Writer::with_limit(&mut bytes, self.limits.max_decoded_bytes);
-        writer.write_var_u32(PacketHeader::new(id).to_raw())?;
+        writer.write_var_u32(PacketHeader::new(packet.id() as u32).to_raw())?;
         packet.encode(&mut writer)?;
         for mut message in self.codec.encode(&[bytes])? {
             if let Some((encryptor, _)) = &mut self.ciphers {

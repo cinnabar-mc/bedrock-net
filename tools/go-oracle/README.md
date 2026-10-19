@@ -25,3 +25,9 @@ this mode tests field/UUID compatibility and does not establish issuer trust.
 Build `go build -o ../../target/login-check.exe ./cmd/login-check` and set
 `BEDROCK_NET_LOGIN_ORACLE` to that executable before running
 `cargo test --locked -p bedrock-net --features login`.
+
+`cmd/pack-delivery-check` exposes the same pin's exported delivery defaults/cap
+and actual resource.ChunkCount results for bounded caller-supplied synthetic
+JSON cases. It copies no reference table. Build it, then provide
+`BEDROCK_NET_PACK_DELIVERY_ORACLE` when testing bedrock-client; CI does this
+for the workspace tests. This checks identified Go policy, not vanilla behavior.

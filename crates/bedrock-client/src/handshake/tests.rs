@@ -2,9 +2,9 @@ use super::*;
 use crate::packs::PackEvent;
 
 /// Uses a synthetic deterministic proof key, without account or transport I/O.
-fn handshake(batch_encryption: bool) -> ClientHandshake {
+fn handshake(batch_encryption: bool) -> Engine {
     let key = Arc::new(SigningKey::from_slice(&[1; 48]).unwrap());
-    let client = ClientHandshake::new(
+    let client = Engine::new(
         Arc::clone(&key),
         HandshakeOptions {
             batch_encryption,
@@ -18,7 +18,7 @@ fn handshake(batch_encryption: bool) -> ClientHandshake {
 }
 
 /// Sends the generated settings and then signs one offline Login with that same owner.
-fn login(client: &mut ClientHandshake) -> packets::Login {
+fn login(client: &mut Engine) -> packets::Login {
     let request = client.start().unwrap();
     assert_eq!(request.client_network_version.0, PROTOCOL_VERSION);
     let event = client
@@ -30,7 +30,7 @@ fn login(client: &mut ClientHandshake) -> packets::Login {
         .unwrap();
     assert!(matches!(
         event,
-        HandshakeEvent::Compression(CompressionSettings {
+        EngineEvent::Compression(CompressionSettings {
             algorithm: CompressionAlgorithm::Deflate,
             threshold: 128
         })
@@ -73,7 +73,7 @@ fn settings_login_and_verified_exchange_use_one_key_and_one_transition() {
                 },
             ))
             .unwrap();
-        let HandshakeEvent::KeyExchange {
+        let EngineEvent::KeyExchange {
             ciphers,
             response: _,
         } = event
@@ -108,14 +108,14 @@ fn pack_offer_and_login_success_in_either_order_emit_one_cache_status() {
         };
         let mut statuses = Vec::new();
         if !offer_first {
-            let HandshakeEvent::Send(sent) = client.receive(success()).unwrap() else {
+            let EngineEvent::Send(sent) = client.receive(success()).unwrap() else {
                 panic!("cache status")
             };
             statuses.extend(sent);
         }
-        let HandshakeEvent::Packs {
+        let EngineEvent::Packs {
             cache_status,
-            mut negotiation,
+            negotiation,
         } = client
             .receive(packets::Packet::ResourcePacksInfo(Default::default()))
             .unwrap()
@@ -131,12 +131,12 @@ fn pack_offer_and_login_success_in_either_order_emit_one_cache_status() {
                     }
                 ))
                 .unwrap(),
-            HandshakeEvent::KeyExchange {
+            EngineEvent::KeyExchange {
                 ciphers: Some(_),
                 ..
             }
         ));
-        let HandshakeEvent::Send(sent) = client.receive(success()).unwrap() else {
+        let EngineEvent::Send(sent) = client.receive(success()).unwrap() else {
             panic!("late success")
         };
         statuses.extend(sent);
@@ -144,12 +144,12 @@ fn pack_offer_and_login_success_in_either_order_emit_one_cache_status() {
         assert!(
             matches!(&statuses[0], packets::Packet::ClientCacheStatus(status) if status.is_cache_supported)
         );
-        negotiation.start().unwrap();
+        let (mut negotiation, _) = negotiation.start().unwrap();
         assert!(matches!(
             negotiation
                 .receive(packets::Packet::ResourcePackStack(Default::default()))
                 .unwrap(),
-            PackEvent::Finished { .. }
+            PackEvent::Finished(_)
         ));
     }
 }
@@ -178,7 +178,7 @@ fn early_refusal_and_terminal_packets_preserve_their_meaning() {
     client.start().unwrap();
     let disconnect = packets::Packet::Disconnect(Default::default());
     assert!(
-        matches!(client.receive(disconnect.clone()).unwrap(), HandshakeEvent::Unhandled(packet) if *packet == disconnect)
+        matches!(client.receive(disconnect.clone()).unwrap(), EngineEvent::Unhandled(packet) if *packet == disconnect)
     );
     assert!(matches!(
         client.receive(packets::Packet::PlayStatus(packets::PlayStatus {
@@ -198,7 +198,7 @@ fn deferred_spawn_neither_sends_cache_status_nor_consumes_the_verified_exchange(
         status: PlayStatusType::Playerspawn,
     });
     assert!(
-        matches!(client.receive(spawn.clone()).unwrap(), HandshakeEvent::Unhandled(packet) if *packet == spawn)
+        matches!(client.receive(spawn.clone()).unwrap(), EngineEvent::Unhandled(packet) if *packet == spawn)
     );
     assert!(matches!(
         client
@@ -208,7 +208,7 @@ fn deferred_spawn_neither_sends_cache_status_nor_consumes_the_verified_exchange(
                 },
             ))
             .unwrap(),
-        HandshakeEvent::KeyExchange {
+        EngineEvent::KeyExchange {
             ciphers: Some(_),
             ..
         }
@@ -218,7 +218,7 @@ fn deferred_spawn_neither_sends_cache_status_nor_consumes_the_verified_exchange(
             status: PlayStatusType::Loginsuccess,
         })
     };
-    let HandshakeEvent::Send(sent) = client.receive(success()).unwrap() else {
+    let EngineEvent::Send(sent) = client.receive(success()).unwrap() else {
         panic!("LoginSuccess must still emit the initial capability");
     };
     assert!(matches!(
@@ -226,17 +226,17 @@ fn deferred_spawn_neither_sends_cache_status_nor_consumes_the_verified_exchange(
         [packets::Packet::ClientCacheStatus(status)] if status.is_cache_supported
     ));
     assert!(
-        matches!(client.receive(spawn.clone()).unwrap(), HandshakeEvent::Unhandled(packet) if *packet == spawn)
+        matches!(client.receive(spawn.clone()).unwrap(), EngineEvent::Unhandled(packet) if *packet == spawn)
     );
     assert!(matches!(
         client.receive(success()).unwrap(),
-        HandshakeEvent::Send(sent) if sent.is_empty()
+        EngineEvent::Send(sent) if sent.is_empty()
     ));
     assert!(matches!(
         client
             .receive(packets::Packet::ResourcePacksInfo(Default::default()))
             .unwrap(),
-        HandshakeEvent::Packs {
+        EngineEvent::Packs {
             cache_status: None,
             ..
         }
@@ -251,15 +251,13 @@ fn refusal_and_unknown_statuses_still_end_the_handshake_during_packs() {
     ] {
         let mut client = handshake(true);
         login(&mut client);
-        let HandshakeEvent::Packs {
-            mut negotiation, ..
-        } = client
+        let EngineEvent::Packs { negotiation, .. } = client
             .receive(packets::Packet::ResourcePacksInfo(Default::default()))
             .unwrap()
         else {
             panic!("actual pack owner");
         };
-        negotiation.start().unwrap();
+        let (mut negotiation, _) = negotiation.start().unwrap();
         let PackEvent::Unhandled(packet) = negotiation
             .receive(packets::Packet::PlayStatus(packets::PlayStatus { status }))
             .unwrap()
@@ -287,16 +285,16 @@ fn deferred_spawn_does_not_admit_login_before_settings_or_login_construction() {
         status: PlayStatusType::Playerspawn,
     });
     assert!(
-        matches!(client.receive(spawn.clone()).unwrap(), HandshakeEvent::Unhandled(packet) if *packet == spawn)
+        matches!(client.receive(spawn.clone()).unwrap(), EngineEvent::Unhandled(packet) if *packet == spawn)
     );
     assert!(matches!(
         client
             .receive(packets::Packet::NetworkSettings(Default::default()))
             .unwrap(),
-        HandshakeEvent::Compression(_)
+        EngineEvent::Compression(_)
     ));
     assert!(
-        matches!(client.receive(spawn.clone()).unwrap(), HandshakeEvent::Unhandled(packet) if *packet == spawn)
+        matches!(client.receive(spawn.clone()).unwrap(), EngineEvent::Unhandled(packet) if *packet == spawn)
     );
     assert!(matches!(
         client.receive(packets::Packet::PlayStatus(packets::PlayStatus {

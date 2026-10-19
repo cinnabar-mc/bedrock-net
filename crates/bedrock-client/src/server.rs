@@ -1,4 +1,4 @@
-//! Caller-driven accepting network handshake, ending before application pack preparation.
+//! Caller-driven accepting Login; owned pack/world startup continues in [`session`].
 
 use bedrock_net::{
     CompressionAlgorithm, CompressionSettings,
@@ -11,6 +11,23 @@ use std::{
     sync::Arc,
     time::{Instant, SystemTime},
 };
+
+mod lifecycle;
+
+/// Owned accepting pack delivery and selected-world startup after the actual Login handoff.
+pub mod session;
+pub use lifecycle::{
+    AcceptedLogin, ApprovedLogin, AuthorizationFailure, PendingServerKeyExchange,
+    PendingServerSettings, ServerAcknowledgment, ServerAcknowledgmentEvent, ServerApprovalEvent,
+    ServerHandshake, ServerLogin, ServerLoginEvent, ServerPacksReady, ServerSettingsEvent,
+    ServerTransitionError, VerifiedLogin,
+};
+
+/// The acknowledgment continuation and its exact outgoing/incoming cipher streams after plaintext flush.
+pub type ServerKeyExchangeHandoff<A> = (
+    ServerAcknowledgment<A>,
+    Box<(BatchEncryptor, BatchDecryptor)>,
+);
 
 /// Fixed accepting capabilities; the caller supplies the original deadline and server proof key.
 #[derive(Clone, Copy, Debug)]
@@ -62,7 +79,7 @@ pub enum ServerHandshakeError {
 
 /// Ordered caller effects. No effect grants access to a world or advertises packs.
 #[non_exhaustive]
-pub enum ServerHandshakeEvent {
+enum EngineEvent {
     /// Send/flush this packet uncompressed, then install compression and acknowledge that transition.
     NetworkSettings {
         /// Generated current-version response.
@@ -111,7 +128,7 @@ enum Phase {
 ///
 /// This owner stops before server pack advertisement/delivery and world startup.
 /// No LoginSuccess is emitted before the caller prepares its actual pack offer.
-pub struct ServerHandshake {
+struct Engine {
     key: Arc<SigningKey>,
     transport_key: Option<VerifyingKey>,
     options: ServerHandshakeOptions,
@@ -120,7 +137,7 @@ pub struct ServerHandshake {
     login: Option<AuthenticatedLogin>,
 }
 
-impl ServerHandshake {
+impl Engine {
     /// Retains one caller-generated server key and optional transport-authenticated peer key.
     ///
     /// `deadline` is absolute in the caller's monotonic clock; all later operations
@@ -129,7 +146,7 @@ impl ServerHandshake {
     ///
     /// # Errors
     /// Rejects a zero Login budget or deadline already reached.
-    pub fn new(
+    fn new(
         key: impl Into<Arc<SigningKey>>,
         transport_key: Option<VerifyingKey>,
         options: ServerHandshakeOptions,
@@ -153,12 +170,13 @@ impl ServerHandshake {
     }
 
     /// Borrows the one server key, permitting a signed transport to share its existing Arc allocation.
-    pub fn key(&self) -> &SigningKey {
+    fn key(&self) -> &SigningKey {
         &self.key
     }
 
     /// Borrows the verified joining player's original identity/nonce while authorization is pending.
-    pub fn login(&self) -> Option<&AuthenticatedLogin> {
+    #[cfg(test)]
+    fn login(&self) -> Option<&AuthenticatedLogin> {
         self.login.as_ref()
     }
 
@@ -166,13 +184,13 @@ impl ServerHandshake {
     ///
     /// # Errors
     /// Deadline, protocol, provider/signature, transport binding and sequence errors are terminal.
-    pub fn receive(
+    fn receive(
         &mut self,
         packet: packets::Packet,
         verifier: &impl LoginVerifier,
         now: Instant,
         utc: SystemTime,
-    ) -> Result<ServerHandshakeEvent, ServerHandshakeError> {
+    ) -> Result<EngineEvent, ServerHandshakeError> {
         let result = self.receive_inner(packet, verifier, now, utc);
         if result.is_err() {
             self.phase = Phase::Failed;
@@ -184,7 +202,7 @@ impl ServerHandshake {
     ///
     /// # Errors
     /// Rejects expiry, failure or an operation outside the NetworkSettings boundary.
-    pub fn compression_installed(&mut self, now: Instant) -> Result<(), ServerHandshakeError> {
+    fn compression_installed(&mut self, now: Instant) -> Result<(), ServerHandshakeError> {
         self.require(Phase::Compression, now)?;
         self.phase = Phase::Login;
         Ok(())
@@ -198,13 +216,13 @@ impl ServerHandshake {
     ///
     /// # Errors
     /// Expiry, repeated/out-of-sequence use, provider/key changes or missing salt end this handshake.
-    pub fn accept(
+    fn accept(
         &mut self,
         verifier: &impl LoginVerifier,
         salt: Option<&[u8; 16]>,
         now: Instant,
         utc: SystemTime,
-    ) -> Result<ServerHandshakeEvent, ServerHandshakeError> {
+    ) -> Result<EngineEvent, ServerHandshakeError> {
         let result = self.accept_inner(verifier, salt, now, utc);
         if result.is_err() {
             self.phase = Phase::Failed;
@@ -216,7 +234,7 @@ impl ServerHandshake {
     ///
     /// # Errors
     /// Rejects expiry or a repeated/out-of-sequence cipher transition.
-    pub fn encryption_installed(&mut self, now: Instant) -> Result<(), ServerHandshakeError> {
+    fn encryption_installed(&mut self, now: Instant) -> Result<(), ServerHandshakeError> {
         self.require(Phase::Cipher, now)?;
         self.phase = Phase::Acknowledgment;
         Ok(())
@@ -229,19 +247,36 @@ impl ServerHandshake {
     ///
     /// # Errors
     /// Rejects an incomplete/expired handshake or changed/expired provider credential.
-    pub fn finish(
+    #[cfg(test)]
+    fn finish(
         mut self,
         verifier: &impl LoginVerifier,
         now: Instant,
         utc: SystemTime,
     ) -> Result<AuthenticatedLogin, ServerHandshakeError> {
-        self.require(Phase::Packs, now)?;
-        let login = self
-            .login
-            .take()
-            .ok_or(ServerHandshakeError::InvalidState)?;
-        login.revalidate(verifier, utc)?;
-        Ok(login)
+        self.check_packs(verifier, now, utc)?;
+        self.login.take().ok_or(ServerHandshakeError::InvalidState)
+    }
+
+    /// Rechecks original provider identity without consuming the grant/credential on failure.
+    fn check_packs(
+        &mut self,
+        verifier: &impl LoginVerifier,
+        now: Instant,
+        utc: SystemTime,
+    ) -> Result<(), ServerHandshakeError> {
+        let result = (|| {
+            self.require(Phase::Packs, now)?;
+            self.login
+                .as_ref()
+                .ok_or(ServerHandshakeError::InvalidState)?
+                .revalidate(verifier, utc)?;
+            Ok(())
+        })();
+        if result.is_err() {
+            self.phase = Phase::Failed;
+        }
+        result
     }
 
     /// Performs protocol-owned transitions, preserving unhandled packet ownership.
@@ -251,7 +286,7 @@ impl ServerHandshake {
         verifier: &impl LoginVerifier,
         now: Instant,
         utc: SystemTime,
-    ) -> Result<ServerHandshakeEvent, ServerHandshakeError> {
+    ) -> Result<EngineEvent, ServerHandshakeError> {
         self.check_live(now)?;
         match packet {
             packets::Packet::RequestNetworkSettings(request) => {
@@ -263,12 +298,10 @@ impl ServerHandshake {
                     } else {
                         PlayStatusType::LoginfailedClientold
                     };
-                    return Ok(ServerHandshakeEvent::Refused(packets::PlayStatus {
-                        status,
-                    }));
+                    return Ok(EngineEvent::Refused(packets::PlayStatus { status }));
                 }
                 self.phase = Phase::Compression;
-                Ok(ServerHandshakeEvent::NetworkSettings {
+                Ok(EngineEvent::NetworkSettings {
                     packet: packets::NetworkSettings {
                         compression_threshold: wire::U16LE(self.options.compression.threshold),
                         compression_algorithm: self
@@ -300,7 +333,7 @@ impl ServerHandshake {
                 }
                 self.login = Some(login);
                 self.phase = Phase::Approval;
-                Ok(ServerHandshakeEvent::LoginVerified)
+                Ok(EngineEvent::LoginVerified)
             }
             packets::Packet::ClientToServerHandshake(_) => {
                 self.require(Phase::Acknowledgment, now)?;
@@ -309,9 +342,9 @@ impl ServerHandshake {
                     .ok_or(ServerHandshakeError::InvalidState)?
                     .revalidate(verifier, utc)?;
                 self.phase = Phase::Packs;
-                Ok(ServerHandshakeEvent::ReadyForPacks)
+                Ok(EngineEvent::ReadyForPacks)
             }
-            packet => Ok(ServerHandshakeEvent::Unhandled(Box::new(packet))),
+            packet => Ok(EngineEvent::Unhandled(Box::new(packet))),
         }
     }
 
@@ -322,7 +355,7 @@ impl ServerHandshake {
         salt: Option<&[u8; 16]>,
         now: Instant,
         utc: SystemTime,
-    ) -> Result<ServerHandshakeEvent, ServerHandshakeError> {
+    ) -> Result<EngineEvent, ServerHandshakeError> {
         self.require(Phase::Approval, now)?;
         let login = self
             .login
@@ -331,7 +364,7 @@ impl ServerHandshake {
         login.revalidate(verifier, utc)?;
         if !self.options.batch_encryption {
             self.phase = Phase::Packs;
-            return Ok(ServerHandshakeEvent::ReadyForPacks);
+            return Ok(EngineEvent::ReadyForPacks);
         }
         let salt = salt.ok_or(ServerHandshakeError::MissingSalt)?;
         let (token, ciphers) = login::begin_key_exchange(
@@ -341,7 +374,7 @@ impl ServerHandshake {
             self.options.max_login_bytes,
         )?;
         self.phase = Phase::Cipher;
-        Ok(ServerHandshakeEvent::KeyExchange {
+        Ok(EngineEvent::KeyExchange {
             packet: packets::ServerToClientHandshake {
                 handshake_web_token: token.into(),
             },

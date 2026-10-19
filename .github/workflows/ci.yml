@@ -49,16 +49,38 @@ jobs:
         with:
           go-version-file: tools/raknet-peer/go.mod
           cache-dependency-path: tools/raknet-peer/go.sum
+      - name: Check the Go helpers use one RakNet baseline
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import json, pathlib, subprocess
+          identities = set()
+          for manifest in pathlib.Path("tools").glob("*/go.mod"):
+              modules = subprocess.check_output(
+                  ["go", "list", "-mod=readonly", "-m", "-json", "all"],
+                  cwd=manifest.parent, text=True,
+              ).lstrip()
+              while modules:
+                  module, end = json.JSONDecoder().raw_decode(modules)
+                  modules = modules[end:].lstrip()
+                  if module["Path"] == "github.com/sandertv/go-raknet":
+                      source = module.get("Replace", module)
+                      identities.add((source["Path"], source["Version"]))
+          if len(identities) != 1:
+              raise SystemExit("Go helpers must select one RakNet baseline")
+          PY
       - working-directory: tools/raknet-peer
         run: go build -o ../../target/raknet-peer.exe .
       - working-directory: tools/go-oracle
-        run: go build -o ../../target/login-check.exe ./cmd/login-check
+        run: |
+          go build -o ../../target/login-check.exe ./cmd/login-check
+          go build -o ../../target/pack-delivery-check.exe ./cmd/pack-delivery-check
       - run: cargo fmt --all --check
-      - run: cargo test --locked --workspace
-      - run: cargo test --locked -p bedrock-net --all-features
+      - run: cargo test --locked --workspace --all-features
         env:
           BEDROCK_NET_RAKNET_PEER: ${{ github.workspace }}/target/raknet-peer.exe
           BEDROCK_NET_LOGIN_ORACLE: ${{ github.workspace }}/target/login-check.exe
+          BEDROCK_NET_PACK_DELIVERY_ORACLE: ${{ github.workspace }}/target/pack-delivery-check.exe
       - run: cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
   oracle:
     runs-on: ubuntu-latest

@@ -11,7 +11,14 @@ use bedrock_protocol::{PROTOCOL_VERSION, enums::PlayStatusType, packets, wire};
 use p384::ecdsa::SigningKey;
 use serde_json::value::RawValue;
 
-use crate::packs::{PackError, PackNegotiation, PackTransferLimits};
+use crate::packs::{PackError, PackOffer, PackTransferLimits};
+
+mod lifecycle;
+pub use lifecycle::{
+    ClientHandshake, ClientKeyExchange, ClientLogin, ClientLoginReady, ClientPackOffer,
+    ClientPacks, ClientSettings, LoginEvent, LoginPreparationError, OfferEvent, PacksEvent,
+    SettingsEvent,
+};
 
 /// Transport and application capabilities fixed for one handshake.
 #[derive(Clone, Copy, Debug)]
@@ -66,7 +73,7 @@ pub enum HandshakeError {
 
 /// Ordered work for the caller; this core never writes, flushes or reads a clock.
 #[non_exhaustive]
-pub enum HandshakeEvent {
+enum EngineEvent {
     /// Install this setting on the retained batch codec before sending Login.
     Compression(CompressionSettings),
     /// Send these generated responses immediately, in their existing order.
@@ -86,7 +93,7 @@ pub enum HandshakeEvent {
         /// Send once before starting the pack negotiation, when present.
         cache_status: Option<packets::ClientCacheStatus>,
         /// Bounded transfer and stack state; cache and CDN I/O remain external.
-        negotiation: PackNegotiation,
+        negotiation: PackOffer,
     },
     /// The packet is owned by the caller, including early PlayerSpawn, Disconnect and Transfer.
     Unhandled(Box<packets::Packet>),
@@ -106,7 +113,7 @@ enum Phase {
 ///
 /// Send `start()`, pass received packets to `receive`, and install the returned
 /// compression before calling one of the Login methods. They sign with this
-/// same key. After the offer, drive the returned [`PackNegotiation`]; route its
+/// same key. After the offer, drive the returned [`PackOffer`]; route its
 /// unhandled packets through this handshake so late LoginSuccess and key
 /// exchange remain on the same owner. Retain returned startup packets for the
 /// spawn owner; handle Disconnect and Transfer at the application boundary.
@@ -114,7 +121,7 @@ enum Phase {
 ///
 /// The caller owns transport I/O, endpoint/account trust, client-data schema,
 /// UTC, deadline, cancellation and bounded buffering of unread packet siblings.
-pub struct ClientHandshake {
+struct Engine {
     key: Arc<SigningKey>,
     options: HandshakeOptions,
     phase: Phase,
@@ -122,13 +129,13 @@ pub struct ClientHandshake {
     cache_sent: bool,
 }
 
-impl ClientHandshake {
+impl Engine {
     /// Retains the acquired proof key or shares its existing allocation with signed transport.
     /// No private key material is cloned and no replacement identity is generated.
     ///
     /// # Errors
     /// Rejects a zero Login/token byte budget before retaining the key.
-    pub fn new(
+    fn new(
         key: impl Into<Arc<SigningKey>>,
         options: HandshakeOptions,
     ) -> Result<Self, HandshakeError> {
@@ -145,7 +152,7 @@ impl ClientHandshake {
     }
 
     /// Borrows the same proof key for identity-aware transport admission.
-    pub fn key(&self) -> &SigningKey {
+    fn key(&self) -> &SigningKey {
         &self.key
     }
 
@@ -153,7 +160,7 @@ impl ClientHandshake {
     ///
     /// # Errors
     /// Rejects a repeated start or use after failure.
-    pub fn start(&mut self) -> Result<packets::RequestNetworkSettings, HandshakeError> {
+    fn start(&mut self) -> Result<packets::RequestNetworkSettings, HandshakeError> {
         if !matches!(self.phase, Phase::Initial) {
             return Err(HandshakeError::InvalidState);
         }
@@ -168,7 +175,7 @@ impl ClientHandshake {
     /// # Errors
     /// Rejects an out-of-sequence call or invalid/oversized caller metadata. A
     /// signing error leaves Login ready; no response or cipher was consumed.
-    pub fn login_offline(
+    fn login_offline(
         &mut self,
         identity: &OfflineIdentity<'_>,
         client_data: &RawValue,
@@ -193,7 +200,7 @@ impl ClientHandshake {
     ///
     /// # Errors
     /// Rejects an out-of-sequence call or invalid/oversized caller metadata.
-    pub fn login_authenticated(
+    fn login_authenticated(
         &mut self,
         multiplayer_token: &str,
         client_data: &RawValue,
@@ -214,7 +221,7 @@ impl ClientHandshake {
     /// A malformed exchange, repeated transition, refused Login or invalid pack
     /// offer is terminal. Keep all packets from the current decoded batch on
     /// the caller's FIFO, even when this method returns a codec transition.
-    pub fn receive(&mut self, packet: packets::Packet) -> Result<HandshakeEvent, HandshakeError> {
+    fn receive(&mut self, packet: packets::Packet) -> Result<EngineEvent, HandshakeError> {
         let result = self.receive_inner(packet);
         if result.is_err() {
             self.phase = Phase::Failed;
@@ -223,7 +230,7 @@ impl ClientHandshake {
     }
 
     /// Handles protocol-owned packets while returning unrelated packets unchanged.
-    fn receive_inner(&mut self, packet: packets::Packet) -> Result<HandshakeEvent, HandshakeError> {
+    fn receive_inner(&mut self, packet: packets::Packet) -> Result<EngineEvent, HandshakeError> {
         if matches!(self.phase, Phase::Initial | Phase::Failed) {
             return Err(HandshakeError::InvalidState);
         }
@@ -241,7 +248,7 @@ impl ClientHandshake {
                     CompressionAlgorithm::Deflate
                 });
                 self.phase = Phase::LoginReady;
-                Ok(HandshakeEvent::Compression(CompressionSettings {
+                Ok(EngineEvent::Compression(CompressionSettings {
                     algorithm,
                     threshold: settings.compression_threshold.0,
                 }))
@@ -258,20 +265,20 @@ impl ClientHandshake {
                 let ciphers =
                     login::finish_key_exchange(&self.key, token, self.options.max_login_bytes)?;
                 self.key_exchanged = true;
-                Ok(HandshakeEvent::KeyExchange {
+                Ok(EngineEvent::KeyExchange {
                     ciphers: self.options.batch_encryption.then(|| Box::new(ciphers)),
                     response: packets::ClientToServerHandshake {},
                 })
             }
             packets::Packet::PlayStatus(status) if status.status == PlayStatusType::Playerspawn => {
-                Ok(HandshakeEvent::Unhandled(Box::new(status.into())))
+                Ok(EngineEvent::Unhandled(Box::new(status.into())))
             }
             packets::Packet::PlayStatus(status) => {
                 if status.status != PlayStatusType::Loginsuccess {
                     return Err(HandshakeError::LoginRefused(status.status));
                 }
                 self.require_login_sent()?;
-                Ok(HandshakeEvent::Send(
+                Ok(EngineEvent::Send(
                     self.cache_status()
                         .map(packets::Packet::ClientCacheStatus)
                         .into_iter()
@@ -279,15 +286,15 @@ impl ClientHandshake {
                 ))
             }
             packets::Packet::ResourcePacksInfo(offer) if matches!(self.phase, Phase::Login) => {
-                let negotiation = PackNegotiation::new(offer, self.options.packs)?;
+                let negotiation = PackOffer::new(offer, self.options.packs)?;
                 let cache_status = self.cache_status();
                 self.phase = Phase::Packs;
-                Ok(HandshakeEvent::Packs {
+                Ok(EngineEvent::Packs {
                     cache_status,
                     negotiation,
                 })
             }
-            other => Ok(HandshakeEvent::Unhandled(Box::new(other))),
+            other => Ok(EngineEvent::Unhandled(Box::new(other))),
         }
     }
 

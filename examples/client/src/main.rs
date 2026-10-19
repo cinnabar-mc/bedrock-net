@@ -10,15 +10,17 @@ use std::time::{Duration, SystemTime};
 
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
-use bedrock_net::login::{OfflineIdentity, encode_offline_request, finish_key_exchange};
-use bedrock_net::{BatchLimits, CompressionAlgorithm, CompressionSettings};
-use bedrock_protocol::enums::PlayStatusType;
-use bedrock_protocol::packets::{
-    ClientCacheStatus, ClientToServerHandshake, Disconnect, Login, NetworkSettings,
-    PacketViolationWarning, PlayStatus, RequestNetworkSettings, ResourcePacksInfo,
-    ServerToClientHandshake,
+use bedrock_client::handshake::{
+    ClientHandshake, ClientKeyExchange, ClientLogin, ClientLoginReady, ClientPackOffer,
+    ClientSettings, HandshakeOptions, LoginEvent, OfferEvent, SettingsEvent,
 };
-use bedrock_protocol::wire::{Decode, I32BE, PacketHeader, Reader};
+use bedrock_net::login::OfflineIdentity;
+use bedrock_net::{BatchLimits, BatchPhase, CompressionSettings, Negotiated};
+use bedrock_protocol::{
+    enums::PlayStatusType,
+    packets,
+    wire::{PacketHeader, Peer, Reader},
+};
 use rand::TryRng;
 use serde_json::value::RawValue;
 
@@ -60,58 +62,41 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
 /// Negotiates settings and, when requested, stops after Login acceptance and the pack offer.
 async fn probe(kind: &str, address: SocketAddr, login: bool) -> Result<(), Box<dyn Error>> {
-    let mut session = Session::new(Transport::connect(kind, address).await?);
-    session
-        .send(
-            RequestNetworkSettings::ID,
-            &RequestNetworkSettings {
-                client_network_version: I32BE(bedrock_protocol::PROTOCOL_VERSION),
-            },
-        )
-        .await?;
-    let settings = receive_settings(&mut session).await?;
-    let algorithm = match CompressionAlgorithm::try_from(settings.compression_algorithm.to_raw()) {
-        Ok(algorithm) => algorithm,
-        Err(error) => {
-            eprintln!("{error}; using the Go baseline's DEFLATE fallback");
-            CompressionAlgorithm::Deflate
-        }
-    };
-    session.enable_compression(CompressionSettings {
-        algorithm,
-        threshold: settings.compression_threshold.0,
-    });
+    let transport = Transport::connect(kind, address).await?;
+    let configured = ClientHandshake::new(
+        transport.key(),
+        HandshakeOptions {
+            batch_encryption: transport.batch_encryption(),
+            max_login_bytes: BatchLimits::default().max_decoded_bytes,
+            ..Default::default()
+        },
+    )?;
+    let mut session = Session::new(transport);
+    let (settings, request) = configured.start()?;
+    session.send(request.into()).await?;
+    let (ready, compression) = receive_settings(&mut session, settings).await?;
+    let mut session = session.negotiate(compression);
     println!(
-        "requested_protocol={} compression={algorithm:?} threshold={}",
+        "requested_protocol={} compression={:?} threshold={}",
         bedrock_protocol::PROTOCOL_VERSION,
-        settings.compression_threshold.0
+        compression.algorithm,
+        compression.threshold
     );
     if login {
-        let client_data = client_data(kind, address, session.transport.nonce())?;
-        let identity = OfflineIdentity {
-            display_name: PROBE_NAME,
-            identity: PROBE_UUID,
-            xuid: "",
-            playfab_id: "",
-            playfab_title_id: "",
-        };
-        let request = encode_offline_request(
-            session.transport.key(),
-            &identity,
-            &client_data,
+        let metadata = client_data(kind, address, session.transport.nonce())?;
+        let (pending, request) = ready.login_offline(
+            &OfflineIdentity {
+                display_name: PROBE_NAME,
+                identity: PROBE_UUID,
+                xuid: "",
+                playfab_id: "",
+                playfab_title_id: "",
+            },
+            &metadata,
             SystemTime::now(),
-            BatchLimits::default().max_decoded_bytes,
         )?;
-        session
-            .send(
-                Login::ID,
-                &Login {
-                    client_network_version: I32BE(bedrock_protocol::PROTOCOL_VERSION),
-                    connection_request: request,
-                },
-            )
-            .await?;
-        receive_login(&mut session).await?;
+        session.send(request.into()).await?;
+        receive_login(&mut session, pending).await?;
     }
     session.transport.close().await?;
     Ok(())
@@ -163,113 +148,187 @@ fn client_data(
     Ok(RawValue::from_string(serde_json::to_string(&document)?)?)
 }
 
-/// Reads settings while retaining later packets from the same batch for the next phase.
-async fn receive_settings(session: &mut Session) -> Result<NetworkSettings, Box<dyn Error>> {
+/// Retains the actual settings owner and unread FIFO until its typed Login handoff.
+async fn receive_settings(
+    session: &mut Session,
+    mut settings: ClientSettings,
+) -> Result<(ClientLoginReady, CompressionSettings), Box<dyn Error>> {
     loop {
-        let packet = session.next_packet().await?;
-        let mut reader = Reader::from_shared(&packet);
-        let header = PacketHeader::from_raw(reader.read_var_u32()?);
-        if header.id == NetworkSettings::ID {
-            let settings = NetworkSettings::decode(&mut reader)?;
-            log_unused(&reader);
-            return Ok(settings);
+        match settings.receive(next_negotiation_packet(session).await?)? {
+            SettingsEvent::Ready { login, compression } => return Ok((login, compression)),
+            SettingsEvent::Pending {
+                settings: next,
+                packet,
+            } => {
+                eprintln!(
+                    "unused packet before network settings: {}",
+                    packet.id() as u32
+                );
+                settings = next;
+            }
         }
-        eprintln!("unused packet before network settings: {}", header.id);
     }
 }
 
-/// Handles optional encryption and proves reception of compressed post-Login data.
-async fn receive_login(session: &mut Session) -> Result<(), Box<dyn Error>> {
+/// Observes Login acceptance and the real pack offer without starting a download.
+async fn receive_login(
+    session: &mut Session<Negotiated>,
+    mut login: ClientLogin,
+) -> Result<(), Box<dyn Error>> {
     let mut accepted = false;
-    let mut offered = false;
     let mut encrypted = false;
-    let mut handshake_complete = false;
     loop {
-        let packet = session.next_packet().await?;
-        let mut reader = Reader::from_shared(&packet);
+        let packet = next_negotiation_packet(session).await?;
+        accepted |= is_login_success(&packet);
+        match login.receive(packet)? {
+            LoginEvent::Send {
+                login: next,
+                packets,
+            } => {
+                send_responses(session, packets).await?;
+                login = next;
+            }
+            LoginEvent::KeyExchange(exchange) => {
+                let (next, installed) = apply_exchange(session, exchange).await?;
+                encrypted |= installed;
+                login = next;
+            }
+            LoginEvent::Packs {
+                cache_status,
+                packs,
+            } => {
+                if let Some(status) = cache_status {
+                    session.send(status.into()).await?;
+                }
+                println!("admitted_pack_offer={}", packs.offers().count());
+                return finish_offer(session, packs, accepted, encrypted).await;
+            }
+            LoginEvent::Unhandled {
+                login: next,
+                packet,
+            } => {
+                eprintln!("unused packet during Login: {}", packet.id() as u32);
+                login = next;
+            }
+        }
+    }
+}
+
+/// Preserves the original late control owner when the offer precedes LoginSuccess.
+async fn finish_offer(
+    session: &mut Session<Negotiated>,
+    mut offer: ClientPackOffer,
+    mut accepted: bool,
+    mut encrypted: bool,
+) -> Result<(), Box<dyn Error>> {
+    while !accepted {
+        let packet = next_negotiation_packet(session).await?;
+        accepted |= is_login_success(&packet);
+        match offer.receive_control(packet)? {
+            OfferEvent::Send {
+                offer: next,
+                packets,
+            } => {
+                send_responses(session, packets).await?;
+                offer = next;
+            }
+            OfferEvent::KeyExchange(exchange) => {
+                let (next, installed) = apply_exchange(session, exchange).await?;
+                encrypted |= installed;
+                offer = next;
+            }
+            OfferEvent::Unhandled {
+                offer: next,
+                packet,
+            } => {
+                eprintln!("unused packet after offer: {}", packet.id() as u32);
+                offer = next;
+            }
+        }
+    }
+    println!("offline_login=accepted encryption={encrypted}");
+    Ok(())
+}
+
+/// Applies the exact verified streams and acknowledgment before returning the same continuation.
+async fn apply_exchange<C>(
+    session: &mut Session<Negotiated>,
+    exchange: ClientKeyExchange<C>,
+) -> Result<(C, bool), Box<dyn Error>> {
+    let (continuation, ciphers, response) = exchange.into_parts();
+    let encrypted = if let Some(ciphers) = ciphers {
+        session.enable_encryption(*ciphers)?;
+        true
+    } else {
+        false
+    };
+    session.send(response.into()).await?;
+    Ok((continuation, encrypted))
+}
+
+/// Sends original generated effects in order, without another batching or cipher owner.
+async fn send_responses(
+    session: &mut Session<Negotiated>,
+    packets: Vec<packets::Packet>,
+) -> Result<(), Box<dyn Error>> {
+    for packet in packets {
+        session.send(packet).await?;
+    }
+    Ok(())
+}
+
+/// Logs only a numeric status, leaving refusal policy with the actual client owner.
+fn is_login_success(packet: &packets::Packet) -> bool {
+    if let packets::Packet::PlayStatus(status) = packet {
+        println!("login_status={}", status.status.to_raw());
+        status.status == PlayStatusType::Loginsuccess
+    } else {
+        false
+    }
+}
+
+/// Decodes only negotiation input while bounded framing/FIFO remain in the existing session.
+/// Unknown or unused well-formed entries are counted locally without dumping their bodies.
+async fn next_negotiation_packet<S: BatchPhase>(
+    session: &mut Session<S>,
+) -> Result<packets::Packet, Box<dyn Error>> {
+    loop {
+        let bytes = session.next_packet().await?;
+        let mut reader = Reader::from_shared(&bytes);
         let header = PacketHeader::from_raw(reader.read_var_u32()?);
-        match header.id {
-            ServerToClientHandshake::ID => {
-                let handshake = ServerToClientHandshake::decode(&mut reader)?;
-                if handshake_complete {
-                    eprintln!("ignored duplicate server handshake");
-                    continue;
-                }
-                let ciphers = finish_key_exchange(
-                    session.transport.key(),
-                    handshake.handshake_web_token.to_str()?,
-                    BatchLimits::default().max_decoded_bytes,
-                )?;
-                handshake_complete = true;
-                if session.transport.batch_encryption() {
-                    session.enable_encryption(ciphers)?;
-                    encrypted = true;
-                }
-                session
-                    .send(ClientToServerHandshake::ID, &ClientToServerHandshake {})
-                    .await?;
-            }
-            PlayStatus::ID => {
-                let status = PlayStatus::decode(&mut reader)?.status;
-                println!("login_status={}", status.to_raw());
-                match status {
-                    PlayStatusType::Loginsuccess if !accepted => {
-                        accepted = true;
-                        session
-                            .send(
-                                ClientCacheStatus::ID,
-                                &ClientCacheStatus {
-                                    is_cache_supported: false,
-                                },
-                            )
-                            .await?;
-                    }
-                    PlayStatusType::Loginsuccess => {}
-                    PlayStatusType::Playerspawn => {}
-                    _ => {
-                        return Err(io::Error::other(format!(
-                            "Login failed with status {}",
-                            status.to_raw()
-                        ))
-                        .into());
-                    }
-                }
-            }
-            ResourcePacksInfo::ID => {
-                let packs = ResourcePacksInfo::decode(&mut reader)?;
-                println!(
-                    "resource_pack_offer={} required={}",
-                    packs.resource_packs.len(),
-                    packs.resource_pack_required
-                );
-                offered = true;
-            }
-            Disconnect::ID => {
-                let disconnect = Disconnect::decode(&mut reader)?;
+        let Some(id) = packets::PacketId::from_raw(header.id) else {
+            eprintln!("unused unknown packet: {}", header.id);
+            continue;
+        };
+        if !matches!(
+            id,
+            packets::PacketId::NetworkSettings
+                | packets::PacketId::PlayStatus
+                | packets::PacketId::ServerToClientHandshake
+                | packets::PacketId::ResourcePacksInfo
+                | packets::PacketId::Disconnect
+                | packets::PacketId::PacketViolationWarning
+        ) {
+            eprintln!("unused packet during negotiation: {}", header.id);
+            continue;
+        }
+        let packet = packets::Packet::decode_from(header.id, Peer::Server, &mut reader)?;
+        log_unused(&reader);
+        match packet {
+            packets::Packet::Disconnect(disconnect) => {
                 return Err(io::Error::other(format!(
-                    "server disconnected during Login, reason {}",
+                    "server disconnected during negotiation, reason {}",
                     disconnect.reason.to_raw()
                 ))
                 .into());
             }
-            PacketViolationWarning::ID => {
-                let warning = PacketViolationWarning::decode(&mut reader)?;
-                eprintln!(
-                    "violation packet={} severity={} type={}",
-                    warning.violation_packet_id.0,
-                    warning.violation_severity.to_raw(),
-                    warning.violation_type.to_raw()
-                );
-            }
-            _ => {
-                eprintln!("unused packet during Login: {}", header.id);
-                continue;
-            }
-        }
-        log_unused(&reader);
-        if accepted && offered {
-            println!("offline_login=accepted encryption={encrypted}");
-            return Ok(());
+            packets::Packet::PacketViolationWarning(warning) => eprintln!(
+                "violation packet={} severity={} type={}",
+                warning.violation_packet_id.0,
+                warning.violation_severity.to_raw(),
+                warning.violation_type.to_raw()
+            ),
+            packet => return Ok(packet),
         }
     }
 }

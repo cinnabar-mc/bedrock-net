@@ -37,3 +37,7 @@ line-terminated token JSON, token-only offline requests, server key exchange and
 authenticated player identity projection, including the XUID-derived UUID.
 P-384 signatures, public-key parsing and ECDH use RustCrypto p384. The synthetic
 Login oracle shares tools/go-oracle's existing Gophertunnel pin.
+
+The original accepting pack/startup owner follows that same MIT Go reference
+for delivery normalization, sequential chunk flushes and startup ordering. Its
+conformance helper calls the actual pinned Go policy; no reference source is vendored.

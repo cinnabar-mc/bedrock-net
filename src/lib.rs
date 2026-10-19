@@ -11,6 +11,8 @@ pub mod messaging;
 #[cfg(feature = "raknet")]
 pub mod raknet;
 
-pub use batch::{BatchCodec, BatchHeader, BatchLimits, DecodeOutcome};
+pub use batch::{
+    BatchCodec, BatchHeader, BatchLimits, BatchPhase, DecodeOutcome, Negotiated, Plain,
+};
 pub use compression::{CompressionAlgorithm, CompressionSettings, UnknownCompressionAlgorithm};
 pub use error::{BatchError, DropReason};

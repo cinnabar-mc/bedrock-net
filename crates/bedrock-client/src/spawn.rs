@@ -36,13 +36,42 @@ pub struct StartupData {
     pub item_registry: packets::ItemRegistry,
 }
 
-/// Server prerequisites are satisfied; presentation remains caller-owned.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+/// Owned completion of the server prerequisites; presentation remains caller-owned.
+///
+/// Only the actual startup observer can create this owner. It cannot be cloned,
+/// reset or initialized again after `finish_loading` consumes it.
+#[must_use = "retain readiness until presentation completes or the connection is retired"]
+#[derive(Debug)]
 pub struct SpawnReady {
-    /// Runtime identifier to acknowledge after presentation is ready.
-    pub runtime_id: u64,
-    /// Whether terrain input arrived while startup prerequisites were pending.
-    pub terrain_received: bool,
+    runtime_id: u64,
+    terrain_received: bool,
+}
+
+impl SpawnReady {
+    /// Borrows the original runtime identity without granting another initialization.
+    pub fn runtime_id(&self) -> u64 {
+        self.runtime_id
+    }
+
+    /// Whether terrain input arrived while the network prerequisites were pending.
+    pub fn terrain_received(&self) -> bool {
+        self.terrain_received
+    }
+
+    /// Consumes the single initialization after the caller's presentation is ready.
+    /// Loading-screen notification policy remains with the caller.
+    ///
+    /// ```compile_fail
+    /// fn initialize_twice(ready: bedrock_client::spawn::SpawnReady) {
+    ///     let _first = ready.finish_loading();
+    ///     let _second = ready.finish_loading();
+    /// }
+    /// ```
+    pub fn finish_loading(self) -> packets::SetLocalPlayerAsInitialized {
+        packets::SetLocalPlayerAsInitialized {
+            player_id: bedrock_protocol::types::ActorRuntimeID(self.runtime_id),
+        }
+    }
 }
 
 /// Effects of one input, delivered together so no sibling action is lost.
@@ -63,8 +92,7 @@ pub struct SpawnUpdate {
 
 enum Phase {
     Active,
-    Ready,
-    Initialized,
+    Complete,
     Failed,
 }
 
@@ -73,7 +101,15 @@ enum Phase {
 /// Call `receive` until `ready` is returned. Retain `deferred` packets separately
 /// in wire order under the caller's byte bound; this owner never buffers play
 /// traffic. The caller may prepare packs/world data on `startup` while continuing
-/// input. Only call `finish_loading` when presentation is actually ready.
+/// input. Retain the returned [`SpawnReady`] until presentation is actually ready.
+/// This configuration-only entry asserts no Login or pack authority; external
+/// handoff adapters still have to supply the real startup prerequisites.
+///
+/// ```compile_fail
+/// fn initialize_before_ready(active: bedrock_client::spawn::SpawnNegotiation) {
+///     let _packet = active.finish_loading();
+/// }
+/// ```
 pub struct SpawnNegotiation {
     phase: Phase,
     radius_request: Option<packets::RequestChunkRadius>,
@@ -151,25 +187,6 @@ impl SpawnNegotiation {
         Ok(())
     }
 
-    /// Creates the single initialization acknowledgment after presentation completes.
-    ///
-    /// The caller owns any loading-screen end notification and sends it before
-    /// this response when its application policy requires it.
-    ///
-    /// # Errors
-    /// Rejects premature, repeated or failed initialization.
-    pub fn finish_loading(&mut self) -> Result<packets::SetLocalPlayerAsInitialized, SpawnError> {
-        if !matches!(self.phase, Phase::Ready) {
-            return Err(SpawnError::InvalidState);
-        }
-        self.phase = Phase::Initialized;
-        Ok(packets::SetLocalPlayerAsInitialized {
-            player_id: bedrock_protocol::types::ActorRuntimeID(
-                self.runtime_id.expect("ready requires StartGame"),
-            ),
-        })
-    }
-
     /// Retains definitions once and moves unrelated traffic straight back to the caller.
     fn receive_inner(&mut self, packet: packets::Packet) -> Result<SpawnUpdate, SpawnError> {
         if !matches!(self.phase, Phase::Active) {
@@ -220,7 +237,7 @@ impl SpawnNegotiation {
             self.startup_delivered = true;
         }
         if self.startup_delivered && self.radius_received && self.player_spawn_received {
-            self.phase = Phase::Ready;
+            self.phase = Phase::Complete;
             update.ready = Some(SpawnReady {
                 runtime_id: self.runtime_id.expect("startup requires StartGame"),
                 terrain_received: self.terrain_received,

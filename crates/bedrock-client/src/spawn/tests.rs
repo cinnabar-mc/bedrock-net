@@ -70,28 +70,16 @@ fn first_startup_definitions_prepare_early_and_radius_is_requested_once() {
             .request_radius
             .is_none()
     );
-    assert!(matches!(
-        client.finish_loading(),
-        Err(SpawnError::InvalidState)
-    ));
     assert!(client.receive(player_spawn()).unwrap().ready.is_none());
     let update = client.receive(radius(8)).unwrap();
-    assert_eq!(
-        update.ready.unwrap(),
-        SpawnReady {
-            runtime_id: RUNTIME_ID,
-            terrain_received: false
-        }
-    );
+    let ready = update.ready.unwrap();
+    assert_eq!(ready.runtime_id(), RUNTIME_ID);
+    assert!(!ready.terrain_received());
     assert!(matches!(
         *update.deferred.unwrap(),
         packets::Packet::ChunkRadiusUpdated(_)
     ));
-    assert_eq!(client.finish_loading().unwrap().player_id.0, RUNTIME_ID);
-    assert!(matches!(
-        client.finish_loading(),
-        Err(SpawnError::InvalidState)
-    ));
+    assert_eq!(ready.finish_loading().player_id.0, RUNTIME_ID);
 }
 
 #[test]
@@ -121,7 +109,7 @@ fn deferred_input_keeps_fifo_order_and_terrain_fact_until_ready() {
     client.receive(player_spawn()).unwrap();
     let update = client.receive(registry("first")).unwrap();
     assert!(update.startup.is_some());
-    assert!(update.ready.unwrap().terrain_received);
+    assert!(update.ready.unwrap().terrain_received());
 }
 
 #[test]
@@ -131,10 +119,6 @@ fn malformed_prerequisites_fail_before_initialization() {
     assert!(
         matches!(client.receive(start(RUNTIME_ID + 1)), Err(SpawnError::ConflictingRuntimeId { first: RUNTIME_ID, received }) if received == RUNTIME_ID + 1)
     );
-    assert!(matches!(
-        client.finish_loading(),
-        Err(SpawnError::InvalidState)
-    ));
     let mut client = negotiation();
     assert!(matches!(
         client.receive(radius(0)),
@@ -168,6 +152,6 @@ fn startup_returns_non_spawn_play_status_without_claiming_readiness() {
             "startup consumed a non-spawn status instead of preserving it for the caller"
         );
     }
-    assert!(client.receive(player_spawn()).unwrap().ready.is_some());
-    assert_eq!(client.finish_loading().unwrap().player_id.0, RUNTIME_ID);
+    let ready = client.receive(player_spawn()).unwrap().ready.unwrap();
+    assert_eq!(ready.finish_loading().player_id.0, RUNTIME_ID);
 }
