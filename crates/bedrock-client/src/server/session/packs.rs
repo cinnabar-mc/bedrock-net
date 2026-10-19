@@ -169,7 +169,6 @@ impl Delivery {
             || options.chunk_size as usize > options.max_metadata_bytes
             || snapshot.offer.resource_packs.len() != snapshot.contents.len()
             || snapshot.contents.len() > options.limits.max_packs
-            || snapshot.stack.texture_pack_list.len() > options.limits.max_packs
         {
             return Err(invalid(
                 "invalid accepting pack snapshot or delivery bounds",
@@ -251,6 +250,7 @@ impl Delivery {
             )?;
             archives.push(archive);
         }
+        // Download count is bounded by the original offers; the stack may also select built-ins.
         let mut selected_ids = BTreeSet::new();
         for pack in &snapshot.stack.texture_pack_list {
             let id = uuid::Uuid::parse_str(
