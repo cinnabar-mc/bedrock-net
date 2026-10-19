@@ -16,15 +16,17 @@ use zeroize::Zeroizing;
 pub(super) struct Outgoing {
     pub(super) request: SignalRequest,
     message: Uuid,
+    peer: Uuid,
     wire: Zeroizing<String>,
 }
 
 impl Outgoing {
     /// Captures one existing bounded request without replacing its deadline or retrying written bytes.
-    pub(super) fn new(request: SignalRequest) -> Self {
+    pub(super) fn new(request: SignalRequest, peer: Uuid) -> Self {
         let wire = Zeroizing::new(request.signal().to_string());
         Self {
             request,
+            peer,
             wire,
             message: Uuid::new_v4(),
         }
@@ -42,7 +44,6 @@ pub(super) enum SocketStep {
 /// Rebuilding the SDK drive wait preserves its owned partial write and incoming buffers.
 pub(super) async fn socket_step(
     socket: &mut MessagingSocket,
-    peer: Uuid,
     receipt: Option<(&ReceivedSignal, Uuid, Instant)>,
     mut outgoing: Option<&mut Outgoing>,
 ) -> Result<SocketStep, Error> {
@@ -54,7 +55,7 @@ pub(super) async fn socket_step(
                 return Poll::Ready(Ok(SocketStep::OutgoingCancelled));
             }
         }
-        match admit(socket, peer, receipt, outgoing.as_deref_mut()) {
+        match admit(socket, receipt, outgoing.as_deref_mut()) {
             Ok(Some(step)) => return Poll::Ready(Ok(step)),
             Err(error) => return Poll::Ready(Err(error)),
             Ok(None) => {}
@@ -68,7 +69,7 @@ pub(super) async fn socket_step(
             return Poll::Ready(Ok(SocketStep::Event(event)));
         }
         // A sink flush can free admission without producing any application event.
-        match admit(socket, peer, receipt, outgoing.as_deref_mut()) {
+        match admit(socket, receipt, outgoing.as_deref_mut()) {
             Ok(Some(step)) => Poll::Ready(Ok(step)),
             Err(error) => Poll::Ready(Err(error)),
             Ok(None) => Poll::Pending,
@@ -80,7 +81,6 @@ pub(super) async fn socket_step(
 /// Keeps original IDs/deadlines across local capacity retries; written requests leave this owner once.
 fn admit(
     socket: &mut MessagingSocket,
-    peer: Uuid,
     receipt: Option<(&ReceivedSignal, Uuid, Instant)>,
     outgoing: Option<&mut Outgoing>,
 ) -> Result<Option<SocketStep>, Error> {
@@ -99,7 +99,7 @@ fn admit(
             return Ok(Some(SocketStep::OutgoingCancelled));
         }
         match socket.send_signal(
-            peer,
+            outgoing.peer,
             outgoing.message,
             &outgoing.wire,
             outgoing.request.requires_peer_receipt(),

@@ -295,6 +295,29 @@ prefix and terminal while removing local sender/maintenance capability.
 senders observe shared closure at runtime. No new SDK socket, account proof or
 application backlog is created by closing.
 
+For accepting transports, move the upgraded socket and its exact original local
+network ID into `messaging::server::PreparedMessagingServer`. Its consuming `bind`
+takes the existing `ConnectionConfig`, `CallerServerSignalingConfig` and original
+setup deadline. Supply an answer signer and explicit offer trust. The returned
+`MessagingServer` owns the actual bounded NetherNet listener and the same service
+queue/receipt engine used by the connecting edge. Poll `accept` to receive an
+established `nethernet_tokio::AcceptedSession`; poll `maintain` beside peer I/O
+when not accepting another session. Transport establishment supplies no Minecraft
+Login, directory membership or world authorization.
+
+The accepting edge uses caller-supplied `ServerIceConfig`; it does not acquire or
+renew TURN credentials. Each new offer checks their original absolute expiry.
+`set_server_ice` changes the configuration for later offers without changing an
+existing peer's allocation. The application owns any renewal and explicit updates
+of those live sessions. Configure signed assertions and Login admission according
+to the application's actual service/provider policy.
+
+Consuming `MessagingServer::begin_close` synchronously retires the service routes.
+Its `ClosingMessagingServer` retains the original listener join; call `finish_close`
+and then consume `try_finish`. Previously returned sessions retain their original
+receive queues with their callers. Dropping a borrowed close wait preserves the
+listener join, while dropping the whole owner explicitly abandons that wait.
+
 ## Runtime choice
 
 A custom executor or Bevy application can feed generated packets and caller time
