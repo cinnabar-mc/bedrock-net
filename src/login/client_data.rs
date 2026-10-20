@@ -135,9 +135,7 @@ impl RawClientData {
     /// # Errors
     /// Returns a redacted error when the present field does not decode as the requested type.
     pub fn read<T: serde::de::DeserializeOwned>(&self, name: &str) -> io::Result<Option<T>> {
-        self.scalar(name)
-            .map(|value| serde_json::from_str(value.get()).map_err(|_| invalid()))
-            .transpose()
+        self.scalar(name).map(json::decode).transpose()
     }
 
     /// Projects a signed integer token without losing Go's accepted negative-zero spelling.
@@ -188,8 +186,8 @@ impl<'de> Deserialize<'de> for Entries {
             }
             fn visit_map<M: MapAccess<'de>>(self, mut map: M) -> Result<Entries, M::Error> {
                 let mut entries = Vec::new();
-                while let Some(entry) = map.next_entry()? {
-                    entries.push(entry);
+                while let Some((name, value)) = map.next_entry::<json::GoString, Box<RawValue>>()? {
+                    entries.push((name.0, value));
                 }
                 Ok(Entries(entries))
             }

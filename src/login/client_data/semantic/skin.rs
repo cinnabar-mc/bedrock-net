@@ -122,7 +122,7 @@ impl Animation {
             };
             match field.name {
                 "Image" => {
-                    self.image.data = serde_json::from_str(value.get()).map_err(|_| invalid())?;
+                    self.image.data = json::decode(&value)?;
                 }
                 "ImageHeight" => self.image.height = types::integer(&value)?,
                 "ImageWidth" => self.image.width = types::integer(&value)?,

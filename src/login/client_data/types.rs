@@ -2,10 +2,11 @@
 //! The finite generated Go JSON type gate; semantic validation and raw normalization stay separate.
 
 use super::{
-    Entries, invalid, same_field,
+    Entries, invalid,
+    json::decode,
+    same_field,
     schema_generated::{Kind, Record},
 };
-use serde::Deserialize;
 use serde_json::value::RawValue;
 use std::io;
 
@@ -78,11 +79,6 @@ fn value(kind: Kind, raw: &RawValue) -> io::Result<()> {
             Ok(())
         }
     }
-}
-
-/// Uses the existing JSON decoder for modeled values while keeping opaque values unconverted.
-fn decode<'a, T: Deserialize<'a>>(raw: &'a RawValue) -> io::Result<T> {
-    serde_json::from_str(raw.get()).map_err(|_| invalid())
 }
 
 /// Parses only an already JSON-framed integer token; exponent and fractional spellings fail.

@@ -1,8 +1,63 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 //! Bounded raw metadata and decoded-skin JSON without constructing a recursive Value tree.
 
-use super::json_generated::MAX_NESTING_DEPTH;
-use serde_json::value::RawValue;
+use super::{invalid, json_generated::MAX_NESTING_DEPTH};
+use serde::{Deserialize, Deserializer, de::Visitor};
+use serde_json::{Value, value::RawValue};
+use std::{fmt, io};
+
+/// Projects consumed strings through Go's surrogate replacement without rewriting retained values.
+pub(super) fn decode<'de, T: Deserialize<'de>>(raw: &'de RawValue) -> io::Result<T> {
+    if raw.get().starts_with('"') {
+        let GoString(string) = serde_json::from_str(raw.get()).map_err(|_| invalid())?;
+        T::deserialize(Value::String(string)).map_err(|_| invalid())
+    } else {
+        serde_json::from_str(raw.get()).map_err(|_| invalid())
+    }
+}
+
+/// A consumed JSON string or object key; serde still owns framing, escapes and surrogate pairing.
+pub(super) struct GoString(pub(super) String);
+
+impl<'de> Deserialize<'de> for GoString {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct StringVisitor;
+        impl<'de> Visitor<'de> for StringVisitor {
+            type Value = GoString;
+
+            fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+                formatter.write_str("a JSON string")
+            }
+
+            fn visit_bytes<E: serde::de::Error>(self, mut bytes: &[u8]) -> Result<GoString, E> {
+                let mut string = String::with_capacity(bytes.len());
+                loop {
+                    match std::str::from_utf8(bytes) {
+                        Ok(text) => {
+                            string.push_str(text);
+                            return Ok(GoString(string));
+                        }
+                        Err(error) => {
+                            let (valid, rest) = bytes.split_at(error.valid_up_to());
+                            string.push_str(
+                                std::str::from_utf8(valid)
+                                    .map_err(|_| E::custom("invalid JSON string encoding"))?,
+                            );
+                            // serde's byte decoder emits lone UTF16 surrogates as WTF8 triples.
+                            // Go replaces each surrogate, rather than each of its three bytes.
+                            if !matches!(rest, [0xed, 0xa0..=0xbf, 0x80..=0xbf, ..]) {
+                                return Err(E::custom("invalid JSON string encoding"));
+                            }
+                            string.push(char::REPLACEMENT_CHARACTER);
+                            bytes = &rest[3..];
+                        }
+                    }
+                }
+            }
+        }
+        deserializer.deserialize_bytes(StringVisitor)
+    }
+}
 
 /// Keeps serde's iterative raw parser as the sole JSON grammar owner after bounding its scratch.
 pub(super) fn object_or_null(decoded: &[u8]) -> bool {
