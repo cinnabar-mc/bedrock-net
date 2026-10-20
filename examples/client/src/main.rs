@@ -205,6 +205,10 @@ async fn receive_login(
                 println!("admitted_pack_offer={}", packs.offers().count());
                 return finish_offer(session, packs, accepted, encrypted).await;
             }
+            LoginEvent::Startup { .. } => {
+                println!("startup_without_pack_offer=true encryption={encrypted}");
+                return Ok(());
+            }
             LoginEvent::Unhandled {
                 login: next,
                 packet,
@@ -308,6 +312,7 @@ async fn next_negotiation_packet<S: BatchPhase>(
                 | packets::PacketId::PlayStatus
                 | packets::PacketId::ServerToClientHandshake
                 | packets::PacketId::ResourcePacksInfo
+                | packets::PacketId::StartGame
                 | packets::PacketId::Disconnect
                 | packets::PacketId::PacketViolationWarning
         ) {

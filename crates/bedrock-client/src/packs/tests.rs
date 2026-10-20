@@ -7,6 +7,8 @@ use bedrock_protocol::{
 use bytes::Bytes;
 use sha2::{Digest, Sha256};
 
+mod optionality;
+
 /// Exercises the generated server wire contract before retaining its original metadata.
 fn server_wire(packet: packets::Packet) -> packets::Packet {
     let mut encoded = Vec::new();
@@ -374,7 +376,12 @@ fn final_stack_selects_order_subpack_and_offer_key_without_applying_unselected_a
                 texture_pack_list: selected.clone(),
                 ..Default::default()
             };
-            assert!(finish([(id, download)].into(), stack, offer_required).is_err());
+            let result = finish([(id, download)].into(), stack, offer_required);
+            if stack_required {
+                assert!(result.is_err());
+            } else {
+                assert!(result.unwrap().required());
+            }
         }
     }
 }
@@ -466,10 +473,12 @@ fn optional_content_admission_and_transfer_budget_are_separate() {
             ..stack.clone()
         };
         let result = finish([(id, download)].into(), stack, offer_required);
-        if offer_required || stack_required {
+        if stack_required {
             assert!(result.is_err());
         } else {
-            assert!(result.unwrap().is_empty());
+            let handoff = result.unwrap();
+            assert!(handoff.is_empty());
+            assert_eq!(handoff.required(), offer_required);
         }
     }
 
@@ -903,12 +912,21 @@ fn required_builtin_selection_survives_a_downloaded_version_mismatch() {
     };
     let (_, handoff) = complete.into_parts();
     assert_eq!(handoff.into_archives()[0].archive, [7, 8]);
-    let mut unavailable = make(&downloaded_version, true);
-    assert!(
-        unavailable
-            .receive(stack(&format!("{version}-not-catalogued"), false).into())
-            .is_err()
-    );
+    for stack_required in [false, true] {
+        let mut unavailable = make(&downloaded_version, true);
+        let result =
+            unavailable.receive(stack(&format!("{version}-not-catalogued"), stack_required).into());
+        if stack_required {
+            assert!(result.is_err());
+        } else {
+            let PackEvent::Finished(complete) = result.unwrap() else {
+                panic!("the optional unavailable tuple did not finish");
+            };
+            let (_, handoff) = complete.into_parts();
+            assert!(handoff.required());
+            assert!(handoff.is_empty());
+        }
+    }
 }
 
 /// Asserts that every response in a request window is an actual generated chunk request.
