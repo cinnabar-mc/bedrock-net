@@ -33,7 +33,7 @@ pub enum BatchError {
         /// Configured packet-count limit.
         maximum: usize,
     },
-    /// A packet length was truncated, unterminated or wider than u32.
+    /// A packet length was truncated or did not terminate within five bytes.
     #[error("invalid packet length at byte {offset}")]
     InvalidPacketLength {
         /// Offset of the length prefix within the decoded batch.
@@ -47,7 +47,7 @@ pub enum BatchError {
         /// Bytes remaining after the prefix.
         remaining: usize,
     },
-    /// An outgoing packet contained no packet bytes.
+    /// An outgoing packet or an accepting-side incoming entry contained no packet bytes.
     #[error("empty packet")]
     EmptyPacket,
     /// An outgoing packet length could not fit a u32 prefix.
