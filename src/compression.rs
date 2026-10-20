@@ -8,6 +8,8 @@ mod snappy;
 const DEFLATE_ID: u8 = 0;
 const SNAPPY_ID: u8 = 1;
 const UNCOMPRESSED_ID: u8 = u8::MAX;
+// Keep each small matching table and input block within a small working set.
+const SNAPPY_MATCH_BYTES: usize = 8192;
 
 /// Algorithms accepted in NetworkSettings and batch compression headers.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -73,7 +75,7 @@ pub(crate) struct Encoder {
     pub(crate) body: Vec<u8>,
     flate: Option<Compress>,
     snappy: snappy::Encoder,
-    small_snappy: Option<snipsnap::raw::Encoder>,
+    small_snappy: Option<(snipsnap::raw::Encoder, Vec<u8>)>,
 }
 
 impl Encoder {
@@ -110,19 +112,30 @@ impl Encoder {
             }
             CompressionAlgorithm::Snappy => {
                 if self.body.len() <= 65536 {
-                    let offset = out.len();
-                    out.resize(offset + snap::raw::max_compress_len(self.body.len()), 0);
-                    let length = match self
+                    let (encoder, scratch) = self
                         .small_snappy
-                        .get_or_insert_with(snipsnap::raw::Encoder::new)
-                        .compress(&self.body, &mut out[offset..])
-                    {
-                        Ok(length) => length,
-                        Err(_) => snap::raw::Encoder::new()
-                            .compress(&self.body, &mut out[offset..])
-                            .map_err(BatchError::Snappy)?,
-                    };
-                    out.truncate(offset + length);
+                        .get_or_insert_with(|| (snipsnap::raw::Encoder::new(), Vec::new()));
+                    // Independent match blocks share one raw Snappy length prefix.
+                    crate::batch::write_length(self.body.len() as u32, out);
+                    for block in self.body.chunks(SNAPPY_MATCH_BYTES) {
+                        let maximum = snap::raw::max_compress_len(block.len());
+                        if maximum > scratch.len() {
+                            scratch.reserve_exact(maximum - scratch.len());
+                            scratch.resize(maximum, 0);
+                        }
+                        let length = match encoder.compress(block, scratch) {
+                            Ok(length) => length,
+                            Err(_) => snap::raw::Encoder::new()
+                                .compress(block, scratch)
+                                .map_err(BatchError::Snappy)?,
+                        };
+                        let header = scratch[..length]
+                            .iter()
+                            .position(|byte| byte & 128 == 0)
+                            .expect("encoder emits a complete block length")
+                            + 1;
+                        out.extend_from_slice(&scratch[header..length]);
+                    }
                 } else if snap::raw::max_compress_len(self.body.len()) == 0 {
                     let compressed = snap::raw::Encoder::new()
                         .compress_vec(&self.body)
@@ -226,6 +239,30 @@ fn inflate(
         }
         if consumed == 0 && decoded.len() == before_out {
             return Ok(Err(DropReason::TruncatedDeflate));
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn small_snappy_match_blocks_keep_one_length_and_bounded_scratch() {
+        let mut encoder = Encoder::default();
+        for length in [8191, 8192, 8193, 65535, 65536, 1] {
+            encoder.body = (0..length).map(|index| (index % 251) as u8).collect();
+            let mut out = Vec::new();
+            encoder
+                .compress(CompressionAlgorithm::Snappy, &mut out)
+                .unwrap();
+            assert_eq!(
+                snap::raw::Decoder::new().decompress_vec(&out).unwrap(),
+                encoder.body
+            );
+            let (_, scratch) = encoder.small_snappy.as_ref().unwrap();
+            assert!(scratch.len() <= snap::raw::max_compress_len(SNAPPY_MATCH_BYTES));
+            assert!(scratch.capacity() <= snap::raw::max_compress_len(SNAPPY_MATCH_BYTES));
         }
     }
 }

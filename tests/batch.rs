@@ -971,7 +971,7 @@ fn small_snappy_encoder_matches_the_reference_decoder_across_boundaries() {
     let codec = negotiated(CompressionAlgorithm::Snappy, BatchLimits::default());
     let plain = BatchCodec::new(BatchHeader::RakNet, BatchLimits::default());
     let mut state = 0x12345678_u32;
-    for length in [1, 31, 1024, 8192, 50000, 65536, 65537] {
+    for length in [1, 31, 1024, 8190, 8191, 8192, 8193, 50000, 65536, 65537] {
         for pattern in 0..3 {
             let input: Vec<_> = (0..length)
                 .map(|index| {

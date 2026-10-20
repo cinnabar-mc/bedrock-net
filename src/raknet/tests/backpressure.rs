@@ -19,17 +19,13 @@ async fn peer_output(peer: &UdpSocket, sender: &mut RakSession<Established>) -> 
 /// Produces one real datagram whose individually valid bodies exceed aggregate capacity.
 async fn send_burst(peer: &UdpSocket, sender: &mut RakSession<Established>) {
     let now = Instant::now().into_std();
-    for message in [vec![0xfe, 1], vec![0xfe; 63], vec![0xfe, 3]] {
-        sender
-            .send(
-                message.into_boxed_slice(),
-                RakReliability::ReliableOrdered,
-                RakPriority::Normal,
-                now,
-            )
-            .unwrap();
-    }
-    sender.tick(now).unwrap();
+    send_bundle(
+        sender,
+        [vec![0xfe, 1], vec![0xfe; 63], vec![0xfe, 3]]
+            .into_iter()
+            .map(Vec::into_boxed_slice),
+        now,
+    );
     assert!(peer_output(peer, sender).await.is_empty());
 }
 

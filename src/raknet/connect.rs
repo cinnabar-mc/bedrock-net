@@ -158,6 +158,7 @@ impl RakNetConnection {
                             .ok_or(RakNetError::InvalidOption("handshake timer is too large"))?;
                     }
                     RakClientOutput::SessionConnected(session) => {
+                        socket.writable().await?;
                         let connection = Self {
                             engine: Box::new(Engine {
                                 socket: Some(socket),
