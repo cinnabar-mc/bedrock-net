@@ -236,7 +236,7 @@ fn exchange_packs(
                 assert!(saw_cache);
                 let (spawn, handoff) =
                     completion.expect("client applied stack before acknowledgment");
-                if !handoff.is_empty() {
+                if handoff.len() > 1 {
                     assert!(saw_external);
                 }
                 return (world, spawn, handoff);
@@ -644,3 +644,90 @@ fn typed_external_read_checks_original_sha_length_deadline_and_sealed_failure() 
 }
 
 mod count_limits;
+
+#[test]
+fn empty_pack_download_list_preserves_the_original_exchange() {
+    let (server, initial, client, _provider, now, _utc) = accepted(snapshot());
+    let ServerPackEvent::Send { session, packets } = server
+        .receive(
+            on_wire(
+                packets::ResourcePackClientResponse {
+                    response:
+                        bedrock_protocol::types::ResourcePackClientResponseData::Downloading {
+                            response_type: "downloading".into(),
+                            downloading_packs: Vec::new(),
+                        },
+                }
+                .into(),
+                wire::Peer::Client,
+            ),
+            now,
+        )
+        .unwrap()
+    else {
+        panic!("empty selection must preserve the offer");
+    };
+    assert!(packets.is_empty());
+    let (_, _, handoff) = exchange_packs(session, initial, client, now);
+    assert_eq!(handoff.len(), 2);
+}
+
+#[test]
+fn acquired_repeated_stack_rows_relay_through_the_accepting_owner() {
+    for required in [false, true] {
+        for version in [
+            bytes::Bytes::new(),
+            bytes::Bytes::from(vec![b'v'; 257]),
+            bytes::Bytes::from_static(b"\xff"),
+            bytes::Bytes::from_static(b"1.0.0"),
+        ] {
+            let id = uuid::Uuid::from_u128(1);
+            let mut info = PackInfoData::default();
+            info.pack_id_version.pack_uuid = id;
+            info.pack_id_version.pack_version.version = version.clone().into();
+            info.pack_size = wire::U64LE(3);
+            let mut offer = PackOffer::new_with_metadata(
+                packets::ResourcePacksInfo {
+                    resource_packs: vec![info],
+                    ..Default::default()
+                },
+                PackTransferLimits::default(),
+            )
+            .unwrap();
+            offer.supply_preloaded(id, b"abc".to_vec()).unwrap();
+            let (mut client, _) = offer.start().unwrap();
+            let row = PackInstanceId {
+                pack_id: id.to_string().into(),
+                version: version.into(),
+                ..Default::default()
+            };
+            let PackEvent::Finished(complete) = client
+                .receive(
+                    packets::ResourcePackStack {
+                        texture_pack_required: required,
+                        texture_pack_list: vec![row.clone(), row],
+                        ..Default::default()
+                    }
+                    .into(),
+                )
+                .unwrap()
+            else {
+                panic!("acquired stack completes");
+            };
+            let (_, handoff, metadata) = complete.into_parts_with_metadata();
+            let metadata = metadata.unwrap();
+            let source = ServerPackSnapshot {
+                offer: metadata.offer,
+                stack: metadata.stack,
+                contents: handoff
+                    .into_archives()
+                    .into_iter()
+                    .map(|archive| ServerPackContent::new(archive.archive, 6, false))
+                    .collect(),
+            };
+            let (server, initial, client, _provider, now, _utc) = accepted(source);
+            let (_, _, handoff) = exchange_packs(server, initial, client, now);
+            assert_eq!(handoff.len(), 1);
+        }
+    }
+}

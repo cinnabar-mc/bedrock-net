@@ -62,6 +62,7 @@ fn extra_rows() -> [PackInstanceId; 3] {
 /// Checks acquired bytes and retained actual metadata after optional rows are excluded.
 fn optional_stack(offer_required: bool) {
     for extra in extra_rows() {
+        let repeated = extra.pack_id.to_str().unwrap() == uuid::Uuid::from_u128(1).to_string();
         let complete = complete(offer_required, false, extra)
             .expect("an optional final stack must not require its unused or repeated rows");
         let (_, handoff, metadata) = complete.into_parts_with_metadata();
@@ -74,7 +75,10 @@ fn optional_stack(offer_required: bool) {
         assert_eq!(metadata.offer.resource_pack_required, offer_required);
         assert!(!metadata.stack.texture_pack_required);
         assert_eq!(metadata.offer.resource_packs.len(), 1);
-        assert_eq!(metadata.stack.texture_pack_list.len(), 1);
+        assert_eq!(
+            metadata.stack.texture_pack_list.len(),
+            if repeated { 2 } else { 1 }
+        );
         assert_eq!(metadata.data.len(), 1);
         assert!(metadata.data[0].is_none(), "preload invented no DataInfo");
     }
@@ -93,7 +97,7 @@ fn final_stack_optionality_optional_offer_preserves_optional_selection() {
 #[test]
 fn final_stack_optionality_required_stack_still_refuses_unavailable_rows() {
     for offer_required in [false, true] {
-        for extra in extra_rows() {
+        for extra in extra_rows().into_iter().take(2) {
             assert!(complete(offer_required, true, extra).is_err());
         }
     }
