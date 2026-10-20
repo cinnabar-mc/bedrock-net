@@ -126,7 +126,7 @@ impl Default for ServerPackDelivery {
 
 struct Archive {
     id: uuid::Uuid,
-    version: String,
+    version: wire::Str,
     name: wire::Str,
     content: ServerPackContent,
 }
@@ -195,19 +195,13 @@ impl Delivery {
         let mut archives = Vec::with_capacity(snapshot.contents.len());
         for (info, content) in snapshot.offer.resource_packs.iter().zip(snapshot.contents) {
             let id = info.pack_id_version.pack_uuid;
-            let version = info
-                .pack_id_version
-                .pack_version
-                .version
-                .to_str()
-                .map_err(|_| invalid("invalid accepting pack version"))?;
+            let version = &info.pack_id_version.pack_version.version;
             let size = content.size;
             total = total
                 .checked_add(size)
                 .ok_or_else(|| invalid("accepting pack size overflow"))?;
             if id.is_nil()
                 || !ids.insert(id)
-                || version.is_empty()
                 || version.len() > options.limits.max_version_bytes
                 || size == 0
                 || size != info.pack_size.0
@@ -229,10 +223,12 @@ impl Delivery {
                     "inconsistent accepting pack identity, size or budget",
                 ));
             }
+            let mut name = format!("{id}_").into_bytes();
+            name.extend_from_slice(version.as_bytes());
             let archive = Archive {
                 id,
-                version: version.to_owned(),
-                name: format!("{id}_{version}").into(),
+                version: version.clone(),
+                name: Bytes::from(name).into(),
                 content,
             };
             bounded_metadata(
@@ -267,7 +263,6 @@ impl Delivery {
             archives.push(archive);
         }
         // Download count is bounded by the original offers; the stack may also select built-ins.
-        let mut selected_ids = BTreeSet::new();
         for pack in &snapshot.stack.texture_pack_list {
             let id = uuid::Uuid::parse_str(
                 pack.pack_id
@@ -275,19 +270,12 @@ impl Delivery {
                     .map_err(|_| invalid("invalid accepting stack identity"))?,
             )
             .map_err(|_| invalid("invalid accepting stack identity"))?;
-            let version = pack
-                .version
-                .to_str()
-                .map_err(|_| invalid("invalid accepting stack version"))?;
-            if !selected_ids.insert(id)
-                || version.is_empty()
-                || version.len() > options.limits.max_version_bytes
-                || (!archives.iter().any(|a| a.id == id && a.version == version)
-                    && !builtins::contains(id, version))
+            let version = &pack.version;
+            if version.len() > options.limits.max_version_bytes
+                || (!archives.iter().any(|a| a.id == id && &a.version == version)
+                    && !builtins::contains(id, version.as_bytes()))
             {
-                return Err(invalid(
-                    "accepting stack contains unavailable or duplicate content",
-                ));
+                return Err(invalid("accepting stack contains unavailable content"));
             }
         }
         Ok(Self {
@@ -324,6 +312,11 @@ impl Delivery {
         {
             return Err(invalid("client refused accepting packs"));
         }
+        if matches!(&packet, packets::Packet::ResourcePackClientResponse(response)
+            if matches!(&response.response, ResourcePackClientResponseData::Downloading { downloading_packs, .. } if downloading_packs.is_empty()))
+        {
+            return Ok(Event::Send(Vec::new()));
+        }
         if self.awaiting_flush || self.pending_read.is_some() {
             return Err(Error::InvalidState);
         }
@@ -336,7 +329,6 @@ impl Delivery {
                     downloading_packs, ..
                 } => {
                     if !matches!(self.phase, Phase::Offer)
-                        || downloading_packs.is_empty()
                         || downloading_packs.len() > u16::MAX as usize
                     {
                         return Err(Error::InvalidState);
@@ -505,16 +497,15 @@ impl Delivery {
         {
             return Err(invalid("accepting pack request identity exceeds its limit"));
         }
-        let name = name
-            .to_str()
+        let mut parts = name.as_bytes().splitn(2, |byte| *byte == b'_');
+        let prefix = parts.next().unwrap_or_default();
+        let version = parts.next();
+        let prefix = std::str::from_utf8(prefix)
             .map_err(|_| invalid("invalid accepting pack request identity"))?;
-        let (id, version) = name
-            .split_once('_')
-            .map_or((name, None), |(id, v)| (id, Some(v)));
-        let id = uuid::Uuid::parse_str(id)
+        let id = uuid::Uuid::parse_str(prefix)
             .map_err(|_| invalid("invalid accepting pack request identity"))?;
         let mut canonical = [0_u8; uuid::fmt::Hyphenated::LENGTH];
-        if name.split('_').next() != Some(id.hyphenated().encode_lower(&mut canonical)) {
+        if prefix != id.hyphenated().encode_lower(&mut canonical) {
             return Err(invalid(
                 "accepting pack request uses a different identity spelling",
             ));
@@ -523,7 +514,8 @@ impl Delivery {
             .iter()
             .position(|a| {
                 a.id == id
-                    && (!check_version || version.is_none_or(|v| v.is_empty() || v == a.version))
+                    && (!check_version
+                        || version.is_none_or(|v| v.is_empty() || v == a.version.as_bytes()))
             })
             .ok_or_else(|| invalid("accepting pack request was not advertised"))
     }

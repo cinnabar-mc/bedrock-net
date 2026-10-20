@@ -45,10 +45,10 @@ fn current_packs() -> &'static [BuiltinPack] {
 }
 
 /// Recognizes exact built-in identities; downloaded overrides remain ordinary archives.
-pub(crate) fn contains(id: uuid::Uuid, version: &str) -> bool {
+pub(crate) fn contains(id: uuid::Uuid, version: &[u8]) -> bool {
     current_packs()
         .iter()
-        .any(|pack| pack.id == id && pack.version == version)
+        .any(|pack| pack.id == id && pack.version.as_bytes() == version)
 }
 
 #[cfg(test)]

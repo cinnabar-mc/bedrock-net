@@ -83,10 +83,11 @@ fn assemble(id: uuid::Uuid, archive: &Bytes, hash: &Bytes, chunk_size: usize) {
     else {
         panic!("stack did not finish the transfer");
     };
-    // The transfer verified the advertised SHA-256 over the assembled bytes; check the handoff too.
+    // Verify the assembled handoff on every iteration, as the paired Go benchmark does.
     let (_, handoff) = complete.into_parts();
     let archives = handoff.into_archives();
     assert!(archives.len() == 1 && archives[0].archive.len() == archive.len());
+    assert_eq!(Sha256::digest(&archives[0].archive)[..], hash[..]);
     black_box(archives);
 }
 
