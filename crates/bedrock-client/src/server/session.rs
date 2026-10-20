@@ -16,7 +16,7 @@ pub use packs::{ServerPackContent, ServerPackDelivery, ServerPackSnapshot};
 pub use relay::{PendingServerRelay, ServerRelayInitialized, ServerRelayProgress, ServerRelaying};
 pub use spawn::ServerWorld;
 
-use super::{AuthenticatedLogin, LoginError, LoginPolicy, LoginVerifier, ServerHandshakeError};
+use super::{AuthenticatedLogin, LoginError, LoginPolicy, ServerHandshakeError};
 use bedrock_protocol::{enums::PlayStatusType, packets, wire};
 use std::time::{Instant, SystemTime};
 
@@ -167,7 +167,7 @@ impl<A, L> SessionEngine<A, L> {
     }
 
     /// Starts the actual adapter-selected world only after the stack acknowledgment.
-    /// Rechecks the original provider credential before emitting its real definitions.
+    /// Rechecks the original Login policy before emitting its real definitions.
     ///
     /// # Errors
     /// Rejects expiry, invalid world bounds, repeated/out-of-phase startup or changed credentials.

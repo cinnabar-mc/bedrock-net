@@ -1,9 +1,9 @@
 //! Owned pack IO and actual selected-world handoffs over one original accepting engine.
 
 use super::{
-    AuthenticatedLogin, LoginPolicy, LoginVerifier, ServerChunkRequest, ServerPackDelivery,
-    ServerPackSnapshot, ServerSessionError as Error, ServerSessionEvent as Event,
-    ServerSessionOutput, ServerWorld, SessionEngine, packs,
+    AuthenticatedLogin, LoginPolicy, ServerChunkRequest, ServerPackDelivery, ServerPackSnapshot,
+    ServerSessionError as Error, ServerSessionEvent as Event, ServerSessionOutput, ServerWorld,
+    SessionEngine, packs,
 };
 use crate::server::ServerPacksReady;
 use bedrock_protocol::packets;
@@ -12,7 +12,7 @@ use std::{
     time::{Instant, SystemTime},
 };
 
-impl<A> ServerPacksReady<A> {
+impl<A, L> ServerPacksReady<A, L> {
     /// Validates the original selected snapshot before advertising any pack or LoginSuccess.
     /// Revalidates Login under its unchanged deadline. Application grant validity belongs
     /// to the caller and must be checked again at actual sends/attachment after waits.
@@ -20,10 +20,10 @@ impl<A> ServerPacksReady<A> {
         self,
         snapshot: ServerPackSnapshot,
         delivery: ServerPackDelivery,
-        verifier: &impl LoginVerifier,
+        verifier: &impl LoginPolicy<L>,
         now: Instant,
         utc: SystemTime,
-    ) -> Result<ServerSessionOutput<ServerPacks<A>>, ServerSessionTransitionError<Self>> {
+    ) -> Result<ServerSessionOutput<ServerPacks<A, L>>, ServerSessionTransitionError<Self>> {
         let delivery = match packs::Delivery::new(snapshot, delivery) {
             Ok(delivery) => delivery,
             Err(cause) => return Err(failure(self, cause)),
@@ -386,7 +386,7 @@ impl<A, L> ServerInitialized<A, L> {
         self.engine.deadline
     }
 
-    /// Revalidates the original provider credential before transferring actual initialized data.
+    /// Rechecks the original Login policy before transferring actual initialized data.
     /// This proves completed protocol initialization, not real world membership or attachment.
     pub fn finish(
         mut self,

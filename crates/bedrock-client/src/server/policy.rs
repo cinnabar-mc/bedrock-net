@@ -1,6 +1,6 @@
 //! Sealed revalidation policy for the exact retained Login capability.
 
-use super::{AuthenticatedLogin, LoginError, LoginVerifier};
+use super::{AuthenticatedLogin, LoginError, LoginVerifier, VerifyingKey};
 use std::time::SystemTime;
 
 /// Revalidates the original Login without changing its capability type.
@@ -16,10 +16,10 @@ use std::time::SystemTime;
 /// }
 /// ```
 pub trait LoginPolicy<L>: sealed::Sealed<L> {
-    /// Rechecks the same retained capability at caller-supplied provider UTC.
+    /// Rechecks the same retained capability under its admission policy and caller UTC.
     ///
     /// # Errors
-    /// Rejects revoked, expired or changed provider credentials without a fallback.
+    /// Provider policies reject revoked, expired or changed credentials without a fallback.
     fn revalidate(&self, login: &L, utc: SystemTime) -> Result<(), LoginError>;
 }
 
@@ -33,4 +33,32 @@ pub(super) mod sealed {
     /// Restricts revalidation implementations to the library's supported policies.
     pub trait Sealed<L> {}
     impl<V: super::LoginVerifier> Sealed<super::AuthenticatedLogin> for V {}
+}
+
+/// Parses and binds a supported Login capability under an explicit library policy.
+/// The sealed parent policy prevents a caller from substituting a different capability type.
+pub trait HandshakePolicy<L>: LoginPolicy<L> {
+    /// Parses the bounded request under this exact admission policy.
+    ///
+    /// # Errors
+    /// Rejects invalid framing, policy, signature, client data or required cached resolution.
+    fn parse(&self, request: &[u8], utc: SystemTime, limit: usize) -> Result<L, LoginError>;
+
+    /// Borrows the final P384 exchange key, returning None for another supported parse curve.
+    fn exchange_key<'a>(&self, login: &'a L) -> Option<&'a VerifyingKey>;
+}
+
+impl<V: LoginVerifier> HandshakePolicy<AuthenticatedLogin> for V {
+    fn parse(
+        &self,
+        request: &[u8],
+        utc: SystemTime,
+        limit: usize,
+    ) -> Result<AuthenticatedLogin, LoginError> {
+        bedrock_net::login::verify_authenticated_request(request, self, utc, limit)
+    }
+
+    fn exchange_key<'a>(&self, login: &'a AuthenticatedLogin) -> Option<&'a VerifyingKey> {
+        login.exchange_key().as_p384()
+    }
 }
