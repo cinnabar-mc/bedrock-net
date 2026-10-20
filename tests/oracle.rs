@@ -35,24 +35,6 @@ const EXPECTED_DIVERGENCES: &[(&str, &str, &str)] = &[
     ),
     // Audit stricter-limits list: outgoing batches split at 16 MiB; Go has no outgoing cap.
     ("encode/split_16mib", "2", "outgoing 16 MiB split"),
-    // NEW: Go keeps the low 32 bits of a five-byte length whose last byte overflows.
-    (
-        "decode/length_overflow_fifth_byte",
-        "fatal",
-        "NEW: varuint32 overflow",
-    ),
-    // NEW: Go's accepting decoder rejects empty entries; Rust skips them in both directions.
-    (
-        "decode/accepting_empty_entry",
-        "packets(1)",
-        "NEW: accepting empty entries",
-    ),
-    // NEW: Go Parse validates ClientData content; Rust accepting checks only object shape and Nonce.
-    (
-        "login/client_fails_go_validation",
-        "accept",
-        "NEW: accepting client-data validation",
-    ),
 ];
 
 /// A short description of a result, so a listed divergence cannot silently change shape.

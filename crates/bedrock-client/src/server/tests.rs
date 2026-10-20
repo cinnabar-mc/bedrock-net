@@ -78,8 +78,10 @@ fn pending(encrypted: bool) -> (Engine, ClientLogin, Provider, Instant, SystemTi
     };
     assert_eq!(compression, selected);
     server.compression_installed(now).unwrap();
-    let metadata =
-        RawValue::from_string("{\"Nonce\":\"original-nonce\",\"XUID\":\"999\"}".into()).unwrap();
+    let metadata = RawValue::from_string(
+        "{\"Nonce\":\"original-nonce\",\"XUID\":\"999\",\"SkinId\":\"synthetic\"}".into(),
+    )
+    .unwrap();
     let (client, mut login) = client.login_authenticated(CREDENTIAL, &metadata).unwrap();
     // The actual negotiated RequestNetworkSettings version supersedes this Login field.
     login.client_network_version = wire::I32BE(0);
@@ -280,7 +282,7 @@ fn accepting_rejects_version_and_transport_proof_before_application_admission() 
     let request = login::encode_authenticated_request(
         client.key(),
         CREDENTIAL,
-        &RawValue::from_string("{}".into()).unwrap(),
+        &RawValue::from_string(r#"{"SkinId":"synthetic"}"#.into()).unwrap(),
         65536,
     )
     .unwrap();

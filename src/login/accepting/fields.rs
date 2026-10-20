@@ -51,6 +51,7 @@ impl<'de> Deserialize<'de> for Envelope {
 
 pub(super) struct Metadata {
     pub(super) nonce: String,
+    pub(super) skin_id_valid: bool,
 }
 
 impl<'de> Deserialize<'de> for Metadata {
@@ -66,6 +67,7 @@ impl<'de> Deserialize<'de> for Metadata {
             fn visit_map<M: MapAccess<'de>>(self, mut map: M) -> Result<Self::Value, M::Error> {
                 let mut nonce = None;
                 let mut seen = false;
+                let mut skin_id_valid = false;
                 while let Some(name) = map.next_key::<String>()? {
                     if matches_field(&name, "Nonce") {
                         if seen {
@@ -73,12 +75,23 @@ impl<'de> Deserialize<'de> for Metadata {
                         }
                         seen = true;
                         nonce = map.next_value::<Option<String>>()?;
+                    } else if matches_field(&name, "SkinId") {
+                        let raw = map.next_value::<Box<serde_json::value::RawValue>>()?;
+                        let raw = raw.get().trim();
+                        if raw != "null" {
+                            if !raw.starts_with('"') {
+                                return Err(de::Error::custom("invalid Login skin identifier"));
+                            }
+                            // Any nonempty JSON string decodes to at least one character, including replacement characters.
+                            skin_id_valid = raw.len() > 2;
+                        }
                     } else {
                         map.next_value::<IgnoredAny>()?;
                     }
                 }
                 Ok(Metadata {
                     nonce: nonce.unwrap_or_default(),
+                    skin_id_valid,
                 })
             }
         }

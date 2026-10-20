@@ -80,7 +80,10 @@ fn credential(issuer: &SigningKey, client: &SigningKey) -> String {
 
 /// Retains client-controlled spelling, including a claimed XUID that must never replace the provider's.
 fn metadata() -> Box<RawValue> {
-    RawValue::from_string("{\"Nonce\":\"original-member-nonce\",\"XUID\":\"999\"}".into()).unwrap()
+    RawValue::from_string(
+        "{\"Nonce\":\"original-member-nonce\",\"XUID\":\"999\",\"SkinId\":\"synthetic\"}".into(),
+    )
+    .unwrap()
 }
 
 /// Provider presentation survives signed client spoofing and cannot change during revalidation.
@@ -128,7 +131,7 @@ fn accepting_login_retains_provider_player_identity_across_revalidation() {
         },
         changed: Cell::new(0),
     };
-    let metadata = RawValue::from_string(r#"{"Nonce":"original-member-nonce","ThirdPartyName":"Spoofed","SelfSignedId":"00000000-0000-4000-8000-000000000099","PlayFabId":"spoofed-master"}"#.into()).unwrap();
+    let metadata = RawValue::from_string(r#"{"Nonce":"original-member-nonce","ThirdPartyName":"Spoofed","SelfSignedId":"00000000-0000-4000-8000-000000000099","PlayFabId":"spoofed-master","SkinId":"synthetic"}"#.into()).unwrap();
     let request =
         encode_authenticated_request(&client, &credential(&issuer, &client), &metadata, LIMIT)
             .unwrap();
@@ -335,8 +338,9 @@ fn accepting_go_field_casing_preserves_signed_nonce_and_rejects_ambiguous_aliase
     let token = credential(&issuer, &client);
     let now = UNIX_EPOCH + Duration::from_secs(1000);
     for field in ["Nonce", "nonce", "NONCE", "nOnCe"] {
-        let text =
-            format!(r#"{{"{field}":"original-member-nonce","opaque":{{"nonce":"unrelated"}}}}"#);
+        let text = format!(
+            r#"{{"{field}":"original-member-nonce","opaque":{{"nonce":"unrelated"}},"SkinId":"synthetic"}}"#
+        );
         let metadata = RawValue::from_string(text.clone()).unwrap();
         let request = encode_authenticated_request(&client, &token, &metadata, LIMIT).unwrap();
         let login = verify_authenticated_request(&request, &provider, now, LIMIT).unwrap();
@@ -365,10 +369,11 @@ fn accepting_go_field_casing_preserves_signed_nonce_and_rejects_ambiguous_aliase
         r#"{"nonce":"original-member-nonce","NONCE":"original-member-nonce"}"#,
         r#"{"Nonce":"first","Nonce":"second"}"#,
     ] {
+        let json = format!("{},\"SkinId\":\"synthetic\"}}", &json[..json.len() - 1]);
         let request = encode_authenticated_request(
             &client,
             &token,
-            &RawValue::from_string(json.into()).unwrap(),
+            &RawValue::from_string(json).unwrap(),
             LIMIT,
         )
         .unwrap();
@@ -458,4 +463,36 @@ fn accepting_peer_json_diagnostics_never_retain_sensitive_values() {
         !diagnostic(&error).contains(marker),
         "shared server header error retained peer input"
     );
+}
+
+#[test]
+fn accepting_login_requires_a_nonempty_string_skin_identifier() {
+    let issuer = key(3);
+    let client = key(4);
+    let provider = Provider {
+        key: *issuer.verifying_key(),
+        calls: Cell::new(0),
+    };
+    let token = credential(&issuer, &client);
+    let now = UNIX_EPOCH + Duration::from_secs(1000);
+    for raw in [
+        r#"{}"#,
+        r#"{"SkinId":""}"#,
+        r#"{"SkinId":  "" }"#,
+        r#"{"skinid":null}"#,
+        r#"{"SKINID":42}"#,
+    ] {
+        let metadata = RawValue::from_string(raw.into()).unwrap();
+        let request = encode_authenticated_request(&client, &token, &metadata, LIMIT).unwrap();
+        assert!(verify_authenticated_request(&request, &provider, now, LIMIT).is_err());
+    }
+    for raw in [
+        r#"{"SkinId":"synthetic"}"#,
+        r#"{"SkinId":"\ud800"}"#,
+        r#"{"skinid":"synthetic","SkinId":null}"#,
+    ] {
+        let metadata = RawValue::from_string(raw.into()).unwrap();
+        let request = encode_authenticated_request(&client, &token, &metadata, LIMIT).unwrap();
+        assert!(verify_authenticated_request(&request, &provider, now, LIMIT).is_ok());
+    }
 }

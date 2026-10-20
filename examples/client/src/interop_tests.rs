@@ -30,10 +30,7 @@ use crate::{
 };
 
 /// Known differences from a Go Dialer, each naming its audit item.
-const EXPECTED_DIVERGENCES: &[(&str, &str)] = &[
-    // Audit C c314b9cb: Go and vanilla open 100 chunk requests; Rust opens up to 1024 in order.
-    ("chunk-pack/initial_requests", "pack request window"),
-];
+const EXPECTED_DIVERGENCES: &[(&str, &str)] = &[];
 
 /// One running helper and the defaults it reported.
 struct Helper {
@@ -247,8 +244,14 @@ async fn login_phase(
         .send_packet(&response.into(), Peer::Client, 0, 0)
         .await?;
     let mut first_send = true;
+    let mut deferred_stacks: std::collections::VecDeque<Box<packets::ResourcePackStack>> =
+        std::collections::VecDeque::new();
     let complete = loop {
-        let packet = next_packet(session, observed).await?;
+        let packet = if packs.ready_for_stack() && !deferred_stacks.is_empty() {
+            packets::Packet::ResourcePackStack(*deferred_stacks.pop_front().unwrap())
+        } else {
+            next_packet(session, observed).await?
+        };
         match packs.receive(packet)? {
             PacksEvent::Send {
                 packs: next,
@@ -268,6 +271,10 @@ async fn login_phase(
             PacksEvent::KeyExchange(exchange) => {
                 let (next, installed) = apply_exchange(session, exchange).await?;
                 observed.encrypted |= installed;
+                packs = next;
+            }
+            PacksEvent::DeferredStack { packs: next, stack } => {
+                deferred_stacks.push_back(stack);
                 packs = next;
             }
             PacksEvent::Finished(complete) => break complete,
@@ -415,7 +422,7 @@ fn chunked_pack_is_downloaded() {
         chunks > window,
         "the pack must span more chunks than Go's request window"
     );
-    // Pins the divergence to the Rust default, so it cannot silently become some other count.
+    // Check the configured default as well as the independently reported Go window.
     let rust_window = bedrock_client::packs::DEFAULT_REQUEST_WINDOW as usize;
     assert_eq!(observed.initial_requests, chunks.min(rust_window));
     let mut ledger = Ledger::default();

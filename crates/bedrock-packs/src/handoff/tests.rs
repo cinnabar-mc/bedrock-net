@@ -3,7 +3,7 @@ use super::*;
 #[test]
 fn relay_archives_transfer_once_without_changing_server_required_identity_or_order() {
     let id = uuid::Uuid::nil();
-    let server = ResourcePackArchive::unencrypted(id, "1.0.0".into(), String::new(), vec![1, 2]);
+    let server = ResourcePackArchive::unencrypted(id, "1.0.0".into(), Vec::new(), vec![1, 2]);
     let mut handoff = ResourcePackHandoff::from_archives(vec![server])
         .with_required(true)
         .with_relay_packs(vec![
