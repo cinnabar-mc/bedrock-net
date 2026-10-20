@@ -1,0 +1,312 @@
+package bench
+
+import (
+	"bytes"
+	"crypto"
+	"crypto/ecdh"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/sha256"
+	"encoding/json"
+	"io"
+	"math/big"
+	"os"
+	"path/filepath"
+	"testing"
+	"time"
+
+	"github.com/coreos/go-oidc/v3/oidc"
+	"github.com/go-jose/go-jose/v4"
+	"github.com/go-jose/go-jose/v4/jwt"
+	"github.com/sandertv/gophertunnel/minecraft/protocol/login"
+	"github.com/sandertv/gophertunnel/minecraft/protocol/packet"
+	"github.com/sandertv/gophertunnel/minecraft/resource"
+)
+
+// capture records every batch an Encoder writes; copies are taken only when kept.
+type capture struct {
+	keep   bool
+	frames [][]byte
+}
+
+func (c *capture) Write(p []byte) (int, error) {
+	if c.keep {
+		c.frames = append(c.frames, bytes.Clone(p))
+	}
+	return len(p), nil
+}
+
+// queue feeds prepared batches to a Decoder, one per ReadPacket.
+type queue struct {
+	frames [][]byte
+	next   int
+	cycle  bool
+}
+
+func (q *queue) Read([]byte) (int, error) { return 0, io.ErrNoProgress }
+
+func (q *queue) ReadPacket() ([]byte, error) {
+	if q.next == len(q.frames) {
+		if !q.cycle {
+			return nil, io.EOF
+		}
+		q.next = 0
+	}
+	frame := q.frames[q.next]
+	q.next++
+	return frame, nil
+}
+
+func load(b *testing.B) *Cases {
+	b.Helper()
+	c, err := Load()
+	if err != nil {
+		b.Fatal(err)
+	}
+	return c
+}
+
+func packets(b *testing.B, c *Cases, set string) [][]byte {
+	b.Helper()
+	p, err := c.Packets(set)
+	if err != nil {
+		b.Fatal(err)
+	}
+	return p
+}
+
+func ignore([]byte) error { return nil }
+
+// codecGroup runs encode/decode style cases for one compression setting (nil = before NetworkSettings).
+func codecGroup(b *testing.B, group string, compression packet.Compression) {
+	c := load(b)
+	threshold := c.CompressionThreshold
+	for _, tc := range c.Cases(group) {
+		pks := packets(b, c, tc.Set)
+		b.Run(tc.Name(), func(b *testing.B) {
+			enc := func(w io.Writer) *packet.Encoder {
+				e := packet.NewEncoder(w)
+				if compression != nil {
+					e.EnableCompression(compression, threshold)
+				}
+				return e
+			}
+			b.SetBytes(Size(pks))
+			b.ReportAllocs()
+			switch tc.Op {
+			case "encode", "compress":
+				e := enc(&capture{})
+				b.ResetTimer()
+				for range b.N {
+					if err := e.Encode(pks); err != nil {
+						b.Fatal(err)
+					}
+				}
+			case "decode", "decompress":
+				w := &capture{keep: true}
+				if err := enc(w).Encode(pks); err != nil {
+					b.Fatal(err)
+				}
+				if len(w.frames) != 1 {
+					b.Fatalf("decode input %s spans %d batches", tc.Set, len(w.frames))
+				}
+				d := packet.NewDecoder(&queue{frames: w.frames, cycle: true})
+				d.DisableBatchPacketLimit()
+				if compression != nil {
+					d.EnableCompression(compression, 0)
+				}
+				b.ResetTimer()
+				for range b.N {
+					if err := d.DecodeFunc(ignore); err != nil {
+						b.Fatal(err)
+					}
+				}
+			default:
+				b.Fatalf("unknown op %s", tc.Op)
+			}
+		})
+	}
+}
+
+func BenchmarkBatchFraming(b *testing.B) { codecGroup(b, "BatchFraming", nil) }
+func BenchmarkFlate(b *testing.B)        { codecGroup(b, "Flate", packet.FlateCompression) }
+func BenchmarkSnappy(b *testing.B)       { codecGroup(b, "Snappy", packet.SnappyCompression) }
+
+// BenchmarkEncryption measures the negotiated uncompressed (0xff) path with batch encryption.
+func BenchmarkEncryption(b *testing.B) {
+	c := load(b)
+	var key [32]byte
+	for i := range key {
+		key[i] = c.EncryptionKeyByte
+	}
+	for _, tc := range c.Cases("Encryption") {
+		pks := packets(b, c, tc.Set)
+		b.Run(tc.Name(), func(b *testing.B) {
+			w := &capture{}
+			e := packet.NewEncoder(w)
+			e.EnableCompression(packet.NopCompression, 0)
+			e.EnableEncryption(key)
+			b.SetBytes(Size(pks))
+			b.ReportAllocs()
+			switch tc.Op {
+			case "encrypt":
+				for range b.N {
+					if err := e.Encode(pks); err != nil {
+						b.Fatal(err)
+					}
+				}
+			case "decrypt":
+				// Decryption consumes each frame in stream order and in place, so frames are
+				// produced in lockstep chunks outside the timer.
+				q := &queue{}
+				d := packet.NewDecoder(q)
+				d.DisableBatchPacketLimit()
+				d.EnableCompression(packet.NopCompression, 0)
+				d.EnableEncryption(key)
+				chunk := max(1, min(4096, int((64<<20)/max(Size(pks), 1))))
+				refill := func() {
+					w.keep, w.frames = true, w.frames[:0]
+					for range chunk {
+						if err := e.Encode(pks); err != nil {
+							b.Fatal(err)
+						}
+					}
+					q.frames, q.next = w.frames, 0
+				}
+				refill()
+				b.ResetTimer()
+				for range b.N {
+					if q.next == len(q.frames) {
+						b.StopTimer()
+						refill()
+						b.StartTimer()
+					}
+					if err := d.DecodeFunc(ignore); err != nil {
+						b.Fatal(err)
+					}
+				}
+			default:
+				b.Fatalf("unknown op %s", tc.Op)
+			}
+		})
+	}
+}
+
+// fixedKey derives the deterministic P-384 key whose scalar is fill repeated 48 times.
+func fixedKey(b *testing.B, fill byte) *ecdsa.PrivateKey {
+	scalar := bytes.Repeat([]byte{fill}, 48)
+	k, err := ecdh.P384().NewPrivateKey(scalar)
+	if err != nil {
+		b.Fatal(err)
+	}
+	x, y := elliptic.Unmarshal(elliptic.P384(), k.PublicKey().Bytes())
+	return &ecdsa.PrivateKey{PublicKey: ecdsa.PublicKey{Curve: elliptic.P384(), X: x, Y: y}, D: new(big.Int).SetBytes(scalar)}
+}
+
+func BenchmarkLogin(b *testing.B) {
+	c := load(b)
+	l := c.Login
+	raw, err := os.ReadFile(filepath.Join(Dir, l.ClientData))
+	if err != nil {
+		b.Fatal(err)
+	}
+	var clientData login.ClientData
+	if err := json.Unmarshal(raw, &clientData); err != nil {
+		b.Fatal(err)
+	}
+	client := fixedKey(b, l.ClientScalarByte)
+	provider := fixedKey(b, l.ProviderScalarByte)
+	signer, err := jose.NewSigner(jose.SigningKey{Algorithm: jose.ES384, Key: provider}, nil)
+	if err != nil {
+		b.Fatal(err)
+	}
+	token, err := jwt.Signed(signer).Claims(map[string]any{
+		"iss": l.Issuer, "aud": l.Audience, "exp": l.Expiry, "nbf": 0, "iat": 0,
+		"ipt": "PlayFab", "mid": "", "tid": "", "cpk": login.MarshalPublicKey(&client.PublicKey),
+		"xid": l.XUID, "xname": l.DisplayName,
+	}).Serialize()
+	if err != nil {
+		b.Fatal(err)
+	}
+	verifier := oidc.NewVerifier(l.Issuer, &oidc.StaticKeySet{PublicKeys: []crypto.PublicKey{&provider.PublicKey}}, &oidc.Config{
+		ClientID: l.Audience, SupportedSigningAlgs: []string{oidc.ES384}, Now: func() time.Time { return time.Unix(l.Expiry-3600, 0) },
+	})
+	request := login.EncodeToken(clientData, client, token)
+	if _, _, res, err := login.Parse(request, verifier); err != nil || !res.XBOXLiveAuthenticated {
+		b.Fatalf("parse authenticated bench request: %v", err)
+	}
+	identity := login.IdentityData{DisplayName: l.DisplayName, Identity: l.Identity}
+	b.Run("encode_offline", func(b *testing.B) {
+		b.ReportAllocs()
+		for range b.N {
+			_ = login.EncodeOffline(identity, clientData, client)
+		}
+	})
+	b.Run("encode_token", func(b *testing.B) {
+		b.ReportAllocs()
+		for range b.N {
+			_ = login.EncodeToken(clientData, client, token)
+		}
+	})
+	b.Run("verify_token", func(b *testing.B) {
+		b.ReportAllocs()
+		for range b.N {
+			if _, _, _, err := login.Parse(request, verifier); err != nil {
+				b.Fatal(err)
+			}
+		}
+	})
+}
+
+func BenchmarkPacks(b *testing.B) {
+	c := load(b)
+	names := make([]string, 0, len(c.Packs.Archives))
+	for name := range c.Packs.Archives {
+		names = append(names, name)
+	}
+	for _, name := range sorted(names) {
+		size := c.Packs.Archives[name]
+		archive, err := c.Archive(size)
+		if err != nil {
+			b.Fatal(err)
+		}
+		want := sha256.Sum256(archive)
+		chunkSize := c.Packs.ChunkSize
+		count, _ := resource.ChunkCount(size, chunkSize)
+		b.Run("assemble_verify_"+name, func(b *testing.B) {
+			b.SetBytes(int64(size))
+			b.ReportAllocs()
+			for range b.N {
+				a, err := resource.NewAssembler(size, chunkSize)
+				if err != nil {
+					b.Fatal(err)
+				}
+				for i := range count {
+					off := uint64(i) * uint64(chunkSize)
+					if _, err := a.Add(i, archive[off:min(off+uint64(chunkSize), size)]); err != nil {
+						b.Fatal(err)
+					}
+				}
+				if sha256.Sum256(archive) != want {
+					b.Fatal("hash mismatch")
+				}
+			}
+		})
+		b.Run("sha256_"+name, func(b *testing.B) {
+			b.SetBytes(int64(size))
+			b.ReportAllocs()
+			for range b.N {
+				_ = sha256.Sum256(archive)
+			}
+		})
+	}
+}
+
+func sorted(s []string) []string {
+	for i := 1; i < len(s); i++ {
+		for j := i; j > 0 && s[j] < s[j-1]; j-- {
+			s[j], s[j-1] = s[j-1], s[j]
+		}
+	}
+	return s
+}

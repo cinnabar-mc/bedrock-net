@@ -4,6 +4,7 @@ on:
   push:
     branches: [dev]
   pull_request:
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -75,12 +76,16 @@ jobs:
         run: |
           go build -o ../../target/login-check.exe ./cmd/login-check
           go build -o ../../target/pack-delivery-check.exe ./cmd/pack-delivery-check
+          go build -o ../../target/go-oracle.exe .
+          go build -o ../../target/interop-server.exe ./cmd/interop-server
       - run: cargo fmt --all --check
       - run: cargo test --locked --workspace --all-features
         env:
           BEDROCK_NET_RAKNET_PEER: ${{ github.workspace }}/target/raknet-peer.exe
           BEDROCK_NET_LOGIN_ORACLE: ${{ github.workspace }}/target/login-check.exe
           BEDROCK_NET_PACK_DELIVERY_ORACLE: ${{ github.workspace }}/target/pack-delivery-check.exe
+          BEDROCK_NET_GO_ORACLE: ${{ github.workspace }}/target/go-oracle.exe
+          BEDROCK_NET_GO_INTEROP: ${{ github.workspace }}/target/interop-server.exe
       - run: cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
   oracle:
     runs-on: ubuntu-latest
@@ -95,5 +100,37 @@ jobs:
           components: rustfmt
       - working-directory: tools/go-oracle
         run: go run . > ../../tests/fixtures/go_batches.rs
+      - working-directory: tools/go-oracle
+        run: go run ./cmd/bench-inputs ../../testdata/bench
+      - working-directory: tools/go-oracle
+        run: go vet ./... && go test -run . -bench '^$' ./...
+      - working-directory: tools/bench-compare
+        run: go vet ./... && go test ./...
       - run: cargo fmt --all
-      - run: git diff --exit-code -- tests/fixtures/go_batches.rs
+      - run: git diff --exit-code -- tests/fixtures/go_batches.rs testdata/bench
+  # Go and Rust benchmarks on one runner, joined by tools/bench-compare. Not a required check:
+  # some Rust paths are known to be slower than Go.
+  bench:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: tools/go-oracle/go.mod
+          cache-dependency-path: tools/go-oracle/go.sum
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Go benchmarks
+        working-directory: tools/go-oracle
+        run: |
+          mkdir -p ../../target
+          go test -run '^$' -bench . -benchmem -count 3 ./bench/ | tee ../../target/go-bench.txt
+      - name: Rust benchmarks
+        run: |
+          cargo bench --locked -p bedrock-net --features login --bench batch --bench login -- --warm-up-time 1 --measurement-time 3
+          cargo bench --locked -p bedrock-client --bench packs -- --warm-up-time 1 --measurement-time 3
+      - name: Compare
+        working-directory: tools/bench-compare
+        shell: bash
+        run: |
+          set -o pipefail
+          go run . --go ../../target/go-bench.txt --criterion ../../target/criterion | tee -a "$GITHUB_STEP_SUMMARY"

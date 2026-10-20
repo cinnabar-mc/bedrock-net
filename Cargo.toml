@@ -7,6 +7,7 @@ resolver = "3"
 rust-version = "1.93"
 
 [workspace.dependencies]
+criterion = { version = "0.8", default-features = false, features = ["cargo_bench_support"] }
 bedrock-protocol = { package = "bedrock-protocol-1-26-51", git = "https://github.com/cinnabar-mc/protocolgen", rev = "4e9626abbb51b8fa842f49b4aea0fb4d3c01a682" }
 bedrock-services = { git = "https://github.com/cinnabar-mc/bedrock-services", rev = "32c06beba3d9c9770341ff04e2ffe38aae649408", features = ["signaling-tokio"] }
 nethernet = { git = "https://github.com/cinnabar-mc/nethernet", rev = "81e6756558fdc59061eac86cfb0ca7c7d91c3f99" }
@@ -55,10 +56,21 @@ zeroize = "1"
 uuid = { version = "1", features = ["v4"], optional = true }
 
 [dev-dependencies]
+base64 = "0.22"
+criterion.workspace = true
 bedrock-services = { workspace = true, features = ["test-support"] }
 serde_json = "1"
 tokio = { version = "1", features = ["rt", "macros", "net", "time", "test-util", "process", "io-util"] }
 tokio-websockets = { version = "0.13", default-features = false, features = ["client", "server", "aws_lc_rs", "getrandom"] }
+
+[[bench]]
+name = "batch"
+harness = false
+
+[[bench]]
+name = "login"
+harness = false
+required-features = ["login"]
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

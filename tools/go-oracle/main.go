@@ -10,7 +10,12 @@ import (
 )
 
 // main reports failures once, at the command boundary.
+// With the argument "serve" it instead answers length-prefixed requests on stdin.
 func main() {
+	run := run
+	if len(os.Args) == 2 && os.Args[1] == "serve" {
+		run = func() error { return serve(os.Stdin, os.Stdout) }
+	}
 	if err := run(); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
