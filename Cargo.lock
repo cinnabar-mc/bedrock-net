@@ -232,6 +232,7 @@ dependencies = [
  "bytes",
  "futures",
  "nethernet-tokio",
+ "rand",
  "serde_json",
  "thiserror 2.0.21",
  "tokio",

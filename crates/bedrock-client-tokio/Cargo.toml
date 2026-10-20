@@ -11,8 +11,8 @@ publish = false
 
 [features]
 default = []
-raknet = ["bedrock-net/raknet", "dep:bedrock-client", "dep:bedrock-packs", "dep:serde_json"]
-nethernet = ["bedrock-net/messaging", "dep:nethernet-tokio", "dep:bedrock-client", "dep:bedrock-packs", "dep:serde_json"]
+raknet = ["bedrock-net/raknet", "tokio/net", "dep:bedrock-client", "dep:bedrock-packs", "dep:serde_json"]
+nethernet = ["bedrock-net/messaging", "dep:nethernet-tokio", "dep:rand", "tokio/net", "dep:bedrock-client", "dep:bedrock-packs", "dep:serde_json"]
 # Read-only observations used by integration fixtures.
 test-support = []
 
@@ -25,6 +25,7 @@ bedrock-protocol.workspace = true
 bytes = "1"
 futures = "0.3"
 nethernet-tokio = { workspace = true, optional = true }
+rand = { version = "0.10", optional = true }
 tokio = { version = "1", features = ["rt", "time", "macros", "sync"] }
 thiserror = "2"
 tracing = "0.1"
@@ -32,7 +33,7 @@ uuid = "1"
 zeroize = "1"
 
 [dev-dependencies]
-tokio = { version = "1", features = ["rt", "macros", "net", "time", "test-util"] }
+tokio = { version = "1", features = ["rt", "macros", "net", "time", "test-util", "process", "io-util"] }
 
 [lints]
 workspace = true

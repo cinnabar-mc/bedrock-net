@@ -121,10 +121,11 @@ impl ProbePeer {
 /// A completed probe send must emit its generated packet before returning a typed continuation.
 #[tokio::test]
 async fn generated_probe_send_emits_without_a_later_receive_or_close() {
-    tokio::time::timeout(HANDSHAKE_TIMEOUT, async {
+    let deadline = tokio::time::Instant::now() + HANDSHAKE_TIMEOUT;
+    tokio::time::timeout_at(deadline, async {
         let mut peer = ProbePeer::new().await;
         let address = peer.socket.local_addr().unwrap();
-        let (transport, ()) = tokio::join!(connect("raknet", address), peer.establish());
+        let (transport, ()) = tokio::join!(connect("raknet", address, deadline), peer.establish());
         let (transport, key) = transport.unwrap();
         let configured = ClientHandshake::new(key, HandshakeOptions::default()).unwrap();
         let (_settings, request) = configured.start().unwrap();
