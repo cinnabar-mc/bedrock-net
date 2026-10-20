@@ -2,7 +2,10 @@
 //! Bounded raw metadata and decoded-skin JSON without constructing a recursive Value tree.
 
 use super::{invalid, json_generated::MAX_NESTING_DEPTH};
-use serde::{Deserialize, Deserializer, de::Visitor};
+use serde::{
+    Deserialize, Deserializer,
+    de::{IgnoredAny, Visitor},
+};
 use serde_json::{Value, value::RawValue};
 use std::{fmt, io};
 
@@ -59,27 +62,26 @@ impl<'de> Deserialize<'de> for GoString {
     }
 }
 
-/// Keeps serde's iterative raw parser as the sole JSON grammar owner after bounding its scratch.
+/// Validates consumed map bytes; ignored strings need no UTF8 representation or value allocation.
+/// Serde owns byte grammar, including escapes, after the shared depth/number bound.
 pub(super) fn object_or_null(decoded: &[u8]) -> bool {
-    let Ok(input) = std::str::from_utf8(decoded) else {
-        return false;
-    };
-    if !within_limits(input, true) {
-        return false;
-    }
-    serde_json::from_str::<&RawValue>(input)
-        .is_ok_and(|raw| raw.get() == "null" || raw.get().starts_with('{'))
+    let root = decoded
+        .iter()
+        .copied()
+        .find(|byte| !matches!(*byte, b' ' | b'\t' | b'\n' | b'\r'));
+    matches!(root, Some(b'{' | b'n'))
+        && within_limits(decoded, true)
+        && serde_json::from_slice::<IgnoredAny>(decoded).is_ok()
 }
 
 /// Bounds every container, including opaque claims, without interpreting their scalar values.
 /// The raw parser remains responsible for JSON grammar and exact value lexemes.
 pub(super) fn within_nesting_limit(input: &str) -> bool {
-    within_limits(input, false)
+    within_limits(input.as_bytes(), false)
 }
 
-/// Counts unquoted containers and optionally checks consumed float values before raw parsing.
-fn within_limits(input: &str, finite_numbers: bool) -> bool {
-    let bytes = input.as_bytes();
+/// Counts unquoted containers and optionally checks consumed float values before JSON parsing.
+fn within_limits(bytes: &[u8], finite_numbers: bool) -> bool {
     let mut index = 0;
     let mut depth = 0usize;
     let mut quoted = false;
@@ -117,10 +119,9 @@ fn within_limits(input: &str, finite_numbers: bool) -> bool {
                 }) {
                     index += 1;
                 }
-                if !input[start..index]
-                    .parse::<f64>()
-                    .is_ok_and(|number| number.is_finite())
-                {
+                if !std::str::from_utf8(&bytes[start..index]).is_ok_and(|number| {
+                    number.parse::<f64>().is_ok_and(|number| number.is_finite())
+                }) {
                     return false;
                 }
             }

@@ -51,6 +51,8 @@ impl PartialEq for RawClientData {
 impl RawClientData {
     /// Preserves a bounded object after checking every occurrence of each known JSON field type.
     /// This does not validate skin, name, locale or account-owned identity.
+    /// Input has RawValue's UTF8 representation and retains opaque value lexemes.
+    /// Base64-decoded skin JSON is validated separately as bytes.
     ///
     /// # Errors
     /// Rejects oversized or malformed objects and any known-field JSON type mismatch.
