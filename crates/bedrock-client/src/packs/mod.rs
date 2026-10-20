@@ -90,6 +90,9 @@ pub enum PackError {
 pub enum PackEvent {
     /// Generated responses and chunk requests to send in their existing order.
     Send(Vec<packets::Packet>),
+    /// An early stack to replay after `PackNegotiation::ready_for_stack` becomes true.
+    /// Send each intervening `Send` effect before replaying this packet.
+    DeferredStack(Box<packets::ResourcePackStack>),
     /// The final stack acknowledgment and server-ordered archive ownership.
     Finished(PackComplete),
     /// A packet belonging to another client phase, returned without interpretation.
@@ -174,6 +177,12 @@ impl PackNegotiation {
     /// Release all shared references before processing the final stack.
     pub fn completed_archive(&self, id: uuid::Uuid) -> Option<Arc<Vec<u8>>> {
         self.transfer.completed_archive(id)
+    }
+
+    /// Whether all downloads completed and a deferred stack can now be replayed with `receive`.
+    /// Release any shared cache-write archive references before replaying the stack.
+    pub fn ready_for_stack(&self) -> bool {
+        self.transfer.ready_for_stack()
     }
 
     /// Advances the existing transfer and returns unrelated packets intact.
@@ -374,11 +383,20 @@ impl Transfer {
         }
     }
 
+    /// Checks stack readiness without consuming any download or sending a response.
+    fn ready_for_stack(&self) -> bool {
+        matches!(self.phase, Phase::Downloading)
+            && self
+                .downloads
+                .values()
+                .all(|download| download.complete.is_some())
+    }
+
     /// Advances one packet, retaining all transfer state on this same owner.
     ///
     /// # Errors
     /// Rejects out-of-phase resource packets, unsolicited/inconsistent chunks,
-    /// premature stacks or an unavailable required stack entry.
+    /// or an unavailable required stack entry. Early stacks are returned for replay.
     /// A received-packet error permanently ends this negotiation.
     fn receive(&mut self, packet: packets::Packet) -> Result<PackEvent, PackError> {
         if !matches!(self.phase, Phase::Downloading) {
@@ -436,6 +454,9 @@ impl Transfer {
                     );
                 }
                 Ok(PackEvent::Send(responses))
+            }
+            packets::Packet::ResourcePackStack(stack) if !self.ready_for_stack() => {
+                Ok(PackEvent::DeferredStack(Box::new(retained::stack(stack))))
             }
             packets::Packet::ResourcePackStack(stack) => {
                 let (handoff, metadata) = transfer::finish(

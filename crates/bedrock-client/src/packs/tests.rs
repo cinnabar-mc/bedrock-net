@@ -7,6 +7,7 @@ use bedrock_protocol::{
 use bytes::Bytes;
 use sha2::{Digest, Sha256};
 
+mod early_stack;
 mod optionality;
 
 /// Exercises the generated server wire contract before retaining its original metadata.
