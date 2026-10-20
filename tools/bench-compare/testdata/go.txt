@@ -1,0 +1,9 @@
+goos: linux
+goarch: amd64
+pkg: example
+cpu: Test CPU
+BenchmarkBatch/encode_flate-4         	  100000	      1000 ns/op	 64.00 MB/s	     512 B/op	       2 allocs/op
+BenchmarkBatch/encode_flate-4         	  100000	      1200 ns/op	 53.33 MB/s	     512 B/op	       2 allocs/op
+BenchmarkBatch/encode_flate-4         	  100000	      1100 ns/op	 58.18 MB/s	     512 B/op	       2 allocs/op
+BenchmarkBatch/go_only-4              	  100000	        10.5 ns/op
+PASS
