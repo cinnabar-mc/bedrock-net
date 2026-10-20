@@ -1,6 +1,6 @@
 //! Network-level Login requests and verified server key exchange.
 //!
-//! The caller owns the connection proof key, UTC clock and client-data schema.
+//! The caller owns the connection proof key, UTC clock and application metadata policy.
 //! These helpers format and verify opaque requests consumed by protocolgen's
 //! Login packet and derive the existing directional batch ciphers. Accepting
 //! authentication requires a caller-owned provider verifier. No helper performs I/O.
@@ -10,7 +10,8 @@ mod error;
 mod identity;
 mod jwt;
 pub use accepting::{
-    AuthenticatedLogin, LoginVerifier, TrustedIdentity, verify_authenticated_request,
+    AuthenticatedLogin, ClientExchangeKey, LoginVerifier, TrustedIdentity,
+    verify_authenticated_request,
 };
 
 use std::time::{SystemTime, UNIX_EPOCH};

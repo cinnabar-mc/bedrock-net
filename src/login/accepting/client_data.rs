@@ -1,0 +1,298 @@
+//! Validates standard client-signed claims without changing their original representation.
+// Validation rules follow gophertunnel's MIT-licensed ClientData.Validate; see LICENSE-GOPHERTUNNEL.
+
+use super::super::LoginError;
+use base64::Engine as _;
+use std::borrow::Cow;
+mod address;
+mod language;
+mod name_letters;
+use super::ClientExchangeKey;
+use address::resolution;
+use language::valid_language;
+
+const STRINGS: &[&str] = &[
+    "CapeData",
+    "CapeId",
+    "DeviceModel",
+    "DeviceId",
+    "GameVersion",
+    "LanguageCode",
+    "PlatformOfflineId",
+    "PlatformOnlineId",
+    "PlatformUserId",
+    "SelfSignedId",
+    "ServerAddress",
+    "SkinAnimationData",
+    "SkinData",
+    "SkinGeometryData",
+    "SkinGeometryDataEngineVersion",
+    "SkinId",
+    "PlayFabId",
+    "SkinResourcePatch",
+    "SkinColor",
+    "ArmSize",
+    "ThirdPartyName",
+    "PartyId",
+    "ProfileHash",
+    "Nonce",
+];
+const INTEGERS: &[&str] = &[
+    "ClientRandomId",
+    "CurrentInputMode",
+    "DefaultInputMode",
+    "DeviceOS",
+    "GuiScale",
+    "ClientEditorConnectionIntent",
+    "SkinImageHeight",
+    "SkinImageWidth",
+    "CapeImageHeight",
+    "CapeImageWidth",
+    "UIProfile",
+    "MaxViewDistance",
+    "MemoryTier",
+    "PlatformType",
+    "GraphicsMode",
+];
+const BOOLEANS: &[&str] = &[
+    "CapeOnClassicSkin",
+    "FilterProfanity",
+    "ClientIsEditorCapable",
+    "PersonaSkin",
+    "PremiumSkin",
+    "ThirdPartyNameOnly",
+    "TrustedSkin",
+    "OverrideSkin",
+    "CompatibleWithClientSideChunkGen",
+    "IsPartyLeader",
+];
+const ARRAYS: &[&str] = &["AnimatedImageData", "PersonaPieces", "PieceTintColors"];
+
+mod claims;
+use claims::{Claims, Schema};
+const CLIENT: Schema = Schema {
+    strings: STRINGS,
+    integers: INTEGERS,
+    booleans: BOOLEANS,
+    arrays: ARRAYS,
+    floats: &[],
+    key_update: true,
+};
+
+/// Decodes signed JSON without imposing UTF-8 rules stricter than Go's JSON decoder.
+pub(super) fn parse_json(bytes: &[u8]) -> Result<Box<serde_json::value::RawValue>, LoginError> {
+    let text = go_utf8(bytes);
+    serde_json::from_str(&text).map_err(|_| LoginError::MalformedJson)
+}
+
+/// Replaces each invalid UTF-8 byte, including each byte of an incomplete sequence.
+fn go_utf8(mut bytes: &[u8]) -> Cow<'_, str> {
+    if let Ok(text) = std::str::from_utf8(bytes) {
+        return Cow::Borrowed(text);
+    }
+    let mut text = String::with_capacity(bytes.len());
+    while !bytes.is_empty() {
+        match std::str::from_utf8(bytes) {
+            Ok(rest) => {
+                text.push_str(rest);
+                break;
+            }
+            Err(error) => {
+                let (valid, rest) = bytes.split_at(error.valid_up_to());
+                text.push_str(std::str::from_utf8(valid).expect("validated UTF-8 prefix"));
+                text.push('\u{fffd}');
+                bytes = &rest[1..];
+            }
+        }
+    }
+    Cow::Owned(text)
+}
+
+pub(super) struct Metadata {
+    pub(super) nonce: String,
+    pub(super) exchange_key: Option<ClientExchangeKey>,
+}
+
+/// Validates both signed claim views, final nonce/key state and required cached UDP resolution.
+pub(super) fn validate(
+    raw: &serde_json::value::RawValue,
+    resolve: impl FnOnce(&str) -> Result<(), LoginError>,
+) -> Result<Metadata, LoginError> {
+    let normalized = claims::normalize(raw.get()).ok_or(LoginError::MalformedJson)?;
+    let interpreted: &serde_json::value::RawValue =
+        serde_json::from_str(&normalized).map_err(|_| LoginError::MalformedJson)?;
+    if !claims::json_values(interpreted, true) {
+        return Err(LoginError::InvalidClientData);
+    }
+    let mut data = Claims::default();
+    data.merge(&normalized, CLIENT)
+        .ok_or(LoginError::InvalidClientData)?;
+    let exchange_key = data
+        .key_update()
+        .map(|raw| {
+            serde_json::from_str::<String>(raw.get())
+                .ok()
+                .and_then(|value| decode(&value))
+                .and_then(|bytes| ClientExchangeKey::parse(&bytes))
+                .ok_or(LoginError::InvalidClientData)
+        })
+        .transpose()?;
+    let valid = (1..=15).contains(&data.number("DeviceOS"))
+        // The baseline accepts any version containing at least one digit or dot.
+        && data.text("GameVersion").bytes().any(|b| b.is_ascii_digit() || b == b'.')
+        && valid_language(data.text("LanguageCode"))
+        && ["PlatformOfflineId", "SelfSignedId"].iter().all(|name| valid_uuid(data.text(name)))
+        && (data.text("PlatformOnlineId").is_empty() || (data.text("PlatformOnlineId").bytes().all(|b| b.is_ascii_digit()) && data.text("PlatformOnlineId").parse::<u64>().is_ok()))
+        && image(data.text("SkinData"), data.number("SkinImageWidth"), data.number("SkinImageHeight"))
+        && image(data.text("CapeData"), data.number("CapeImageWidth"), data.number("CapeImageHeight"))
+        && data.text("PlayFabId").bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+        && ["SkinGeometryData", "SkinResourcePatch"].iter().all(|name| json_base64(data.text(name)))
+        && !data.text("SkinId").is_empty()
+        && (0..=2).contains(&data.number("UIProfile"))
+        && !data.text("ThirdPartyName").is_empty()
+        && data.text("ThirdPartyName").len() <= 16
+        && name_letters::contains_letter_or_space(data.text("ThirdPartyName"))
+        && data.entries("AnimatedImageData").iter().all(|entry| {
+            image(entry.text("Image"),entry.number("ImageWidth"),entry.number("ImageHeight"))
+                && (0..=3).contains(&entry.number("Type"))
+        });
+    if !valid {
+        return Err(LoginError::InvalidClientData);
+    }
+    if let Some(address) =
+        resolution(data.text("ServerAddress")).ok_or(LoginError::InvalidClientData)?
+    {
+        resolve(&address).map_err(LoginError::redact_peer)?;
+    }
+    Ok(Metadata {
+        nonce: data.text("Nonce").to_owned(),
+        exchange_key,
+    })
+}
+
+/// Accepts the UUID spellings used by Go, including case-insensitive URN prefixes.
+fn valid_uuid(value: &str) -> bool {
+    if value.is_empty() {
+        return true;
+    }
+    let bytes = value.as_bytes();
+    let bytes = match bytes.len() {
+        32 | 36 => bytes,
+        38 => &bytes[1..37],
+        45 if bytes[..9].eq_ignore_ascii_case(b"urn:uuid:") => &bytes[9..],
+        _ => return false,
+    };
+    std::str::from_utf8(bytes).is_ok_and(|value| uuid::Uuid::parse_str(value).is_ok())
+}
+
+/// Decodes standard base64 while retaining Go's tolerance for embedded CR and LF.
+fn decode(value: &str) -> Option<Vec<u8>> {
+    let value = if value.bytes().any(|b| matches!(b, b'\r' | b'\n')) {
+        Cow::Owned(value.replace(['\r', '\n'], ""))
+    } else {
+        Cow::Borrowed(value)
+    };
+    // Go accepts nonzero unused bits in the final base64 sextet.
+    base64::engine::GeneralPurpose::new(
+        &base64::alphabet::STANDARD,
+        base64::engine::GeneralPurposeConfig::new().with_decode_allow_trailing_bits(true),
+    )
+    .decode(value.as_bytes())
+    .ok()
+}
+
+/// Checks the decoded image length using the baseline's signed 64-bit dimension arithmetic.
+fn image(value: &str, width: i64, height: i64) -> bool {
+    let length = width.wrapping_mul(height).wrapping_mul(4);
+    decode(value).is_some_and(|bytes| i64::try_from(bytes.len()) == Ok(length))
+}
+
+/// Accepts empty or null/object JSON payloads, as Go's map decoder does.
+fn json_base64(value: &str) -> bool {
+    decode(value).is_some_and(|bytes| {
+        bytes.is_empty()
+            || claims::normalize(&go_utf8(&bytes))
+                .and_then(|text| serde_json::value::RawValue::from_string(text.into_owned()).ok())
+                .is_some_and(|value| {
+                    let text = value.get().trim_start();
+                    (text.starts_with('{') || text == "null") && claims::json_values(&value, false)
+                })
+    })
+}
+
+/// Supplies each modeled nested Go struct's scalar and fixed-array types.
+fn array_schema(name: &str) -> Schema {
+    match name {
+        "AnimatedImageData" => Schema {
+            strings: &["Image"],
+            integers: &["ImageWidth", "ImageHeight", "Type", "AnimationExpression"],
+            booleans: &[],
+            arrays: &[],
+            floats: &["Frames"],
+            key_update: false,
+        },
+        "PersonaPieces" => Schema {
+            strings: &["PackId", "PieceId", "PieceType", "ProductId"],
+            integers: &[],
+            booleans: &["IsDefault"],
+            arrays: &[],
+            floats: &[],
+            key_update: false,
+        },
+        "PieceTintColors" => Schema {
+            strings: &["PieceType"],
+            integers: &[],
+            booleans: &[],
+            arrays: &["Colors"],
+            floats: &[],
+            key_update: false,
+        },
+        _ => unreachable!("only modeled slice fields have element schemas"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn standard_claims_match_the_signed_go_fixtures() {
+        let fixtures: Vec<serde_json::Value> = serde_json::from_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tools/go-oracle/client-data-cases.json"
+        )))
+        .unwrap();
+        assert!(!fixtures.is_empty());
+        for fixture in fixtures {
+            let mut base = serde_json::json!({"DeviceOS":1,"GameVersion":"1.26.51","LanguageCode":"en_US","SkinId":"synthetic","ThirdPartyName":"Probe"});
+            for field in fixture["remove"].as_array().unwrap() {
+                base.as_object_mut()
+                    .unwrap()
+                    .remove(field.as_str().unwrap());
+            }
+            let base = base.to_string();
+            let mut raw = base.as_bytes()[..base.len() - 1].to_vec();
+            raw.push(b',');
+            let claims = fixture["claims_base64"]
+                .as_str()
+                .map(|s| base64::engine::general_purpose::STANDARD.decode(s).unwrap())
+                .unwrap_or_else(|| fixture["claims"].as_str().unwrap().as_bytes().to_vec());
+            raw.extend_from_slice(&claims);
+            raw.push(b'}');
+            let raw = parse_json(&raw).unwrap();
+            assert_eq!(
+                validate(&raw, |address| match address {
+                    "127.0.0.1:domain" | "localhost:19132" => Ok(()),
+                    "127.0.0.1:does-not-exist-service"
+                    | "bad host.invalid:19132"
+                    | "127.0.0.1:1073741824x" => Err(LoginError::InvalidClientData),
+                    _ => panic!("missing synthetic cached resolver result"),
+                })
+                .is_ok(),
+                fixture["accepted"],
+                "{}",
+                fixture["name"]
+            );
+        }
+    }
+}

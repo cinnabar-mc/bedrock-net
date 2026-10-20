@@ -321,5 +321,7 @@ func loginParse(req *serveRequest) (any, error) {
 		"display_name":  identity.DisplayName,
 		"identity":      identity.Identity,
 		"third_party":   client.ThirdPartyName,
+		"nonce":         client.Nonce,
+		"exchange_key":  login.MarshalPublicKey(auth.PublicKey),
 	}, nil
 }

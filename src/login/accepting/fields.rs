@@ -48,59 +48,9 @@ impl<'de> Deserialize<'de> for Envelope {
     }
 }
 
-pub(super) struct Metadata {
-    pub(super) nonce: String,
-    pub(super) skin_id_valid: bool,
-}
-
-impl<'de> Deserialize<'de> for Metadata {
-    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        struct Fields;
-        impl<'de> Visitor<'de> for Fields {
-            type Value = Metadata;
-
-            fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-                formatter.write_str("a client metadata object")
-            }
-
-            fn visit_map<M: MapAccess<'de>>(self, mut map: M) -> Result<Self::Value, M::Error> {
-                let mut nonce = None;
-                let mut seen = false;
-                let mut skin_id_valid = false;
-                while let Some(name) = map.next_key::<String>()? {
-                    if matches_field(&name, "Nonce") {
-                        if seen {
-                            return Err(de::Error::custom("ambiguous Login nonce field"));
-                        }
-                        seen = true;
-                        nonce = map.next_value::<Option<String>>()?;
-                    } else if matches_field(&name, "SkinId") {
-                        let raw = map.next_value::<Box<serde_json::value::RawValue>>()?;
-                        let raw = raw.get().trim();
-                        if raw != "null" {
-                            if !raw.starts_with('"') {
-                                return Err(de::Error::custom("invalid Login skin identifier"));
-                            }
-                            // Any nonempty JSON string decodes to at least one character, including replacement characters.
-                            skin_id_valid = raw.len() > 2;
-                        }
-                    } else {
-                        map.next_value::<IgnoredAny>()?;
-                    }
-                }
-                Ok(Metadata {
-                    nonce: nonce.unwrap_or_default(),
-                    skin_id_valid,
-                })
-            }
-        }
-        deserializer.deserialize_map(Fields)
-    }
-}
-
 /// Matches Go's Unicode SimpleFold for ASCII field names, including its K/S fold orbits.
 /// This is confined to outer Login/client fields; JWT claims and JWS headers never use it.
-fn matches_field(name: &str, expected: &str) -> bool {
+pub(super) fn matches_field(name: &str, expected: &str) -> bool {
     name.chars()
         .map(|rune| match rune {
             '\u{212a}' => 'K',
@@ -130,12 +80,6 @@ mod tests {
         ] {
             assert!(serde_json::from_str::<Envelope>(raw).is_err());
         }
-        let metadata: Metadata =
-            serde_json::from_str(r#"{"nonce":null,"opaque":{"Nonce":"ignored"}}"#).unwrap();
-        assert_eq!(metadata.nonce, "");
-        assert!(
-            serde_json::from_str::<Metadata>(r#"{"nonce":null,"Nonce":"replacement"}"#).is_err()
-        );
         // Unicode uppercase expansion is not SimpleFold; this spelling must remain unknown.
         let envelope: Envelope =
             serde_json::from_str(r#"{"AuthentıcationType":0,"Token":"exact"}"#).unwrap();

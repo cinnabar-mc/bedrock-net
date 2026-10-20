@@ -80,10 +80,7 @@ fn credential(issuer: &SigningKey, client: &SigningKey) -> String {
 
 /// Retains client-controlled spelling, including a claimed XUID that must never replace the provider's.
 fn metadata() -> Box<RawValue> {
-    RawValue::from_string(
-        "{\"Nonce\":\"original-member-nonce\",\"XUID\":\"999\",\"SkinId\":\"synthetic\"}".into(),
-    )
-    .unwrap()
+    RawValue::from_string("{\"Nonce\":\"original-member-nonce\",\"XUID\":\"999\",\"DeviceOS\":1,\"GameVersion\":\"1.26.51\",\"LanguageCode\":\"en_US\",\"SkinId\":\"synthetic\",\"ThirdPartyName\":\"Probe\"}".into()).unwrap()
 }
 
 /// Provider presentation survives signed client spoofing and cannot change during revalidation.
@@ -131,7 +128,7 @@ fn accepting_login_retains_provider_player_identity_across_revalidation() {
         },
         changed: Cell::new(0),
     };
-    let metadata = RawValue::from_string(r#"{"Nonce":"original-member-nonce","ThirdPartyName":"Spoofed","SelfSignedId":"00000000-0000-4000-8000-000000000099","PlayFabId":"spoofed-master","SkinId":"synthetic"}"#.into()).unwrap();
+    let metadata = RawValue::from_string(r#"{"Nonce":"original-member-nonce","ThirdPartyName":"Spoofed","SelfSignedId":"00000000-0000-4000-8000-000000000099","PlayFabId":"deadbeef","DeviceOS":1,"GameVersion":"1.26.51","LanguageCode":"en_US","SkinId":"synthetic"}"#.into()).unwrap();
     let request =
         encode_authenticated_request(&client, &credential(&issuer, &client), &metadata, LIMIT)
             .unwrap();
@@ -328,7 +325,7 @@ fn replace_envelope(request: &[u8], envelope: &[u8]) -> Vec<u8> {
 }
 
 #[test]
-fn accepting_go_field_casing_preserves_signed_nonce_and_rejects_ambiguous_aliases() {
+fn accepting_go_field_casing_uses_final_nonce_and_rejects_ambiguous_envelopes() {
     let issuer = key(3);
     let client = key(4);
     let provider = Provider {
@@ -339,7 +336,7 @@ fn accepting_go_field_casing_preserves_signed_nonce_and_rejects_ambiguous_aliase
     let now = UNIX_EPOCH + Duration::from_secs(1000);
     for field in ["Nonce", "nonce", "NONCE", "nOnCe"] {
         let text = format!(
-            r#"{{"{field}":"original-member-nonce","opaque":{{"nonce":"unrelated"}},"SkinId":"synthetic"}}"#
+            r#"{{"{field}":"original-member-nonce","opaque":{{"nonce":"unrelated"}},"DeviceOS":1,"GameVersion":"1.26.51","LanguageCode":"en_US","SkinId":"synthetic","ThirdPartyName":"Probe"}}"#
         );
         let metadata = RawValue::from_string(text.clone()).unwrap();
         let request = encode_authenticated_request(&client, &token, &metadata, LIMIT).unwrap();
@@ -364,23 +361,32 @@ fn accepting_go_field_casing_preserves_signed_nonce_and_rejects_ambiguous_aliase
             assert_eq!(login.client_data().get().trim(), text);
         }
     }
-    for json in [
-        r#"{"Nonce":"original-member-nonce","nonce":"different"}"#,
-        r#"{"nonce":"original-member-nonce","NONCE":"original-member-nonce"}"#,
-        r#"{"Nonce":"first","Nonce":"second"}"#,
+    for (json, expected) in [
+        (
+            r#"{"Nonce":"original-member-nonce","nonce":"different","DeviceOS":1,"GameVersion":"1.26.51","LanguageCode":"en_US","SkinId":"synthetic","ThirdPartyName":"Probe"}"#,
+            Some("different"),
+        ),
+        (
+            r#"{"nonce":"original-member-nonce","NONCE":"original-member-nonce","DeviceOS":1,"GameVersion":"1.26.51","LanguageCode":"en_US","SkinId":"synthetic","ThirdPartyName":"Probe"}"#,
+            Some("original-member-nonce"),
+        ),
+        (
+            r#"{"Nonce":"first","Nonce":"second","DeviceOS":1,"GameVersion":"1.26.51","LanguageCode":"en_US","SkinId":"synthetic","ThirdPartyName":"Probe"}"#,
+            None,
+        ),
     ] {
-        let json = format!("{},\"SkinId\":\"synthetic\"}}", &json[..json.len() - 1]);
         let request = encode_authenticated_request(
             &client,
             &token,
-            &RawValue::from_string(json).unwrap(),
+            &RawValue::from_string(json.into()).unwrap(),
             LIMIT,
         )
         .unwrap();
-        assert!(
-            verify_authenticated_request(&request, &provider, now, LIMIT).is_err(),
-            "ambiguous signed nonce was admitted"
-        );
+        let result = verify_authenticated_request(&request, &provider, now, LIMIT);
+        match expected {
+            Some(nonce) => assert_eq!(result.unwrap().nonce(), nonce),
+            None => assert!(result.is_err(), "exact duplicate signed nonce was admitted"),
+        }
     }
     let request = encode_authenticated_request(&client, &token, &metadata(), LIMIT).unwrap();
     for envelope in [
@@ -476,13 +482,17 @@ fn accepting_login_requires_a_nonempty_string_skin_identifier() {
     let token = credential(&issuer, &client);
     let now = UNIX_EPOCH + Duration::from_secs(1000);
     for raw in [
-        r#"{}"#,
+        r#"{"unknown":0}"#,
         r#"{"SkinId":""}"#,
         r#"{"SkinId":  "" }"#,
         r#"{"skinid":null}"#,
         r#"{"SKINID":42}"#,
     ] {
-        let metadata = RawValue::from_string(raw.into()).unwrap();
+        let raw = format!(
+            r#"{{"DeviceOS":1,"GameVersion":"1.26.51","LanguageCode":"en_US","ThirdPartyName":"Probe",{}"#,
+            &raw[1..]
+        );
+        let metadata = RawValue::from_string(raw).unwrap();
         let request = encode_authenticated_request(&client, &token, &metadata, LIMIT).unwrap();
         assert!(verify_authenticated_request(&request, &provider, now, LIMIT).is_err());
     }
@@ -491,8 +501,124 @@ fn accepting_login_requires_a_nonempty_string_skin_identifier() {
         r#"{"SkinId":"\ud800"}"#,
         r#"{"skinid":"synthetic","SkinId":null}"#,
     ] {
-        let metadata = RawValue::from_string(raw.into()).unwrap();
+        let raw = format!(
+            r#"{{"DeviceOS":1,"GameVersion":"1.26.51","LanguageCode":"en_US","ThirdPartyName":"Probe",{}"#,
+            &raw[1..]
+        );
+        let metadata = RawValue::from_string(raw).unwrap();
         let request = encode_authenticated_request(&client, &token, &metadata, LIMIT).unwrap();
         assert!(verify_authenticated_request(&request, &provider, now, LIMIT).is_ok());
     }
+}
+
+#[test]
+fn signed_key_rotation_retains_the_provider_signer_and_revalidation_binding() {
+    let issuer = key(3);
+    let signer = key(4);
+    let rotated = key(6);
+    let provider = Provider {
+        key: *issuer.verifying_key(),
+        calls: Cell::new(0),
+    };
+    let token = credential(&issuer, &signer);
+    let mut data: Value = serde_json::from_str(metadata().get()).unwrap();
+    data["identityPublicKey"] = STANDARD
+        .encode(
+            rotated
+                .verifying_key()
+                .to_public_key_der()
+                .unwrap()
+                .as_bytes(),
+        )
+        .into();
+    let data = RawValue::from_string(data.to_string()).unwrap();
+    let now = UNIX_EPOCH + Duration::from_secs(1000);
+    let request = encode_authenticated_request(&signer, &token, &data, LIMIT).unwrap();
+    let login = verify_authenticated_request(&request, &provider, now, LIMIT).unwrap();
+    assert_eq!(login.signing_key(), signer.verifying_key());
+    assert_eq!(
+        login.exchange_key().as_p384(),
+        Some(rotated.verifying_key())
+    );
+    assert_eq!(login.client_data().get().trim(), data.get());
+    assert_eq!(login.xuid(), "123");
+    login.revalidate(&provider, now).unwrap();
+    assert!(matches!(
+        login.revalidate(&provider, now + Duration::from_secs(60)),
+        Err(LoginError::Authentication)
+    ));
+    let wrong = encode_authenticated_request(&rotated, &token, &data, LIMIT).unwrap();
+    assert!(matches!(
+        verify_authenticated_request(&wrong, &provider, now, LIMIT),
+        Err(LoginError::Signature(_))
+    ));
+}
+
+#[test]
+fn unresolved_signed_addresses_require_a_cached_result_before_admission() {
+    struct Cached {
+        provider: Provider,
+        result: Cell<Option<bool>>,
+        queries: std::cell::RefCell<Vec<String>>,
+    }
+    impl LoginVerifier for Cached {
+        /// Preserves the configured provider authority while adding a separate cached lookup capability.
+        fn verify(&self, token: &str, now: SystemTime) -> Result<TrustedIdentity, LoginError> {
+            self.provider.verify(token, now)
+        }
+        /// Records only the final signed lookup; a miss requests external acquisition without admission.
+        fn resolve_client_address(&self, address: &str) -> Result<(), LoginError> {
+            self.queries.borrow_mut().push(address.to_owned());
+            match self.result.get() {
+                None => Err(LoginError::AddressResolutionRequired),
+                Some(false) => Err(LoginError::InvalidClientData),
+                Some(true) => Ok(()),
+            }
+        }
+    }
+    let issuer = key(3);
+    let signer = key(4);
+    let provider = Cached {
+        provider: Provider {
+            key: *issuer.verifying_key(),
+            calls: Cell::new(0),
+        },
+        result: Cell::new(None),
+        queries: Default::default(),
+    };
+    let token = credential(&issuer, &signer);
+    let data=RawValue::from_string(r#"{"DeviceOS":1,"GameVersion":"1.26.51","LanguageCode":"en_US","SkinId":"synthetic","ThirdPartyName":"Probe","ServerAddress":"overwritten.invalid:bad","serveraddress":"cache.example:service","SERVERADDRESS":null,"Nonce":"first","nonce":"final","NONCE":null}"#.into()).unwrap();
+    let request = encode_authenticated_request(&signer, &token, &data, LIMIT).unwrap();
+    let now = UNIX_EPOCH + Duration::from_secs(1000);
+    assert!(matches!(
+        verify_authenticated_request(&request, &provider, now, LIMIT),
+        Err(LoginError::AddressResolutionRequired)
+    ));
+    assert_eq!(&*provider.queries.borrow(), &["cache.example:service"]);
+    provider.result.set(Some(false));
+    assert!(matches!(
+        verify_authenticated_request(&request, &provider, now, LIMIT),
+        Err(LoginError::InvalidClientData)
+    ));
+    provider.result.set(Some(true));
+    let login = verify_authenticated_request(&request, &provider, now, LIMIT).unwrap();
+    assert_eq!(login.nonce(), "final");
+    assert_eq!(login.client_data_json_bytes(), data.get().as_bytes());
+    login.revalidate(&provider, now).unwrap();
+    assert_eq!(
+        provider.queries.borrow().len(),
+        3,
+        "approval revalidation changed the original metadata decision"
+    );
+    let wrong = encode_authenticated_request(&key(8), &token, &data, LIMIT).unwrap();
+    assert!(verify_authenticated_request(&wrong, &provider, now, LIMIT).is_err());
+    assert_eq!(
+        provider.queries.borrow().len(),
+        3,
+        "unverified metadata reached resolution"
+    );
+    assert!(matches!(
+        verify_authenticated_request(&request, &provider.provider, now, LIMIT),
+        Err(LoginError::AddressResolutionRequired)
+    ));
 }
