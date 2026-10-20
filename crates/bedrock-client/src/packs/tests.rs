@@ -912,12 +912,21 @@ fn required_builtin_selection_survives_a_downloaded_version_mismatch() {
     };
     let (_, handoff) = complete.into_parts();
     assert_eq!(handoff.into_archives()[0].archive, [7, 8]);
-    let mut unavailable = make(&downloaded_version, true);
-    assert!(
-        unavailable
-            .receive(stack(&format!("{version}-not-catalogued"), false).into())
-            .is_err()
-    );
+    for stack_required in [false, true] {
+        let mut unavailable = make(&downloaded_version, true);
+        let result =
+            unavailable.receive(stack(&format!("{version}-not-catalogued"), stack_required).into());
+        if stack_required {
+            assert!(result.is_err());
+        } else {
+            let PackEvent::Finished(complete) = result.unwrap() else {
+                panic!("the optional unavailable tuple did not finish");
+            };
+            let (_, handoff) = complete.into_parts();
+            assert!(handoff.required());
+            assert!(handoff.is_empty());
+        }
+    }
 }
 
 /// Asserts that every response in a request window is an actual generated chunk request.
