@@ -17,8 +17,11 @@ pub const MAX_TRANSFER_HOST_BYTES: usize = 255;
 /// The optional gatherings configuration is not retained: nothing consumes it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TransferTarget {
+    /// Trimmed server-supplied host, retained without resolving or following it.
     pub host: String,
+    /// Nonzero destination port supplied by the server.
     pub port: u16,
+    /// Server request to reload world state when following this target.
     pub reload_world: bool,
 }
 
@@ -28,9 +31,16 @@ pub struct TransferTarget {
 /// caller counts the rejection instead of tearing down.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TransferRejection {
+    /// No host remains after trimming surrounding whitespace.
     EmptyHost,
-    HostTooLong { bytes: usize },
+    /// The trimmed host exceeds the retained byte bound.
+    HostTooLong {
+        /// Actual trimmed host size, without truncation.
+        bytes: usize,
+    },
+    /// The host contains a control character or interior ASCII space.
     InvalidHostCharacter,
+    /// The destination port cannot address a remote endpoint.
     ZeroPort,
 }
 
@@ -183,8 +193,7 @@ mod tests {
 
     #[test]
     fn cross_host_targets_are_not_filtered_by_any_allowlist() {
-        // A vanilla lobby routinely hops clients to an unrelated minigame
-        // host. Well-formedness must not reject the shape of that target.
+        // Following unrelated hosts is caller policy, separate from well-formedness.
         let event =
             TransferTarget::from_packet_data(&transfer_data("minigames.other-host.example", 19321))
                 .expect("well-formed target")
