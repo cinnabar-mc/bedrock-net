@@ -50,13 +50,19 @@ async fn main() -> Result<(), Box<dyn Error>> {
     if arguments.next().is_some() {
         return Err(io::Error::new(io::ErrorKind::InvalidInput, USAGE).into());
     }
-    tokio::time::timeout(HANDSHAKE_TIMEOUT, probe(&kind, address, login)).await??;
+    let deadline = tokio::time::Instant::now() + HANDSHAKE_TIMEOUT;
+    tokio::time::timeout_at(deadline, probe(&kind, address, login, deadline)).await??;
     Ok(())
 }
 
 /// Negotiates settings and, when requested, stops after Login acceptance and the pack offer.
-async fn probe(kind: &str, address: SocketAddr, login: bool) -> Result<(), Box<dyn Error>> {
-    let (transport, key) = crate::transport::connect(kind, address).await?;
+async fn probe(
+    kind: &str,
+    address: SocketAddr,
+    login: bool,
+    deadline: tokio::time::Instant,
+) -> Result<(), Box<dyn Error>> {
+    let (transport, key) = crate::transport::connect(kind, address, deadline).await?;
     let configured = ClientHandshake::new(
         key,
         HandshakeOptions {

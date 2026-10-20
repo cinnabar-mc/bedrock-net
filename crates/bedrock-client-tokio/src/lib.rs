@@ -6,6 +6,8 @@ use bytes::Bytes;
 use std::io;
 
 #[cfg(any(feature = "raknet", feature = "nethernet"))]
+pub mod connect;
+#[cfg(any(feature = "raknet", feature = "nethernet"))]
 pub mod connection;
 pub mod error;
 #[cfg(any(feature = "raknet", feature = "nethernet"))]

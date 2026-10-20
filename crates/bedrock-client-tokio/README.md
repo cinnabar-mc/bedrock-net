@@ -11,6 +11,18 @@ RakNet, protected messaging or Ready NetherNet associations. Dialing, endpoint
 trust, account acquisition and membership stay with the caller. The standalone
 `bedrock-probe` and Cinnabar use these same owners directly.
 
+`connect::raknet::connect_resolved` races caller-resolved candidates using the
+supplied RakNet options. `connect::lan` owns directed discovery and the same
+Ready association under an explicit `DirectedLanConfig`; the caller supplies its
+actual identity/trust, wire-admission selection and nonce bound. Local-world
+eligibility remains caller policy. `connect::http::connect` consumes prepared
+HTTP signaling and returns the actual Ready client for caller-owned first-use
+key approval. These helpers retain the first absolute cutoff and credential
+expiry, drop losing attempts, and create no replacement session owner. DNS,
+address-mode choices, TLS/egress clients and service grants stay above them.
+Canceling a borrowed wait does not establish that its owner retired; retain the
+existing caller cleanup discipline.
+
 Construct `Connection` with the actual `BatchLimits`, generated receive
 `wire::Limits` and aggregate deferred-byte bound for your role. Its incoming-only
 decoded ceiling activates at the original compression-settings transition;

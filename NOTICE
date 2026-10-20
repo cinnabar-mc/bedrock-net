@@ -8,7 +8,7 @@ Noncommercial License 1.0.0 reproduced in LICENSE-CINNABAR. They are not covered
 crate's MIT/Apache license choice; individual source files identify this exception.
 
 The bedrock-client, bedrock-client-tokio and bedrock-packs crates extract resource-pack negotiation,
-caller-driven Tokio settings/Login/pack wire effects and connection/transport
+caller-driven Tokio resolved/direct setup, settings/Login/pack wire effects and connection/transport
 lifecycles, bounded transfer-target normalization, archive handoff and text
 handling from cinnabar-mc/cinnabar. These extracted
 implementations retain the PolyForm Noncommercial License 1.0.0 reproduced in

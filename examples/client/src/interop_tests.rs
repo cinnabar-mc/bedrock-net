@@ -140,8 +140,12 @@ async fn next_packet(
 }
 
 /// Runs Login, packs and startup with the probe's session until the server ends the connection.
-async fn join(address: SocketAddr, observed: &mut Observed) -> Result<(), Box<dyn Error>> {
-    let (transport, key) = crate::transport::connect("raknet", address).await?;
+async fn join(
+    address: SocketAddr,
+    observed: &mut Observed,
+    deadline: tokio::time::Instant,
+) -> Result<(), Box<dyn Error>> {
+    let (transport, key) = crate::transport::connect("raknet", address, deadline).await?;
     let configured = ClientHandshake::new(
         key,
         HandshakeOptions {
@@ -269,7 +273,8 @@ fn scenario(name: &str) -> Option<(Observed, Value, Value)> {
         .build()
         .unwrap();
     let joined = runtime.block_on(async {
-        tokio::time::timeout(HANDSHAKE_TIMEOUT, join(helper.address, &mut observed)).await
+        let deadline = tokio::time::Instant::now() + HANDSHAKE_TIMEOUT;
+        tokio::time::timeout_at(deadline, join(helper.address, &mut observed, deadline)).await
     });
     let go = helper.go.clone();
     let verdict = helper.finish();
