@@ -1,6 +1,11 @@
 bedrock-net
 Copyright 2026 Cinnabar contributors
 
+The optional src/login/provider implementation and its tests extract provider
+verification from cinnabar-mc/cinnabar and retain the PolyForm Noncommercial
+License 1.0.0 reproduced in LICENSE-CINNABAR. They are not covered by the root
+crate's MIT/Apache license choice; individual source files identify this exception.
+
 The bedrock-client and bedrock-packs crates extract resource-pack negotiation,
 archive handoff and text handling from cinnabar-mc/cinnabar. These extracted
 implementations retain the PolyForm Noncommercial License 1.0.0 reproduced in

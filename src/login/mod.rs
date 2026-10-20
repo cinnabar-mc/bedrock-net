@@ -9,6 +9,8 @@ mod accepting;
 mod error;
 mod identity;
 mod jwt;
+#[cfg(feature = "provider-verification")]
+pub mod provider;
 pub use accepting::{
     AuthenticatedLogin, LoginVerifier, TrustedIdentity, verify_authenticated_request,
 };
