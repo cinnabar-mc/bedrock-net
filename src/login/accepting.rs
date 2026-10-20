@@ -154,7 +154,7 @@ impl AuthenticatedLogin {
 ///
 /// # Errors
 /// Rejects an oversized/truncated/negative-length/trailing frame, unsupported
-/// authentication, provider rejection, invalid client signature/JSON/nonce.
+/// authentication, provider rejection, invalid client signature/JSON/nonce, or an empty skin identifier.
 pub fn verify_authenticated_request(
     request: &[u8],
     verifier: &impl LoginVerifier,
@@ -191,6 +191,9 @@ pub fn verify_authenticated_request(
     super::validate_client_data(&client_data, max_request_bytes)?;
     let metadata: fields::Metadata =
         serde_json::from_str(client_data.get()).map_err(|_| LoginError::MalformedJson)?;
+    if !metadata.skin_id_valid {
+        return Err(LoginError::InvalidClientData);
+    }
     Ok(AuthenticatedLogin {
         identity,
         credential: Zeroizing::new(token),
