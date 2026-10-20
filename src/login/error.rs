@@ -16,8 +16,8 @@ pub enum LoginError {
     /// A Login field cannot be represented by its wire length prefix.
     #[error("login field length is out of range")]
     InvalidLength,
-    /// Client data is valid JSON but is not an object.
-    #[error("login client data must be a JSON object")]
+    /// Client data is not an object or has no nonempty string skin identifier.
+    #[error("invalid login client data")]
     InvalidClientData,
     /// Authenticated Login requires a nonempty previously acquired credential.
     #[error("login authentication token is empty")]
