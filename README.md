@@ -66,6 +66,22 @@ After negotiating compression, `with_incoming_decoded_limit` can set a separate
 incoming decoded-byte ceiling. It preserves the original outgoing, wire and
 packet-count limits; the initial plaintext phase keeps its original byte policy.
 
+Keep one codec per connection to reuse its compression state. For synchronous
+packet handling, `packets.for_each_slice` visits borrowed packet bytes without
+creating a shared owner for each packet. Use the owning iterator when packets
+must outlive the callback.
+
+After sending a batch group, `encode_into(packets, &mut batches)` can reuse its
+uncompressed buffers for the next group. Retained shared batches keep their
+original bytes. Keep unsent encrypted batches until delivery before recycling.
+
+`BatchEncryptor::encrypt_batch(header, message)` and
+`BatchDecryptor::decrypt_batch(header, message)` accept complete batches and
+preserve the clear transport marker. Pass an owned `Bytes` value to allow
+in-place encryption or decryption; shared inputs are copied. The
+[probe session](examples/client/src/session.rs) shows this flow and sends each
+batch immediately.
+
 ## Typed connection flow
 
 `bedrock-client` exposes consumed owners for completed local transitions:

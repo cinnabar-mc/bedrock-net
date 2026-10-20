@@ -10,9 +10,10 @@ use bedrock_net::{
     BatchCodec, BatchHeader, BatchLimits, BatchPhase, CompressionAlgorithm, CompressionSettings,
     DecodeOutcome,
 };
-use bytes::{Bytes, BytesMut};
+use bytes::Bytes;
 use criterion::{Criterion, Throughput, criterion_group, criterion_main};
 
+/// Builds a connection codec with the selected outgoing compression.
 fn negotiated(
     algorithm: CompressionAlgorithm,
     threshold: u16,
@@ -59,9 +60,9 @@ fn reader(algorithm: CompressionAlgorithm) -> BatchCodec<bedrock_net::Negotiated
 fn drain<S: BatchPhase>(codec: &BatchCodec<S>, wire: Bytes) {
     match codec.decode(wire).unwrap() {
         DecodeOutcome::Packets { packets, .. } => {
-            for packet in packets {
+            packets.for_each_slice(|packet| {
                 black_box(packet);
-            }
+            });
         }
         DecodeOutcome::Dropped(reason) => panic!("bench batch dropped: {reason}"),
     }
@@ -81,9 +82,14 @@ fn codec_group<S: BatchPhase>(
         let codec = codec();
         match case.op.as_str() {
             "encode" | "compress" => {
-                verify(&reader(), &codec.encode(&packets).unwrap(), &packets);
+                let mut frames = Vec::new();
+                codec.encode_into(&packets, &mut frames).unwrap();
+                verify(&reader(), &frames, &packets);
                 bench.bench_function(case.name(), |b| {
-                    b.iter(|| black_box(codec.encode(&packets).unwrap()))
+                    b.iter(|| {
+                        codec.encode_into(&packets, &mut frames).unwrap();
+                        black_box(&frames);
+                    })
                 });
             }
             "decode" | "decompress" => {
@@ -128,30 +134,33 @@ fn snappy(c: &mut Criterion) {
     );
 }
 
-/// Restores the transport marker around a cipher body, as connection call sites do.
-fn envelope(body: Bytes) -> Bytes {
-    let mut message = BytesMut::with_capacity(body.len() + 1);
-    message.extend_from_slice(&[0xfe]);
-    message.extend_from_slice(&body);
-    message.freeze()
-}
-
-/// Encodes then encrypts one batch exactly as a connection does: the cipher sees a shared
-/// `slice(1..)` of the framed message and the marker is re-added afterwards.
+/// Encodes then encrypts complete batches in place, preserving the transport marker.
 fn encrypt_message(
     codec: &BatchCodec<bedrock_net::Negotiated>,
     encryptor: &mut BatchEncryptor,
     packets: &[Vec<u8>],
 ) -> Vec<Bytes> {
-    codec
-        .encode(packets)
-        .unwrap()
-        .into_iter()
-        .map(|message| envelope(encryptor.encrypt(message.slice(1..)).unwrap()))
-        .collect()
+    let mut frames = Vec::new();
+    encrypt_into(codec, encryptor, packets, &mut frames);
+    frames
 }
 
-/// Measures the negotiated uncompressed (0xff) path with batch encryption, including call-site copies.
+/// Recycles consumed envelopes before encoding the next immediate send.
+fn encrypt_into(
+    codec: &BatchCodec<bedrock_net::Negotiated>,
+    encryptor: &mut BatchEncryptor,
+    packets: &[Vec<u8>],
+    frames: &mut Vec<Bytes>,
+) {
+    codec.encode_into(packets, frames).unwrap();
+    for message in frames {
+        *message = encryptor
+            .encrypt_batch(BatchHeader::RakNet, std::mem::take(message))
+            .unwrap();
+    }
+}
+
+/// Measures the negotiated uncompressed (0xff) path with batch encryption.
 fn encryption(c: &mut Criterion) {
     let cases = common::Cases::load();
     let key = [cases.u64("/encryption_key_byte") as u8; 32];
@@ -166,15 +175,23 @@ fn encryption(c: &mut Criterion) {
         let mut decryptor = BatchDecryptor::new(key);
         let frames: Vec<Bytes> = (0..2)
             .flat_map(|_| encrypt_message(&codec, &mut check, &packets))
-            .map(|message| envelope(decryptor.decrypt(message.slice(1..)).unwrap()))
+            .map(|message| {
+                decryptor
+                    .decrypt_batch(BatchHeader::RakNet, message)
+                    .unwrap()
+            })
             .collect();
         let twice: Vec<Vec<u8>> = packets.iter().chain(&packets).cloned().collect();
         verify(&reader(CompressionAlgorithm::None), &frames, &twice);
         match case.op.as_str() {
             "encrypt" => {
                 let mut encryptor = BatchEncryptor::new(key);
+                let mut frames = Vec::new();
                 bench.bench_function(case.name(), |b| {
-                    b.iter(|| black_box(encrypt_message(&codec, &mut encryptor, &packets)))
+                    b.iter(|| {
+                        encrypt_into(&codec, &mut encryptor, &packets, &mut frames);
+                        black_box(&frames);
+                    })
                 });
             }
             "decrypt" => {
@@ -194,8 +211,10 @@ fn encryption(c: &mut Criterion) {
                                 .collect();
                             let start = Instant::now();
                             for message in frames {
-                                let plain = decryptor.decrypt(message.slice(1..)).unwrap();
-                                drain(&codec, envelope(plain));
+                                let plain = decryptor
+                                    .decrypt_batch(BatchHeader::RakNet, message)
+                                    .unwrap();
+                                drain(&codec, plain);
                             }
                             elapsed += start.elapsed();
                             remaining -= n;

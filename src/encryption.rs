@@ -2,13 +2,14 @@
 
 use std::fmt;
 
-use aes::cipher::{KeyIvInit, StreamCipher};
-use bytes::Bytes;
-use sha2::{Digest, Sha256};
+use bytes::{Bytes, BytesMut};
+use openssl::cipher::Cipher;
+use openssl::cipher_ctx::CipherCtx;
+use openssl::sha::Sha256;
 use subtle::ConstantTimeEq;
 use zeroize::{Zeroize, Zeroizing};
 
-type AesCtr = ctr::Ctr128BE<aes::Aes256>;
+use crate::BatchHeader;
 
 const CHECKSUM_BYTES: usize = 8;
 
@@ -37,6 +38,9 @@ pub enum EncryptionError {
     /// Adding the checksum would overflow the payload length.
     #[error("encrypted batch length overflow")]
     LengthOverflow,
+    /// A RakNet batch has no valid transport marker.
+    #[error("invalid encrypted batch transport marker")]
+    InvalidBatchHeader,
 }
 
 /// Encrypts outgoing compressed batch bodies in their send order.
@@ -65,16 +69,37 @@ impl BatchEncryptor {
     /// Returns an error if the stream is invalidated, its counters are exhausted,
     /// or the checksum cannot be appended. A failure invalidates this direction.
     pub fn encrypt(&mut self, body: Bytes) -> Result<Bytes, EncryptionError> {
+        self.encrypt_from(body, 0)
+    }
+
+    /// Encrypts a complete batch while retaining its transport marker and allocation.
+    ///
+    /// Uses the same ordered stream and failure rules as [`Self::encrypt`].
+    /// # Errors
+    /// Returns an error for an invalid transport marker or any stream failure.
+    pub fn encrypt_batch(
+        &mut self,
+        header: BatchHeader,
+        message: Bytes,
+    ) -> Result<Bytes, EncryptionError> {
+        let offset = self.0.body_offset(header, &message)?;
+        self.encrypt_from(message, offset)
+    }
+
+    /// Encrypts the suffix in place, leaving any validated transport prefix untouched.
+    fn encrypt_from(&mut self, body: Bytes, offset: usize) -> Result<Bytes, EncryptionError> {
         let next = self.0.next_counter()?;
         if body.len().checked_add(CHECKSUM_BYTES).is_none() {
             return self.0.invalidate(EncryptionError::LengthOverflow);
         }
-        let checksum = self.0.checksum(&body);
-        let mut body = body
-            .try_into_mut()
-            .unwrap_or_else(|shared| shared.as_ref().into());
+        let checksum = self.0.checksum(&body[offset..]);
+        let mut body = body.try_into_mut().unwrap_or_else(|shared| {
+            let mut owned = BytesMut::with_capacity(shared.len() + CHECKSUM_BYTES);
+            owned.extend_from_slice(&shared);
+            owned
+        });
         body.extend_from_slice(&checksum);
-        if self.0.cipher.try_apply_keystream(&mut body).is_err() {
+        if self.0.apply_keystream(&mut body[offset..]).is_err() {
             body.as_mut().zeroize();
             return self.0.invalidate(EncryptionError::KeystreamExhausted);
         }
@@ -107,20 +132,40 @@ impl BatchDecryptor {
     /// exhausted counters or an invalidated stream. Every failure is fatal for
     /// this direction; later calls return [`EncryptionError::Invalidated`].
     pub fn decrypt(&mut self, body: Bytes) -> Result<Bytes, EncryptionError> {
+        self.decrypt_from(body, 0)
+    }
+
+    /// Decrypts a complete batch while retaining its transport marker and allocation.
+    ///
+    /// Uses the same ordered stream and failure rules as [`Self::decrypt`].
+    /// # Errors
+    /// Returns an error for an invalid transport marker or any stream failure.
+    pub fn decrypt_batch(
+        &mut self,
+        header: BatchHeader,
+        message: Bytes,
+    ) -> Result<Bytes, EncryptionError> {
+        let offset = self.0.body_offset(header, &message)?;
+        self.decrypt_from(message, offset)
+    }
+
+    /// Authenticates the encrypted suffix before returning the original envelope.
+    fn decrypt_from(&mut self, body: Bytes, offset: usize) -> Result<Bytes, EncryptionError> {
         let next = self.0.next_counter()?;
-        let Some(length) = body.len().checked_sub(CHECKSUM_BYTES) else {
-            return self
-                .0
-                .invalidate(EncryptionError::Truncated { actual: body.len() });
+        let Some(length) = body.len().checked_sub(offset + CHECKSUM_BYTES) else {
+            return self.0.invalidate(EncryptionError::Truncated {
+                actual: body.len() - offset,
+            });
         };
+        let length = length + offset;
         let mut body = body
             .try_into_mut()
             .unwrap_or_else(|shared| shared.as_ref().into());
-        if self.0.cipher.try_apply_keystream(&mut body).is_err() {
+        if self.0.apply_keystream(&mut body[offset..]).is_err() {
             body.as_mut().zeroize();
             return self.0.invalidate(EncryptionError::KeystreamExhausted);
         }
-        let checksum = self.0.checksum(&body[..length]);
+        let checksum = self.0.checksum(&body[offset..length]);
         if !bool::from(checksum.ct_eq(&body[length..])) {
             body.as_mut().zeroize();
             return self.0.invalidate(EncryptionError::InvalidChecksum);
@@ -133,27 +178,78 @@ impl BatchDecryptor {
 
 /// Private state for one stream direction; debug output deliberately excludes secrets.
 struct CipherState {
-    cipher: AesCtr,
+    cipher: CipherCtx,
+    blocks: u128,
+    partial: usize,
     key: Zeroizing<[u8; 32]>,
     counter: u64,
     invalidated: bool,
 }
 
 impl CipherState {
+    /// Validates the cleartext transport marker before consuming stream state.
+    fn body_offset(
+        &mut self,
+        header: BatchHeader,
+        message: &[u8],
+    ) -> Result<usize, EncryptionError> {
+        if self.invalidated {
+            return Err(EncryptionError::Invalidated);
+        }
+        match header.marker() {
+            Some(marker) if message.first() != Some(&marker) => {
+                self.invalidate(EncryptionError::InvalidBatchHeader)
+            }
+            Some(_) => Ok(1),
+            None => Ok(0),
+        }
+    }
+
     /// Derives the protocol IV from the session key and starts its continuous stream.
     fn new(key: [u8; 32]) -> Self {
         let key = Zeroizing::new(key);
         let mut iv = Zeroizing::new([0; 16]);
         iv[..12].copy_from_slice(&key[..12]);
         iv[15] = 2;
-        let cipher = AesCtr::new_from_slices(key.as_ref(), iv.as_ref())
+        let mut cipher = CipherCtx::new().expect("allocate AES-256-CTR context");
+        cipher
+            .encrypt_init(
+                Some(Cipher::aes_256_ctr()),
+                Some(key.as_ref()),
+                Some(iv.as_ref()),
+            )
             .expect("fixed-size AES-256 key and CTR IV");
         Self {
             cipher,
+            blocks: 0,
+            partial: 0,
             key,
             counter: 0,
             invalidated: false,
         }
+    }
+
+    /// Applies the continuous native CTR stream, checking exhaustion before touching plaintext.
+    fn apply_keystream(&mut self, body: &mut [u8]) -> Result<(), EncryptionError> {
+        let tail = self.partial + body.len() % 16;
+        let blocks = self
+            .blocks
+            .checked_add((body.len() / 16) as u128 + (tail / 16) as u128)
+            .ok_or(EncryptionError::KeystreamExhausted)?;
+        let partial = tail % 16;
+        blocks
+            .checked_add(u128::from(partial != 0))
+            .ok_or(EncryptionError::KeystreamExhausted)?;
+        for chunk in body.chunks_mut(i32::MAX as usize) {
+            let length = chunk.len();
+            match self.cipher.cipher_update_inplace(chunk, length) {
+                Ok(written) if written == length => {}
+                _ => return Err(EncryptionError::KeystreamExhausted),
+            }
+        }
+        self.blocks = blocks;
+        self.partial = partial;
+        Ok(())
     }
 
     /// Checks that the direction can advance before mutating cipher state.
@@ -170,13 +266,12 @@ impl CipherState {
     /// Computes the checksum for this direction's next batch.
     fn checksum(&self, body: &[u8]) -> [u8; CHECKSUM_BYTES] {
         let mut hash = Sha256::new();
-        hash.update(self.counter.to_le_bytes());
+        hash.update(&self.counter.to_le_bytes());
         hash.update(body);
         hash.update(self.key.as_ref());
-        let mut digest = hash.finalize();
+        let digest = Zeroizing::new(hash.finish());
         let mut checksum = [0; CHECKSUM_BYTES];
         checksum.copy_from_slice(&digest[..CHECKSUM_BYTES]);
-        digest.as_mut_slice().zeroize();
         checksum
     }
 
@@ -194,5 +289,51 @@ impl fmt::Debug for CipherState {
             .field("counter", &self.counter)
             .field("invalidated", &self.invalidated)
             .finish_non_exhaustive()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ciphers_keep_their_public_thread_and_unwind_traits() {
+        /// Checks the original public auto-trait bounds without exposing private state.
+        fn traits<T: Send + Sync + std::panic::UnwindSafe + std::panic::RefUnwindSafe>() {}
+        traits::<BatchEncryptor>();
+        traits::<BatchDecryptor>();
+    }
+
+    #[test]
+    fn ctr_exhaustion_checks_a_partial_final_block_before_mutation() {
+        let mut encryptor = BatchEncryptor::new([9; 32]);
+        encryptor.0.blocks = u128::MAX - 1;
+        encryptor.0.partial = 15;
+        encryptor.0.apply_keystream(&mut [0]).unwrap();
+        assert_eq!(encryptor.0.blocks, u128::MAX);
+        assert_eq!(encryptor.0.partial, 0);
+        assert_eq!(
+            encryptor.encrypt(Bytes::new()),
+            Err(EncryptionError::KeystreamExhausted)
+        );
+        assert_eq!(
+            encryptor.encrypt(Bytes::new()),
+            Err(EncryptionError::Invalidated)
+        );
+    }
+
+    #[test]
+    fn checksum_counter_exhaustion_invalidates_before_advancing_the_stream() {
+        let mut encryptor = BatchEncryptor::new([9; 32]);
+        encryptor.0.counter = u64::MAX;
+        assert_eq!(
+            encryptor.encrypt(Bytes::new()),
+            Err(EncryptionError::CounterExhausted)
+        );
+        assert_eq!((encryptor.0.blocks, encryptor.0.partial), (0, 0));
+        assert_eq!(
+            encryptor.encrypt(Bytes::new()),
+            Err(EncryptionError::Invalidated)
+        );
     }
 }

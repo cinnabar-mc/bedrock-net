@@ -1,4 +1,5 @@
 use bytes::{Buf, Bytes};
+use std::sync::Mutex;
 
 use crate::compression::{self, CompressionAlgorithm, CompressionSettings};
 use crate::{BatchError, DropReason};
@@ -85,6 +86,25 @@ impl BatchPackets {
     pub fn is_empty(&self) -> bool {
         self.remaining == 0
     }
+
+    /// Visits the remaining packets without creating shared ownership for each packet.
+    /// The complete batch has already been validated before any callback runs.
+    pub fn for_each_slice(self, mut visit: impl FnMut(&[u8])) {
+        let mut body = self.body.as_ref();
+        for _ in 0..self.remaining {
+            loop {
+                let (length, prefix) = read_length(body, 0)
+                    .expect("the complete immutable batch was validated before iteration");
+                body = &body[prefix..];
+                if length != 0 {
+                    let (packet, rest) = body.split_at(length as usize);
+                    visit(packet);
+                    body = rest;
+                    break;
+                }
+            }
+        }
+    }
 }
 
 impl Iterator for BatchPackets {
@@ -129,7 +149,29 @@ impl std::fmt::Debug for BatchPackets {
 }
 
 mod phase_private {
-    pub trait Sealed {}
+    use super::*;
+
+    pub trait Sealed {
+        /// Compresses one validated packet group with the connection's retained scratch.
+        fn compress(
+            &self,
+            _: CompressionAlgorithm,
+            _: &[&[u8]],
+            _: usize,
+            _: &mut Vec<u8>,
+        ) -> Result<(), BatchError> {
+            unreachable!("plaintext batches do not use compression")
+        }
+        /// Decodes the declared algorithm with the connection's retained inflater.
+        fn decompress(
+            &self,
+            _: u8,
+            _: Bytes,
+            _: usize,
+        ) -> Result<Result<Bytes, DropReason>, BatchError> {
+            unreachable!("plaintext batches do not use compression")
+        }
+    }
 }
 
 /// Byte framing before the one-time compression transition.
@@ -138,7 +180,11 @@ pub struct Plain(());
 
 /// Byte framing after actual negotiated settings have been installed once.
 #[derive(Debug)]
-pub struct Negotiated(CompressionSettings);
+pub struct Negotiated {
+    settings: CompressionSettings,
+    encoder: Mutex<Option<Box<compression::Encoder>>>,
+    decoder: Mutex<Option<flate2::Decompress>>,
+}
 
 /// Sealed codec phases, allowing generic framing without a public phase cast.
 pub trait BatchPhase: phase_private::Sealed {
@@ -146,7 +192,33 @@ pub trait BatchPhase: phase_private::Sealed {
     fn compression(&self) -> Option<CompressionSettings>;
 }
 impl phase_private::Sealed for Plain {}
-impl phase_private::Sealed for Negotiated {}
+impl phase_private::Sealed for Negotiated {
+    fn compress(
+        &self,
+        algorithm: CompressionAlgorithm,
+        packets: &[&[u8]],
+        body_len: usize,
+        out: &mut Vec<u8>,
+    ) -> Result<(), BatchError> {
+        let mut encoder = self
+            .encoder
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let encoder = encoder.get_or_insert_with(Box::default);
+        encoder.body.clear();
+        encoder.body.reserve(body_len);
+        write_packets(packets, &mut encoder.body);
+        encoder.compress(algorithm, out)
+    }
+    fn decompress(
+        &self,
+        id: u8,
+        body: Bytes,
+        maximum: usize,
+    ) -> Result<Result<Bytes, DropReason>, BatchError> {
+        compression::decompress(id, body, maximum, &self.decoder)
+    }
+}
 impl BatchPhase for Plain {
     fn compression(&self) -> Option<CompressionSettings> {
         None
@@ -154,7 +226,7 @@ impl BatchPhase for Plain {
 }
 impl BatchPhase for Negotiated {
     fn compression(&self) -> Option<CompressionSettings> {
-        Some(self.0)
+        Some(self.settings)
     }
 }
 
@@ -195,7 +267,11 @@ impl BatchCodec<Plain> {
             header: self.header,
             limits: self.limits,
             max_incoming_decoded_bytes: self.max_incoming_decoded_bytes,
-            phase: Negotiated(settings),
+            phase: Negotiated {
+                settings,
+                encoder: Mutex::new(None),
+                decoder: Mutex::new(None),
+            },
         }
     }
 }
@@ -222,14 +298,45 @@ impl<S: BatchPhase> BatchCodec<S> {
     /// Returns an error for empty or oversized packets, zero packet capacity,
     /// compression failures or an encoded batch exceeding the wire limit.
     pub fn encode<P: AsRef<[u8]>>(&self, packets: &[P]) -> Result<Vec<Bytes>, BatchError> {
+        let mut batches = Vec::new();
+        self.encode_into(packets, &mut batches)?;
+        Ok(batches)
+    }
+
+    /// Replaces previously consumed batches, reusing uniquely owned output buffers.
+    /// Shared batches keep their original bytes. Send each result immediately in order;
+    /// keep unsent results until delivery instead of recycling them in another call.
+    ///
+    /// # Errors
+    /// Returns the same errors as [`Self::encode`] and clears `batches` on failure.
+    pub fn encode_into<P: AsRef<[u8]>>(
+        &self,
+        packets: &[P],
+        batches: &mut Vec<Bytes>,
+    ) -> Result<(), BatchError> {
+        let mut recycled = std::mem::take(batches).into_iter();
+        let result = self.encode_reusing(packets, batches, &mut recycled);
+        if result.is_err() {
+            batches.clear();
+        }
+        result
+    }
+
+    /// Validates stable packet views and fills output without exposing partial failures.
+    fn encode_reusing<P: AsRef<[u8]>>(
+        &self,
+        packets: &[P],
+        batches: &mut Vec<Bytes>,
+        recycled: &mut std::vec::IntoIter<Bytes>,
+    ) -> Result<(), BatchError> {
         if !packets.is_empty() && self.limits.max_packets == 0 {
             return Err(BatchError::TooManyPackets { maximum: 0 });
         }
-        let mut batches = Vec::new();
-        let mut body = Vec::new();
+        let packets: Vec<&[u8]> = packets.iter().map(AsRef::as_ref).collect();
+        let mut start = 0;
+        let mut body_len = 0;
         let mut count = 0;
-        for packet in packets {
-            let packet = packet.as_ref();
+        for (index, &packet) in packets.iter().enumerate() {
             if packet.is_empty() {
                 return Err(BatchError::EmptyPacket);
             }
@@ -250,20 +357,24 @@ impl<S: BatchPhase> BatchCodec<S> {
             }
             if count != 0
                 && (count == self.limits.max_packets
-                    || entry_len > self.limits.max_decoded_bytes - body.len())
+                    || entry_len > self.limits.max_decoded_bytes - body_len)
             {
-                batches.push(self.encode_body(&body)?);
-                body.clear();
+                batches.push(self.encode_packets(
+                    &packets[start..index],
+                    body_len,
+                    recycled.next(),
+                )?);
+                start = index;
+                body_len = 0;
                 count = 0;
             }
-            write_length(length, &mut body);
-            body.extend_from_slice(packet);
+            body_len += entry_len;
             count += 1;
         }
         if count != 0 {
-            batches.push(self.encode_body(&body)?);
+            batches.push(self.encode_packets(&packets[start..], body_len, recycled.next())?);
         }
-        Ok(batches)
+        Ok(())
     }
 
     /// Decodes a complete transport message without decoding packet bodies.
@@ -292,7 +403,10 @@ impl<S: BatchPhase> BatchCodec<S> {
                 .copied()
                 .ok_or(BatchError::MissingCompressionHeader)?;
             message.advance(1);
-            message = match compression::decompress(id, message, self.max_incoming_decoded_bytes)? {
+            message = match self
+                .phase
+                .decompress(id, message, self.max_incoming_decoded_bytes)?
+            {
                 Ok(body) => body,
                 Err(reason) => return Ok(DecodeOutcome::Dropped(reason)),
             };
@@ -314,28 +428,57 @@ impl<S: BatchPhase> BatchCodec<S> {
         })
     }
 
-    /// Wraps an already bounded length-prefixed body in its transport/compression envelope.
-    fn encode_body(&self, body: &[u8]) -> Result<Bytes, BatchError> {
-        let mut message = Vec::new();
-        if self.header == BatchHeader::RakNet {
-            message.push(RAKNET_BATCH_HEADER);
-        }
-        if let Some(settings) = self.phase.compression() {
-            let algorithm = if body.len() < usize::from(settings.threshold) {
+    /// Writes one bounded packet group directly into its final envelope or compression scratch.
+    fn encode_packets(
+        &self,
+        packets: &[&[u8]],
+        body_len: usize,
+        recycled: Option<Bytes>,
+    ) -> Result<Bytes, BatchError> {
+        let algorithm = self.phase.compression().map(|settings| {
+            if body_len < usize::from(settings.threshold) {
                 CompressionAlgorithm::None
             } else {
                 settings.algorithm
-            };
+            }
+        });
+        let compressed = matches!(
+            algorithm,
+            Some(CompressionAlgorithm::Deflate | CompressionAlgorithm::Snappy)
+        );
+        let mut message = recycled
+            .filter(Bytes::is_unique)
+            .map(Vec::from)
+            .unwrap_or_default();
+        message.clear();
+        // Keep room for the directional checksum so encryption can retain this allocation.
+        message.reserve(if compressed {
+            10
+        } else {
+            body_len.saturating_add(10)
+        });
+        if self.header == BatchHeader::RakNet {
+            message.push(RAKNET_BATCH_HEADER);
+        }
+        if let Some(algorithm) = algorithm {
             message.push(algorithm.batch_id());
-            if algorithm != CompressionAlgorithm::None {
-                message.extend_from_slice(&compression::compress(algorithm, body)?);
-            } else {
-                message.extend_from_slice(body);
+        }
+        if compressed {
+            self.phase.compress(
+                algorithm.expect("compressed envelope"),
+                packets,
+                body_len,
+                &mut message,
+            )?;
+            let retained = message.len().saturating_add(8);
+            if message.capacity() > retained.saturating_mul(2).max(4096) {
+                message.shrink_to(retained);
             }
         } else {
-            message.extend_from_slice(body);
+            write_packets(packets, &mut message);
         }
         self.check_encoded_size(message.len())?;
+        message.reserve(8);
         Ok(Bytes::from(message))
     }
 
@@ -386,6 +529,11 @@ fn validate_packets(body: &[u8], maximum: Option<usize>) -> Result<(usize, usize
 
 /// Reads a bounded u32 envelope length; packet headers remain the protocol codec's responsibility.
 fn read_length(bytes: &[u8], offset: usize) -> Result<(u32, usize), BatchError> {
+    if let Some(&byte) = bytes.first()
+        && byte < 0x80
+    {
+        return Ok((u32::from(byte), 1));
+    }
     let mut value = 0;
     for (index, byte) in bytes.iter().copied().take(5).enumerate() {
         if index == 4 && byte > 0x0f {
@@ -399,8 +547,16 @@ fn read_length(bytes: &[u8], offset: usize) -> Result<(u32, usize), BatchError> 
     Err(BatchError::InvalidPacketLength { offset })
 }
 
+/// Writes already validated packets with their shortest length prefixes.
+fn write_packets(packets: &[&[u8]], out: &mut Vec<u8>) {
+    for &packet in packets {
+        write_length(packet.len() as u32, out);
+        out.extend_from_slice(packet);
+    }
+}
+
 /// Writes the shortest u32 packet-length prefix.
-fn write_length(mut length: u32, out: &mut Vec<u8>) {
+pub(crate) fn write_length(mut length: u32, out: &mut Vec<u8>) {
     while length >= 0x80 {
         out.push((length as u8) | 0x80);
         length >>= 7;
