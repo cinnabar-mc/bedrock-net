@@ -383,6 +383,13 @@ pub enum PacksEvent {
     },
     /// Install the existing verified exchange before continuing the same transfer.
     KeyExchange(ClientKeyExchange<ClientPacks>),
+    /// Preserve an early stack for replay when this same owner's `ready_for_stack` is true.
+    DeferredStack {
+        /// The original pending transfer/control owner.
+        packs: ClientPacks,
+        /// The exact stack fields, detached from unrelated decoded batch storage.
+        stack: Box<packets::ResourcePackStack>,
+    },
     /// The original stack acknowledgment and selected archive ownership.
     Finished(PackComplete),
     /// Preserve this input ahead of unread siblings; terminal handling stays with the caller.
@@ -405,6 +412,12 @@ impl ClientPacks {
         self.transfer.completed_archive(id)
     }
 
+    /// Whether all downloads completed and a deferred stack can be replayed with `receive`.
+    /// Send pending transfer responses and release shared cache references before replaying.
+    pub fn ready_for_stack(&self) -> bool {
+        self.transfer.ready_for_stack()
+    }
+
     /// Processes transfer and late Login controls through their original private implementations.
     pub fn receive(mut self, packet: packets::Packet) -> Result<PacksEvent, HandshakeError> {
         match self.transfer.receive(packet)? {
@@ -412,6 +425,7 @@ impl ClientPacks {
                 packs: self,
                 packets,
             }),
+            PackEvent::DeferredStack(stack) => Ok(PacksEvent::DeferredStack { packs: self, stack }),
             PackEvent::Finished(complete) => Ok(PacksEvent::Finished(complete)),
             PackEvent::Unhandled(packet) => match self.engine.receive(*packet)? {
                 EngineEvent::Send(packets) => Ok(PacksEvent::Send {

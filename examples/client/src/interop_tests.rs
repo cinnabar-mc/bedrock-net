@@ -230,8 +230,14 @@ async fn login_phase(
     let (mut packs, response) = offer.start()?;
     session.send(response.into()).await?;
     let mut first_send = true;
+    let mut deferred_stacks: std::collections::VecDeque<Box<packets::ResourcePackStack>> =
+        std::collections::VecDeque::new();
     let complete = loop {
-        let packet = next_packet(session, observed).await?;
+        let packet = if packs.ready_for_stack() && !deferred_stacks.is_empty() {
+            packets::Packet::ResourcePackStack(*deferred_stacks.pop_front().unwrap())
+        } else {
+            next_packet(session, observed).await?
+        };
         match packs.receive(packet)? {
             PacksEvent::Send {
                 packs: next,
@@ -251,6 +257,10 @@ async fn login_phase(
             PacksEvent::KeyExchange(exchange) => {
                 let (next, installed) = apply_exchange(session, exchange).await?;
                 observed.encrypted |= installed;
+                packs = next;
+            }
+            PacksEvent::DeferredStack { packs: next, stack } => {
+                deferred_stacks.push_back(stack);
                 packs = next;
             }
             PacksEvent::Finished(complete) => break complete,

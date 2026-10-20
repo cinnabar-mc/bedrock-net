@@ -148,3 +148,44 @@ fn retained_pack_metadata_releases_unrelated_decoded_batch_siblings() {
         "retained offer, data info or stack pinned an unrelated decoded sibling"
     );
 }
+
+/// An early stack can wait in the caller FIFO without retaining unrelated batch siblings.
+#[test]
+fn deferred_stack_detaches_fields_from_its_decoded_batch() {
+    let id = uuid::Uuid::from_u128(1);
+    let (mut transfer, _) = PackOffer::new(
+        packets::ResourcePacksInfo {
+            resource_packs: vec![types::PackInfoData {
+                pack_id_version: types::PackIDVersionData {
+                    pack_uuid: id,
+                    pack_version: types::SemVersionData {
+                        version: "1.0.0".into(),
+                    },
+                },
+                pack_size: wire::U64LE(3),
+                ..Default::default()
+            }],
+            ..Default::default()
+        },
+        PackTransferLimits::default(),
+    )
+    .unwrap()
+    .start()
+    .unwrap();
+    let original = packets::ResourcePackStack {
+        base_game_version: "deferred-version".into(),
+        texture_pack_list: vec![types::PackInstanceId {
+            pack_id: id.to_string().into(),
+            version: "1.0.0".into(),
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+    let (packet, backing) = coalesced(original.clone().into());
+    let PackEvent::DeferredStack(stack) = transfer.receive(packet).unwrap() else {
+        panic!("early stack must defer")
+    };
+    assert_eq!(*stack, original);
+    assert!(backing.upgrade().is_none());
+    assert!(!transfer.ready_for_stack());
+}

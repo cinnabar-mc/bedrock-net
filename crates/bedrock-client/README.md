@@ -62,6 +62,14 @@ the archive handoff retains the offer-or-stack required policy.
 
 Actual final-stack processing creates `PackComplete`, which has no public
 constructor. Send its original stack acknowledgment before entering startup.
+An early stack returns `PackEvent::DeferredStack` (or `PacksEvent::DeferredStack`
+for the typed lifecycle). Keep it in the caller's pending FIFO and continue the
+same transfer. Send each transfer response immediately. When `ready_for_stack()`
+is true, release shared cache-write references and replay the stack through
+`receive` before waiting for more network input. Completion then supplies the
+ordinary stack acknowledgment. Deferred stacks own their fields without keeping
+unrelated decoded batch storage alive.
+
 `start_spawn` transfers the exact ordered archives and configures the startup
 observer. `into_parts` supports callers stopping at the pack boundary. Ordinary
 `ResourcePackHandoff`/archive inputs are data, not constructors for protocol
