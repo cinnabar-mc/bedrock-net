@@ -225,11 +225,14 @@ dependencies = [
 name = "bedrock-client-tokio"
 version = "0.1.0"
 dependencies = [
+ "bedrock-client",
  "bedrock-net",
+ "bedrock-packs",
  "bedrock-protocol-1-26-51",
  "bytes",
  "futures",
  "nethernet-tokio",
+ "serde_json",
  "thiserror 2.0.21",
  "tokio",
  "tracing",
