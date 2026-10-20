@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 
-//! Typed driver failures that contain no packet or account content.
+//! Typed driver causes with coarse error messages.
+//!
+//! Disconnect and Transfer retain their actual server-controlled presentation/target
+//! fields for caller policy; those payloads are not content-free diagnostics.
 
 /// The retained encoded startup prefix exceeded its caller-owned byte limit.
 #[derive(Debug, thiserror::Error)]

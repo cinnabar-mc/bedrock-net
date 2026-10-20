@@ -41,7 +41,9 @@ impl PackIo for InBand {
 
 /// The actual selected archive handoff and opt-in metadata from the original pack owner.
 pub struct AcquiredPacks {
+    /// Original selected archive bytes in the stack's application order.
     pub handoff: ResourcePackHandoff,
+    /// Actual offer/stack/data fields, present only when the caller requested retention.
     pub metadata: Option<Box<PackMetadata>>,
 }
 

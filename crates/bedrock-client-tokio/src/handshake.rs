@@ -33,20 +33,27 @@ pub enum Observation<'a> {
 pub enum LoginData<'a> {
     /// Account/issuer/key binding and this absolute credential deadline remain caller authority.
     Authenticated {
+        /// Original opaque credential whose issuer/account/key binding the caller verified.
         token: &'a str,
+        /// Caller-owned metadata constructed after settings, signed without rewriting.
         claims: &'a RawValue,
+        /// Original absolute credential cutoff, retained through transport capacity admission.
         deadline: Instant,
     },
     /// Explicit offline identity and caller UTC; no online or membership authority is implied.
     Offline {
+        /// Explicit caller-selected offline identity; it grants no online account authority.
         identity: OfflineIdentity<'a>,
+        /// Caller-owned metadata constructed after settings, signed without rewriting.
         claims: &'a RawValue,
+        /// Caller UTC used by the original offline Login formatter.
         now: SystemTime,
     },
 }
 
 /// Flushes original settings output and installs compression before caller metadata is constructed.
-/// Keep this wait under the caller's original overall deadline; cancellation closes the same owner.
+/// Keep this wait under the caller's original overall deadline. Canceling this borrowed
+/// future does not close Connection; the caller must retire or drop that same owner.
 pub async fn settings(
     connection: &mut Connection,
     configured: ClientHandshake,
