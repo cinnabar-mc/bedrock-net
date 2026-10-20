@@ -62,6 +62,15 @@ impl RakNetConnection {
         self.engine.recv().await
     }
 
+    /// Services protocol control without consuming application input.
+    ///
+    /// Cancellation retains the same socket, queued bodies and atomic write.
+    /// Terminal failures remain available to `recv` after its accepted prefix;
+    /// this wait stays pending after physical retirement instead of spinning.
+    pub async fn maintain(&mut self) {
+        self.engine.maintain().await
+    }
+
     /// Consumes local send permission and starts the original finite close budget.
     /// Even a failed transition returns the closing owner and its preceding output.
     ///
@@ -118,12 +127,19 @@ impl ClosingRakNetConnection {
         self.engine.recv().await
     }
 
+    /// Drives the original close/control owner without consuming accepted input.
+    /// Terminal failures remain available to `recv`; cancellation keeps its cutoff.
+    pub async fn maintain(&mut self) {
+        self.engine.maintain().await
+    }
+
     /// Finishes only after socket release and observation of the accepted FIFO and terminal.
     /// Otherwise returns the same closing owner. This does not prove remote delivery.
     pub fn try_finish(self) -> Result<ClosedRakNetConnection, Self> {
         if self.engine.socket.is_some()
             || self.engine.session.is_some()
             || self.engine.pending_datagram.is_some()
+            || self.engine.pending_message.is_some()
             || !self.engine.incoming.is_empty()
             || self.engine.failure.is_some()
         {
