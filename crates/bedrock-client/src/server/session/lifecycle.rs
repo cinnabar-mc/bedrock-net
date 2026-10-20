@@ -131,7 +131,7 @@ impl<A, L> ServerPacks<A, L> {
 /// The caller retains its immutable archive lease and existing decoded siblings during IO.
 ///
 /// ```compile_fail
-/// fn feed_during_read<A>(read: bedrock_client::server::session::PendingServerChunkRead<A, L>,
+/// fn feed_during_read<A, L>(read: bedrock_client::server::session::PendingServerChunkRead<A, L>,
 ///     packet: bedrock_protocol::packets::Packet, now: std::time::Instant) {
 ///     read.receive(packet, now);
 /// }
