@@ -23,6 +23,38 @@ fn negotiated(
     })
 }
 
+/// Decodes frames with an unlimited codec of the same phase and requires exactly `want`.
+/// Each benchmark checks its own output this way once, outside the timed loop.
+fn verify<S: BatchPhase>(codec: &BatchCodec<S>, frames: &[Bytes], want: &[Vec<u8>]) {
+    let mut got = Vec::new();
+    for frame in frames {
+        match codec.decode(frame.clone()).unwrap() {
+            DecodeOutcome::Packets { packets, .. } => got.extend(packets.map(|p| p.to_vec())),
+            DecodeOutcome::Dropped(reason) => panic!("own output dropped: {reason}"),
+        }
+    }
+    assert!(got == want, "own output does not decode to the input");
+}
+
+/// Limits large enough to read back any benchmark output.
+fn unlimited() -> BatchLimits {
+    BatchLimits {
+        max_encoded_bytes: usize::MAX,
+        max_decoded_bytes: usize::MAX,
+        ..BatchLimits::default()
+    }
+}
+
+/// A negotiated codec that reads back any benchmark output.
+fn reader(algorithm: CompressionAlgorithm) -> BatchCodec<bedrock_net::Negotiated> {
+    BatchCodec::new(BatchHeader::RakNet, unlimited())
+        .negotiate(CompressionSettings {
+            algorithm,
+            threshold: 0,
+        })
+        .with_incoming_decoded_limit(usize::MAX)
+}
+
 /// Consumes every packet so lazy iteration costs are measured like Go's DecodeFunc walk.
 fn drain<S: BatchPhase>(codec: &BatchCodec<S>, wire: Bytes) {
     match codec.decode(wire).unwrap() {
@@ -35,7 +67,12 @@ fn drain<S: BatchPhase>(codec: &BatchCodec<S>, wire: Bytes) {
     }
 }
 
-fn codec_group<S: BatchPhase>(c: &mut Criterion, group: &str, codec: impl Fn() -> BatchCodec<S>) {
+fn codec_group<S: BatchPhase>(
+    c: &mut Criterion,
+    group: &str,
+    codec: impl Fn() -> BatchCodec<S>,
+    reader: impl Fn() -> BatchCodec<S>,
+) {
     let cases = common::Cases::load();
     let mut bench = c.benchmark_group(group);
     for case in cases.cases(group) {
@@ -44,6 +81,7 @@ fn codec_group<S: BatchPhase>(c: &mut Criterion, group: &str, codec: impl Fn() -
         let codec = codec();
         match case.op.as_str() {
             "encode" | "compress" => {
+                verify(&reader(), &codec.encode(&packets).unwrap(), &packets);
                 bench.bench_function(case.name(), |b| {
                     b.iter(|| black_box(codec.encode(&packets).unwrap()))
                 });
@@ -52,6 +90,7 @@ fn codec_group<S: BatchPhase>(c: &mut Criterion, group: &str, codec: impl Fn() -
                 let mut wire = codec.encode(&packets).unwrap();
                 assert_eq!(wire.len(), 1, "decode input {} spans batches", case.set);
                 let wire = wire.pop().unwrap();
+                verify(&reader(), std::slice::from_ref(&wire), &packets);
                 bench.bench_function(case.name(), |b| b.iter(|| drain(&codec, wire.clone())));
             }
             op => panic!("unknown op {op}"),
@@ -61,23 +100,32 @@ fn codec_group<S: BatchPhase>(c: &mut Criterion, group: &str, codec: impl Fn() -
 }
 
 fn framing(c: &mut Criterion) {
-    codec_group(c, "BatchFraming", || {
-        BatchCodec::new(BatchHeader::RakNet, BatchLimits::default())
-    });
+    codec_group(
+        c,
+        "BatchFraming",
+        || BatchCodec::new(BatchHeader::RakNet, BatchLimits::default()),
+        || BatchCodec::new(BatchHeader::RakNet, unlimited()),
+    );
 }
 
 fn flate(c: &mut Criterion) {
     let threshold = common::Cases::load().u64("/compression_threshold") as u16;
-    codec_group(c, "Flate", || {
-        negotiated(CompressionAlgorithm::Deflate, threshold)
-    });
+    codec_group(
+        c,
+        "Flate",
+        || negotiated(CompressionAlgorithm::Deflate, threshold),
+        || reader(CompressionAlgorithm::Deflate),
+    );
 }
 
 fn snappy(c: &mut Criterion) {
     let threshold = common::Cases::load().u64("/compression_threshold") as u16;
-    codec_group(c, "Snappy", || {
-        negotiated(CompressionAlgorithm::Snappy, threshold)
-    });
+    codec_group(
+        c,
+        "Snappy",
+        || negotiated(CompressionAlgorithm::Snappy, threshold),
+        || reader(CompressionAlgorithm::Snappy),
+    );
 }
 
 /// Restores the transport marker around a cipher body, as connection call sites do.
@@ -113,6 +161,15 @@ fn encryption(c: &mut Criterion) {
         let bytes = common::size(&packets);
         bench.throughput(Throughput::Bytes(bytes));
         let codec = negotiated(CompressionAlgorithm::None, 0);
+        // Two consecutive frames from a fresh stream must decrypt and decode to the input.
+        let mut check = BatchEncryptor::new(key);
+        let mut decryptor = BatchDecryptor::new(key);
+        let frames: Vec<Bytes> = (0..2)
+            .flat_map(|_| encrypt_message(&codec, &mut check, &packets))
+            .map(|message| envelope(decryptor.decrypt(message.slice(1..)).unwrap()))
+            .collect();
+        let twice: Vec<Vec<u8>> = packets.iter().chain(&packets).cloned().collect();
+        verify(&reader(CompressionAlgorithm::None), &frames, &twice);
         match case.op.as_str() {
             "encrypt" => {
                 let mut encryptor = BatchEncryptor::new(key);

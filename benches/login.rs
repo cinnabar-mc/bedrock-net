@@ -76,6 +76,28 @@ fn sign(key: &SigningKey, claims: &Value) -> String {
     format!("{input}.{}", URL_SAFE_NO_PAD.encode(signature.to_bytes()))
 }
 
+/// Verifies a compact ES384 token and returns its JSON payload.
+fn verify_es384(key: &VerifyingKey, token: &str) -> Value {
+    let (input, signature) = token.rsplit_once('.').unwrap();
+    let signature = Signature::from_slice(&URL_SAFE_NO_PAD.decode(signature).unwrap()).unwrap();
+    key.verify(input.as_bytes(), &signature).unwrap();
+    let payload = input.split_once('.').unwrap().1;
+    serde_json::from_slice(&URL_SAFE_NO_PAD.decode(payload).unwrap()).unwrap()
+}
+
+/// Splits a Login request into its authentication token and client-data token.
+fn fields(request: &[u8]) -> (String, String) {
+    let length = u32::from_le_bytes(request[..4].try_into().unwrap()) as usize;
+    let envelope: Value = serde_json::from_slice(&request[4..4 + length]).unwrap();
+    let rest = &request[4 + length..];
+    let client = u32::from_le_bytes(rest[..4].try_into().unwrap()) as usize;
+    assert_eq!(rest.len(), 4 + client);
+    (
+        envelope["Token"].as_str().unwrap().into(),
+        String::from_utf8(rest[4..].to_vec()).unwrap(),
+    )
+}
+
 fn login(c: &mut Criterion) {
     let cases = common::Cases::load();
     let client_data = String::from_utf8(cases.read(cases.str("/login/client_data"))).unwrap();
@@ -106,7 +128,6 @@ fn login(c: &mut Criterion) {
     };
     let now = UNIX_EPOCH + Duration::from_secs(expiry - 3600);
     let request = encode_authenticated_request(&client, &token, &client_data, LIMIT).unwrap();
-    verify_authenticated_request(&request, &verifier, now, LIMIT).unwrap();
     let identity = OfflineIdentity {
         display_name: cases.str("/login/display_name"),
         identity: cases.str("/login/identity"),
@@ -114,6 +135,22 @@ fn login(c: &mut Criterion) {
         playfab_id: "",
         playfab_title_id: "",
     };
+
+    // Each case checks its own output once: signatures verify and the identity survives.
+    let offline = encode_offline_request(&client, &identity, &client_data, now, LIMIT).unwrap();
+    let (auth, client_token) = fields(&offline);
+    let claims = verify_es384(client.verifying_key(), &auth);
+    assert_eq!(claims["xname"], identity.display_name);
+    assert_eq!(
+        verify_es384(client.verifying_key(), &client_token),
+        serde_json::from_str::<Value>(client_data.get()).unwrap()
+    );
+    let own_token = encode_authenticated_request(&client, &token, &client_data, LIMIT).unwrap();
+    let xuid = cases.str("/login/xuid");
+    for request in [&own_token, &request] {
+        let verified = verify_authenticated_request(request, &verifier, now, LIMIT).unwrap();
+        assert_eq!(verified.xuid(), xuid);
+    }
 
     let mut bench = c.benchmark_group("Login");
     bench.bench_function("encode_offline", |b| {

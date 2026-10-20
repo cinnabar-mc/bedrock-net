@@ -83,7 +83,11 @@ fn assemble(id: uuid::Uuid, archive: &Bytes, hash: &Bytes, chunk_size: usize) {
     else {
         panic!("stack did not finish the transfer");
     };
-    black_box(complete.into_parts());
+    // The transfer verified the advertised SHA-256 over the assembled bytes; check the handoff too.
+    let (_, handoff) = complete.into_parts();
+    let archives = handoff.into_archives();
+    assert!(archives.len() == 1 && archives[0].archive.len() == archive.len());
+    black_box(archives);
 }
 
 fn packs(c: &mut Criterion) {
@@ -92,14 +96,14 @@ fn packs(c: &mut Criterion) {
     let id = uuid::Uuid::from_u128(1);
     let mut bench = c.benchmark_group("Packs");
     for (name, size) in cases.archives() {
-        let archive = Bytes::from(cases.archive(size));
+        let archive = Bytes::from(cases.archive(&name, size));
         let hash = Bytes::copy_from_slice(&Sha256::digest(&archive));
         bench.throughput(Throughput::Bytes(size as u64));
         bench.bench_function(format!("assemble_verify_{name}"), |b| {
             b.iter(|| assemble(id, &archive, &hash, chunk_size))
         });
         bench.bench_function(format!("sha256_{name}"), |b| {
-            b.iter(|| black_box(Sha256::digest(&archive)))
+            b.iter(|| assert!(Sha256::digest(&archive)[..] == hash[..]))
         });
     }
     bench.finish();

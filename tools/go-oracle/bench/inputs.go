@@ -4,6 +4,8 @@ package bench
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -26,6 +28,7 @@ type Cases struct {
 	EncryptionKeyByte    byte                `json:"encryption_key_byte"`
 	Packs                struct {
 		Source    string            `json:"source"`
+		Trailer   string            `json:"trailer"`
 		ChunkSize uint32            `json:"chunk_size"`
 		Archives  map[string]uint64 `json:"archives"`
 	} `json:"packs"`
@@ -76,17 +79,68 @@ func (c *Cases) Packets(set string) ([][]byte, error) {
 	return out, nil
 }
 
-// Archive builds a pack archive of size bytes by repeating the source file.
+// Archive builds a size-byte pack: the source file repeated, then the manifest-only trailer zip,
+// which zip readers locate from the end of the archive.
 func (c *Cases) Archive(size uint64) ([]byte, error) {
 	data, err := os.ReadFile(filepath.Join(Dir, c.Packs.Source))
 	if err != nil {
 		return nil, err
 	}
-	out := make([]byte, 0, size)
-	for uint64(len(out)) < size {
-		out = append(out, data[:min(uint64(len(data)), size-uint64(len(out)))]...)
+	trailer, err := os.ReadFile(filepath.Join(Dir, c.Packs.Trailer))
+	if err != nil {
+		return nil, err
 	}
-	return out, nil
+	if uint64(len(trailer)) > size {
+		return nil, fmt.Errorf("archive of %d bytes cannot hold the %d-byte trailer", size, len(trailer))
+	}
+	fill := size - uint64(len(trailer))
+	out := make([]byte, 0, size)
+	for uint64(len(out)) < fill {
+		out = append(out, data[:min(uint64(len(data)), fill-uint64(len(out)))]...)
+	}
+	return append(out, trailer...), nil
+}
+
+// Digests mirrors testdata/bench/digests.json: SHA-256 of every expanded packet set (packets
+// concatenated) and archive, so both languages prove they benchmark identical input.
+type Digests struct {
+	PacketSets map[string]string `json:"packet_sets"`
+	Archives   map[string]string `json:"archives"`
+}
+
+// LoadDigests reads the generated digest file.
+func LoadDigests() (*Digests, error) {
+	data, err := os.ReadFile(filepath.Join(Dir, "digests.json"))
+	if err != nil {
+		return nil, err
+	}
+	var d Digests
+	return &d, json.Unmarshal(data, &d)
+}
+
+// ComputeDigests expands every input named by the manifest and hashes it.
+func (c *Cases) ComputeDigests() (*Digests, error) {
+	d := &Digests{PacketSets: map[string]string{}, Archives: map[string]string{}}
+	for set := range c.PacketSets {
+		packets, err := c.Packets(set)
+		if err != nil {
+			return nil, err
+		}
+		h := sha256.New()
+		for _, p := range packets {
+			h.Write(p)
+		}
+		d.PacketSets[set] = hex.EncodeToString(h.Sum(nil))
+	}
+	for name, size := range c.Packs.Archives {
+		archive, err := c.Archive(size)
+		if err != nil {
+			return nil, err
+		}
+		sum := sha256.Sum256(archive)
+		d.Archives[name] = hex.EncodeToString(sum[:])
+	}
+	return d, nil
 }
 
 // Cases lists `op_set` names for a manifest group (`Group/op`), sorted.

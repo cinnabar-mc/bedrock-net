@@ -2,6 +2,7 @@
 package main
 
 import (
+	"archive/zip"
 	"bytes"
 	"encoding/base64"
 	"encoding/json"
@@ -9,6 +10,9 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"time"
+
+	"github.com/cinnabar-mc/bedrock-net/tools/go-oracle/bench"
 )
 
 // main writes into the directory named by its only argument.
@@ -61,16 +65,53 @@ func run(dir string) error {
 	if err != nil {
 		return err
 	}
+	trailer, err := packTrailer()
+	if err != nil {
+		return err
+	}
 	for name, data := range map[string][]byte{
 		"game_packets.bin": game.Bytes(),
 		"chunk_packet.bin": chunk.Bytes(),
 		"client_data.json": clientData,
+		"pack_trailer.zip": trailer,
 	} {
 		if err := os.WriteFile(filepath.Join(dir, name), data, 0o644); err != nil {
 			return err
 		}
 	}
-	return nil
+	// Digests are computed from the files just written, through the shared loader.
+	bench.Dir = dir
+	cases, err := bench.Load()
+	if err != nil {
+		return err
+	}
+	digests, err := cases.ComputeDigests()
+	if err != nil {
+		return err
+	}
+	out, err := json.MarshalIndent(digests, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(filepath.Join(dir, "digests.json"), append(out, '\n'), 0o644)
+}
+
+// packTrailer is a stored, manifest-only resource pack zip with fixed timestamps.
+func packTrailer() ([]byte, error) {
+	var buf bytes.Buffer
+	w := zip.NewWriter(&buf)
+	manifest := `{"format_version":2,"header":{"name":"Bench","description":"synthetic","uuid":"00000000-0000-4000-8000-0000000000b1","version":[1,0,0],"min_engine_version":[1,20,0]},"modules":[{"type":"resources","uuid":"00000000-0000-4000-8000-0000000000b2","version":[1,0,0]}]}`
+	f, err := w.CreateHeader(&zip.FileHeader{Name: "manifest.json", Method: zip.Store, Modified: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)})
+	if err != nil {
+		return nil, err
+	}
+	if _, err := f.Write([]byte(manifest)); err != nil {
+		return nil, err
+	}
+	if err := w.Close(); err != nil {
+		return nil, err
+	}
+	return buf.Bytes(), nil
 }
 
 func lengthPrefixed(packet []byte) []byte {

@@ -21,6 +21,7 @@
   "encryption_key_byte": 9,
   "packs": {
     "source": "chunk_packet.bin",
+    "trailer": "pack_trailer.zip",
     "chunk_size": 102400,
     "archives": { "pack1m": 1048576, "pack16m": 16777216 }
   },

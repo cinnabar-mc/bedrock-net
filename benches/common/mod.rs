@@ -6,6 +6,7 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use serde_json::Value;
+use sha2::{Digest, Sha256};
 
 /// The shared manifest, `testdata/bench/cases.json`.
 pub struct Cases {
@@ -65,7 +66,7 @@ impl Cases {
         out
     }
 
-    /// Expands a named packet set into its packets, in order.
+    /// Expands a named packet set and proves it matches the input the Go benches read.
     pub fn packets(&self, set: &str) -> Vec<Vec<u8>> {
         let spec = &self.manifest["packet_sets"][set];
         let base = split(&self.read(spec["file"].as_str().unwrap()));
@@ -74,18 +75,42 @@ impl Cases {
         for _ in 0..repeat {
             out.extend(base.iter().cloned());
         }
+        let mut hash = Sha256::new();
+        for packet in &out {
+            hash.update(packet);
+        }
+        assert_eq!(
+            hex(&hash.finalize()),
+            self.digest("packet_sets", set),
+            "packet set {set} differs from digests.json"
+        );
         out
     }
 
-    /// Builds a pack archive of `size` bytes by repeating the pack source file.
-    pub fn archive(&self, size: usize) -> Vec<u8> {
+    /// Builds a `size`-byte pack: the source file repeated, then the manifest-only trailer zip.
+    pub fn archive(&self, name: &str, size: usize) -> Vec<u8> {
         let source = self.read(self.manifest["packs"]["source"].as_str().unwrap());
+        let trailer = self.read(self.manifest["packs"]["trailer"].as_str().unwrap());
+        let fill = size - trailer.len();
         let mut out = Vec::with_capacity(size);
-        while out.len() < size {
-            let take = source.len().min(size - out.len());
+        while out.len() < fill {
+            let take = source.len().min(fill - out.len());
             out.extend_from_slice(&source[..take]);
         }
+        out.extend_from_slice(&trailer);
+        assert_eq!(
+            hex(&Sha256::digest(&out)),
+            self.digest("archives", name),
+            "archive {name} differs from digests.json"
+        );
         out
+    }
+
+    /// Reads one generated digest from `digests.json`.
+    fn digest(&self, kind: &str, name: &str) -> String {
+        let digests: Value =
+            serde_json::from_slice(&self.read("digests.json")).expect("valid digests.json");
+        digests[kind][name].as_str().unwrap().into()
     }
 
     pub fn archives(&self) -> BTreeMap<String, usize> {
@@ -110,6 +135,10 @@ impl Cases {
             .and_then(Value::as_str)
             .unwrap()
     }
+}
+
+fn hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
 /// Total packet bytes, the throughput unit both sides report.
