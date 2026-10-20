@@ -1,5 +1,9 @@
 // Command bench-compare joins Go `testing.B` results with criterion estimates
 // and fails when a Rust path is slower than its Go counterpart beyond a margin.
+//
+// Exit status: 2 unreadable or malformed input, 3 missing or unpaired measurements,
+// 1 Rust slower than Go beyond the margin, 0 otherwise. Inputs are validated before
+// any timing is compared, so a 1 always means a complete, paired measurement.
 package main
 
 import (
@@ -19,49 +23,70 @@ import (
 	"strings"
 )
 
+const (
+	exitSlower    = 1
+	exitBadInput  = 2
+	exitUnmatched = 3
+)
+
 type listFlag []string
 
 func (l *listFlag) String() string     { return strings.Join(*l, ",") }
 func (l *listFlag) Set(v string) error { *l = append(*l, v); return nil }
 
 func main() {
-	var goFiles, criterionDirs listFlag
+	var goFiles, criterionDirs, oneSided listFlag
 	flag.Var(&goFiles, "go", "`go test -bench -benchmem` output file, or - for stdin (repeatable)")
 	flag.Var(&criterionDirs, "criterion", "criterion output directory (repeatable; default target/criterion)")
-	margin := flag.Float64("margin", 5, "percent by which Rust may be slower than Go before failing")
-	var oneSided listFlag
 	flag.Var(&oneSided, "one-sided", "`path` expected on only one side (repeatable); any other unpaired path fails")
+	procs := flag.Int("go-procs", 0, "the -cpu value the Go benchmarks ran with (required)")
+	margin := flag.Float64("margin", 5, "percent by which Rust may be slower than Go before failing")
 	flag.Parse()
+	code, report := run(goFiles, criterionDirs, oneSided, *procs, *margin)
+	fmt.Print(report.table)
+	for _, problem := range report.problems {
+		fmt.Fprintln(os.Stderr, "bench-compare:", problem)
+	}
+	os.Exit(code)
+}
+
+type report struct {
+	table    string
+	problems []string
+}
+
+// run reads and validates every input, then compares timings only if validation passed.
+func run(goFiles, criterionDirs, oneSided []string, procs int, margin float64) (int, report) {
 	if len(goFiles) == 0 {
-		fmt.Fprintln(os.Stderr, "bench-compare: at least one --go input is required")
-		os.Exit(2)
+		return exitBadInput, report{problems: []string{"at least one --go input is required"}}
+	}
+	if procs < 1 {
+		return exitBadInput, report{problems: []string{"--go-procs must be the Go benchmarks' -cpu value"}}
 	}
 	if len(criterionDirs) == 0 {
-		criterionDirs = listFlag{filepath.Join("target", "criterion")}
+		criterionDirs = []string{filepath.Join("target", "criterion")}
 	}
-
 	goResults := map[string]*goResult{}
 	for _, path := range goFiles {
-		if err := readGoFile(path, goResults); err != nil {
-			fmt.Fprintln(os.Stderr, "bench-compare:", err)
-			os.Exit(2)
+		if err := readGoFile(path, procs, goResults); err != nil {
+			return exitBadInput, report{problems: []string{err.Error()}}
 		}
 	}
 	rustResults := map[string]rustResult{}
 	for _, dir := range criterionDirs {
 		if err := readCriterion(dir, rustResults); err != nil {
-			fmt.Fprintln(os.Stderr, "bench-compare:", err)
-			os.Exit(2)
+			return exitBadInput, report{problems: []string{err.Error()}}
 		}
 	}
-
-	rows := join(goResults, rustResults, *margin)
-	writeTable(os.Stdout, rows, *margin)
-	problems := check(rows, goResults, rustResults, oneSided)
-	for _, problem := range problems {
-		fmt.Fprintln(os.Stderr, "bench-compare:", problem.text)
+	rows := join(goResults, rustResults, margin)
+	table := renderTable(rows, margin)
+	if problems := validate(rows, goResults, rustResults, oneSided); len(problems) != 0 {
+		return exitUnmatched, report{table, problems}
 	}
-	os.Exit(exitCode(problems))
+	if problems := slower(rows); len(problems) != 0 {
+		return exitSlower, report{table, problems}
+	}
+	return 0, report{table: table}
 }
 
 // goResult accumulates repeated runs (`-count`) of one benchmark.
@@ -77,8 +102,7 @@ type rustResult struct {
 // benchLine matches one result line; the metric list is parsed separately.
 var benchLine = regexp.MustCompile(`^Benchmark(\S+)\s+\d+\s+(.*)$`)
 
-// readGoFile parses `go test -bench` text, stripping the shared `-N` GOMAXPROCS suffix.
-func readGoFile(path string, out map[string]*goResult) error {
+func readGoFile(path string, procs int, out map[string]*goResult) error {
 	var r io.Reader
 	if path == "-" {
 		r = os.Stdin
@@ -90,17 +114,19 @@ func readGoFile(path string, out map[string]*goResult) error {
 		defer f.Close()
 		r = f
 	}
-	return parseGo(r, out)
+	if err := parseGo(r, procs, out); err != nil {
+		return fmt.Errorf("%s: %w", path, err)
+	}
+	return nil
 }
 
-var procsSuffix = regexp.MustCompile(`-(\d+)$`)
-
-func parseGo(r io.Reader, out map[string]*goResult) error {
-	type parsed struct {
-		name    string
-		metrics map[string]float64
+// parseGo reads `go test -bench` text. Go appends `-N` to every name when GOMAXPROCS is N > 1
+// and nothing when it is 1, so the caller states N and every name must carry exactly that suffix.
+func parseGo(r io.Reader, procs int, out map[string]*goResult) error {
+	suffix := ""
+	if procs > 1 {
+		suffix = "-" + strconv.Itoa(procs)
 	}
-	var lines []parsed
 	scanner := bufio.NewScanner(r)
 	scanner.Buffer(make([]byte, 0, 64*1024), 1<<20)
 	for scanner.Scan() {
@@ -108,8 +134,8 @@ func parseGo(r io.Reader, out map[string]*goResult) error {
 		if m == nil {
 			continue
 		}
-		fields := strings.Fields(m[2])
 		metrics := map[string]float64{}
+		fields := strings.Fields(m[2])
 		for i := 0; i+1 < len(fields); i += 2 {
 			v, err := strconv.ParseFloat(fields[i], 64)
 			if err != nil {
@@ -117,45 +143,27 @@ func parseGo(r io.Reader, out map[string]*goResult) error {
 			}
 			metrics[fields[i+1]] = v
 		}
-		if _, ok := metrics["ns/op"]; !ok {
+		ns, ok := metrics["ns/op"]
+		if !ok {
 			continue
 		}
-		lines = append(lines, parsed{m[1], metrics})
-	}
-	if err := scanner.Err(); err != nil {
-		return err
-	}
-	// Go appends the same -GOMAXPROCS suffix to every name in a run and none
-	// when GOMAXPROCS is 1, so strip a suffix only when every line shares it.
-	suffix := ""
-	for i, l := range lines {
-		m := procsSuffix.FindString(l.name)
-		if i == 0 {
-			suffix = m
-		} else if m != suffix {
-			suffix = ""
-			break
+		name, ok := strings.CutSuffix(m[1], suffix)
+		if !ok {
+			return fmt.Errorf("benchmark %q lacks the -cpu suffix %q", m[1], suffix)
 		}
-	}
-	for _, l := range lines {
-		name := strings.TrimSuffix(l.name, suffix)
 		res := out[key(name)]
 		if res == nil {
 			res = &goResult{}
 			out[key(name)] = res
 		}
-		res.ns = append(res.ns, l.metrics["ns/op"])
-		if v, ok := l.metrics["B/op"]; ok {
-			res.bytes = append(res.bytes, v)
-		}
-		if v, ok := l.metrics["allocs/op"]; ok {
-			res.allocs = append(res.allocs, v)
-		}
-		if v, ok := l.metrics["MB/s"]; ok {
-			res.mbps = append(res.mbps, v)
+		res.ns = append(res.ns, ns)
+		for unit, list := range map[string]*[]float64{"B/op": &res.bytes, "allocs/op": &res.allocs, "MB/s": &res.mbps} {
+			if v, ok := metrics[unit]; ok {
+				*list = append(*list, v)
+			}
 		}
 	}
-	return nil
+	return scanner.Err()
 }
 
 type criterionBenchmark struct {
@@ -176,6 +184,7 @@ type criterionEstimates struct {
 }
 
 // readCriterion loads every `new/benchmark.json` + `new/estimates.json` pair under dir.
+// A missing directory reads as no results, which validation reports.
 func readCriterion(dir string, out map[string]rustResult) error {
 	if _, err := os.Stat(dir); errors.Is(err, fs.ErrNotExist) {
 		return nil
@@ -195,11 +204,10 @@ func readCriterion(dir string, out map[string]rustResult) error {
 		if err := readJSON(filepath.Join(filepath.Dir(path), "estimates.json"), &est); err != nil {
 			return err
 		}
-		ns := est.Mean.PointEstimate
+		res := rustResult{ns: est.Mean.PointEstimate}
 		if est.Slope != nil {
-			ns = est.Slope.PointEstimate
+			res.ns = est.Slope.PointEstimate
 		}
-		res := rustResult{ns: ns}
 		if t := bench.Throughput; t != nil {
 			if t.Bytes != nil {
 				res.bytes = *t.Bytes
@@ -256,10 +264,7 @@ func join(goResults map[string]*goResult, rustResults map[string]rustResult, mar
 		g, hasGo := goResults[name]
 		rr, hasRust := rustResults[name]
 		if hasGo {
-			r.goNs = median(g.ns)
-			r.goBytes = median(g.bytes)
-			r.goAllocs = median(g.allocs)
-			r.goMBps = median(g.mbps)
+			r.goNs, r.goBytes, r.goAllocs, r.goMBps = median(g.ns), median(g.bytes), median(g.allocs), median(g.mbps)
 		}
 		if hasRust {
 			r.rustNs = rr.ns
@@ -285,6 +290,48 @@ func join(goResults map[string]*goResult, rustResults map[string]rustResult, mar
 	return rows
 }
 
+// validate reports missing measurements: an empty side, an undeclared unpaired path, or a
+// --one-sided declaration that is unknown or now has both sides. It ignores timings.
+func validate(rows []row, goResults map[string]*goResult, rustResults map[string]rustResult, oneSided []string) []string {
+	var problems []string
+	if len(goResults) == 0 {
+		problems = append(problems, "no Go benchmark results were read")
+	}
+	if len(rustResults) == 0 {
+		problems = append(problems, "no criterion results were read")
+	}
+	declared := map[string]bool{}
+	for _, name := range oneSided {
+		declared[key(name)] = true
+	}
+	for _, r := range rows {
+		unpaired := r.status == statusGoOnly || r.status == statusRustOnly
+		switch {
+		case unpaired && !declared[r.path]:
+			problems = append(problems, fmt.Sprintf("%s: %s, and not declared --one-sided", r.path, r.status))
+		case !unpaired && declared[r.path]:
+			problems = append(problems, fmt.Sprintf("%s: declared --one-sided but has both sides", r.path))
+		}
+		delete(declared, r.path)
+	}
+	for name := range declared {
+		problems = append(problems, fmt.Sprintf("%s: declared --one-sided but has no result", name))
+	}
+	sort.Strings(problems)
+	return problems
+}
+
+// slower lists paired paths where Rust exceeds the margin; it runs only on validated input.
+func slower(rows []row) []string {
+	var problems []string
+	for _, r := range rows {
+		if r.status == statusSlower {
+			problems = append(problems, r.path+": Rust is slower than Go beyond the margin")
+		}
+	}
+	return problems
+}
+
 func median(v []float64) float64 {
 	if len(v) == 0 {
 		return math.NaN()
@@ -297,9 +344,10 @@ func median(v []float64) float64 {
 	return (s[len(s)/2-1] + s[len(s)/2]) / 2
 }
 
-func writeTable(w io.Writer, rows []row, margin float64) {
-	fmt.Fprintf(w, "| Path | Go ns/op | Rust ns/op | Rust/Go | Go MB/s | Rust MB/s | Go B/op | Go allocs/op | Status (±%g%%) |\n", margin)
-	fmt.Fprintln(w, "|---|---:|---:|---:|---:|---:|---:|---:|---|")
+func renderTable(rows []row, margin float64) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "| Path | Go ns/op | Rust ns/op | Rust/Go | Go MB/s | Rust MB/s | Go B/op | Go allocs/op | Status (±%g%%) |\n", margin)
+	fmt.Fprintln(&b, "|---|---:|---:|---:|---:|---:|---:|---:|---|")
 	for _, r := range rows {
 		ratio := math.NaN()
 		if !math.IsNaN(r.goNs) && !math.IsNaN(r.rustNs) && r.goNs > 0 {
@@ -309,10 +357,11 @@ func writeTable(w io.Writer, rows []row, margin float64) {
 		if status == statusSlower {
 			status = "**slower**"
 		}
-		fmt.Fprintf(w, "| %s | %s | %s | %s | %s | %s | %s | %s | %s |\n",
+		fmt.Fprintf(&b, "| %s | %s | %s | %s | %s | %s | %s | %s | %s |\n",
 			r.path, num(r.goNs), num(r.rustNs), fixed(ratio, 2), fixed(r.goMBps, 1), fixed(r.rustMBps, 1),
 			fixed(r.goBytes, 0), fixed(r.goAllocs, 0), status)
 	}
+	return b.String()
 }
 
 func num(v float64) string {
@@ -331,58 +380,4 @@ func fixed(v float64, prec int) string {
 		return "—"
 	}
 	return strconv.FormatFloat(v, 'f', prec, 64)
-}
-
-// problem is one reason to fail; harness problems mean a measurement is missing or stale.
-type problem struct {
-	text    string
-	harness bool
-}
-
-// exitCode is 0 when clean, 1 when only Rust slowness was found, and 3 for any harness problem.
-func exitCode(problems []problem) int {
-	code := 0
-	for _, p := range problems {
-		if p.harness {
-			return 3
-		}
-		code = 1
-	}
-	return code
-}
-
-// check lists every reason the comparison must fail: a slower Rust path, an empty side, an
-// unpaired path not declared one-sided, or a one-sided declaration that no longer holds.
-func check(rows []row, goResults map[string]*goResult, rustResults map[string]rustResult, oneSided []string) []problem {
-	var problems []problem
-	harness := func(format string, args ...any) {
-		problems = append(problems, problem{fmt.Sprintf(format, args...), true})
-	}
-	if len(goResults) == 0 {
-		harness("no Go benchmark results were read")
-	}
-	if len(rustResults) == 0 {
-		harness("no criterion results were read")
-	}
-	declared := map[string]bool{}
-	for _, name := range oneSided {
-		declared[key(name)] = true
-	}
-	for _, r := range rows {
-		unpaired := r.status == statusGoOnly || r.status == statusRustOnly
-		switch {
-		case r.status == statusSlower:
-			problems = append(problems, problem{r.path + ": Rust is slower than Go beyond the margin", false})
-		case unpaired && !declared[r.path]:
-			harness("%s: %s, and not declared --one-sided", r.path, r.status)
-		case !unpaired && declared[r.path]:
-			harness("%s: declared --one-sided but has both sides", r.path)
-		}
-		delete(declared, r.path)
-	}
-	for name := range declared {
-		harness("%s: declared --one-sided but has no result", name)
-	}
-	sort.Slice(problems, func(i, j int) bool { return problems[i].text < problems[j].text })
-	return problems
 }

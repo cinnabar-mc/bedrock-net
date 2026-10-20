@@ -112,6 +112,9 @@ jobs:
   # Go and Rust benchmarks on one runner, joined by tools/bench-compare. Not a required check.
   bench:
     runs-on: ubuntu-latest
+    env:
+      # Go benchmarks run with -cpu at this value; the comparator strips exactly that suffix.
+      BENCH_GO_PROCS: "4"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
@@ -125,7 +128,7 @@ jobs:
         run: |
           set -o pipefail
           mkdir -p ../../target
-          go test -run '^$' -bench . -benchmem -count 3 ./bench/ | tee ../../target/go-bench.txt
+          go test -run '^$' -bench . -benchmem -count 3 -cpu "$BENCH_GO_PROCS" ./bench/ | tee ../../target/go-bench.txt
       - name: Rust benchmarks
         run: |
           cargo bench --locked -p bedrock-net --features login --bench batch --bench login -- --warm-up-time 1 --measurement-time 3
@@ -138,7 +141,7 @@ jobs:
         run: |
           go build -o ../../target/bench-compare .
           status=0
-          ../../target/bench-compare --go ../../target/go-bench.txt --criterion ../../target/criterion > ../../target/bench-table.md || status=$?
+          ../../target/bench-compare --go-procs "$BENCH_GO_PROCS" --go ../../target/go-bench.txt --criterion ../../target/criterion > ../../target/bench-table.md || status=$?
           cat ../../target/bench-table.md >> "$GITHUB_STEP_SUMMARY"
           cat ../../target/bench-table.md
           if [ "$status" = 1 ]; then
