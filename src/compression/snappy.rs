@@ -96,7 +96,6 @@ impl Encoder {
             let hash =
                 (word(input, position - 1).wrapping_mul(0x1e35_a7bd) >> (32 - bits)) as usize;
             self.table[hash] = (position - 1) as u32;
-            position += 1;
         }
         literal(&input[pending..], out);
         if matched && out.len() - start >= input.len() - input.len() / 32 {
@@ -164,6 +163,10 @@ pub(super) fn decompress(body: &bytes::Bytes, length: usize) -> Option<bytes::By
         && literal.len() == length
     {
         return Some(body.slice(body.len() - length..));
+    }
+    // Small copy-heavy blocks use the reference decoder.
+    if length <= 65536 {
+        return None;
     }
     let mut output = Vec::with_capacity(length);
     while let Some(&tag) = input.first() {

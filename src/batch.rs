@@ -72,6 +72,20 @@ pub enum DecodeOutcome {
     Dropped(DropReason),
 }
 
+/// Diagnostics after synchronously visiting a complete validated batch.
+#[derive(Debug)]
+pub enum VisitOutcome {
+    /// All nonempty packets were delivered in wire order.
+    Packets {
+        /// Number of packets delivered.
+        count: usize,
+        /// Empty entries skipped, for caller diagnostics.
+        skipped_empty_packets: usize,
+    },
+    /// A discarded compressed batch; no callback ran.
+    Dropped(DropReason),
+}
+
 /// One length-validated batch body, retaining only its unread cursor and packet count.
 ///
 /// Each yielded packet shares the original allocation, without a per-packet
@@ -91,20 +105,7 @@ impl BatchPackets {
     /// Visits the remaining packets without creating shared ownership for each packet.
     /// The complete batch has already been validated before any callback runs.
     pub fn for_each_slice(self, mut visit: impl FnMut(&[u8])) {
-        let mut body = self.body.as_ref();
-        for _ in 0..self.remaining {
-            loop {
-                let (length, prefix) = read_length(body, 0)
-                    .expect("the complete immutable batch was validated before iteration");
-                body = &body[prefix..];
-                if length != 0 {
-                    let (packet, rest) = body.split_at(length as usize);
-                    visit(packet);
-                    body = rest;
-                    break;
-                }
-            }
-        }
+        visit_packets(&self.body, self.remaining, &mut visit);
     }
 }
 
@@ -163,6 +164,10 @@ mod phase_private {
         ) -> Result<(), BatchError> {
             unreachable!("plaintext batches do not use compression")
         }
+        /// Borrows bounded scratch for synchronous Snappy packet visits.
+        fn snappy_scratch(&mut self) -> &mut Vec<u8> {
+            unreachable!("plaintext batches do not use compression")
+        }
         /// Decodes the declared algorithm with the connection's retained inflater.
         fn decompress(
             &self,
@@ -184,7 +189,7 @@ pub struct Plain(());
 pub struct Negotiated {
     settings: CompressionSettings,
     encoder: Mutex<Option<Box<compression::Encoder>>>,
-    decoder: Mutex<Option<flate2::Decompress>>,
+    decoder: Mutex<Option<compression::Decoder>>,
 }
 
 /// Sealed codec phases, allowing generic framing without a public phase cast.
@@ -194,6 +199,14 @@ pub trait BatchPhase: phase_private::Sealed {
 }
 impl phase_private::Sealed for Plain {}
 impl phase_private::Sealed for Negotiated {
+    fn snappy_scratch(&mut self) -> &mut Vec<u8> {
+        &mut self
+            .decoder
+            .get_mut()
+            .unwrap_or_else(|error| error.into_inner())
+            .get_or_insert_with(compression::Decoder::default)
+            .snappy
+    }
     fn compress(
         &self,
         algorithm: CompressionAlgorithm,
@@ -389,7 +402,65 @@ impl<S: BatchPhase> BatchCodec<S> {
     /// Returns an error for malformed envelopes or packet lengths, missing
     /// compression headers, or exceeded size/count limits. Invalid compression
     /// instead returns [`DecodeOutcome::Dropped`].
-    pub fn decode(&self, mut message: Bytes) -> Result<DecodeOutcome, BatchError> {
+    pub fn decode(&self, message: Bytes) -> Result<DecodeOutcome, BatchError> {
+        let (id, body) = self.strip_envelope(message)?;
+        self.decode_payload(id, body)
+    }
+
+    /// Visits a complete validated batch without transferring packet ownership.
+    ///
+    /// Small Snappy batches reuse connection scratch. Other batches retain the
+    /// storage used by [`Self::decode`] until callbacks finish. No callback runs
+    /// before the complete batch passes framing and resource checks.
+    ///
+    /// # Errors
+    /// Returns the same errors and dropped-batch diagnostics as [`Self::decode`].
+    pub fn decode_with(
+        &mut self,
+        message: Bytes,
+        mut visit: impl FnMut(&[u8]),
+    ) -> Result<VisitOutcome, BatchError> {
+        let (id, body) = self.strip_envelope(message)?;
+        if id == Some(CompressionAlgorithm::Snappy.batch_id())
+            && let Ok(length) = snap::raw::decompress_len(&body)
+            && length <= 65536
+        {
+            if length > self.max_incoming_decoded_bytes {
+                return Err(BatchError::DecodedTooLarge {
+                    maximum: self.max_incoming_decoded_bytes,
+                });
+            }
+            let maximum = self.limits.max_incoming_packets;
+            let scratch = self.phase.snappy_scratch();
+            scratch.resize(length, 0);
+            if let Err(error) = snap::raw::Decoder::new().decompress(&body, scratch) {
+                return Ok(VisitOutcome::Dropped(DropReason::InvalidSnappy(error)));
+            }
+            let (count, skipped_empty_packets) = validate_packets(scratch, maximum)?;
+            visit_packets(scratch, count, &mut visit);
+            return Ok(VisitOutcome::Packets {
+                count,
+                skipped_empty_packets,
+            });
+        }
+        match self.decode_payload(id, body)? {
+            DecodeOutcome::Packets {
+                packets,
+                skipped_empty_packets,
+            } => {
+                let count = packets.len();
+                packets.for_each_slice(visit);
+                Ok(VisitOutcome::Packets {
+                    count,
+                    skipped_empty_packets,
+                })
+            }
+            DecodeOutcome::Dropped(reason) => Ok(VisitOutcome::Dropped(reason)),
+        }
+    }
+
+    /// Checks the wire ceiling and removes transport and negotiated algorithm markers.
+    fn strip_envelope(&self, mut message: Bytes) -> Result<(Option<u8>, Bytes), BatchError> {
         self.check_encoded_size(message.len())?;
         if self.header == BatchHeader::RakNet {
             match message.first().copied() {
@@ -398,12 +469,26 @@ impl<S: BatchPhase> BatchCodec<S> {
                 None => return Err(BatchError::MissingBatchHeader),
             }
         }
-        if self.phase.compression().is_some() {
+        let id = if self.phase.compression().is_some() {
             let id = message
                 .first()
                 .copied()
                 .ok_or(BatchError::MissingCompressionHeader)?;
             message.advance(1);
+            Some(id)
+        } else {
+            None
+        };
+        Ok((id, message))
+    }
+
+    /// Validates an envelope-stripped batch while preserving owned packet lifetimes.
+    fn decode_payload(
+        &self,
+        id: Option<u8>,
+        mut message: Bytes,
+    ) -> Result<DecodeOutcome, BatchError> {
+        if let Some(id) = id {
             message = match self
                 .phase
                 .decompress(id, message, self.max_incoming_decoded_bytes)?
@@ -495,7 +580,25 @@ impl<S: BatchPhase> BatchCodec<S> {
     }
 }
 
+/// Visits validated packet bytes without allocating ownership handles.
+fn visit_packets(mut body: &[u8], count: usize, visit: &mut impl FnMut(&[u8])) {
+    for _ in 0..count {
+        loop {
+            let (length, prefix) = read_length(body, 0)
+                .expect("the complete immutable batch was validated before iteration");
+            body = &body[prefix..];
+            if length != 0 {
+                let (packet, rest) = body.split_at(length as usize);
+                visit(packet);
+                body = rest;
+                break;
+            }
+        }
+    }
+}
+
 /// Validates all boundaries and counts before exposing a cursor, without allocating packet metadata.
+#[inline]
 fn validate_packets(body: &[u8], maximum: Option<usize>) -> Result<(usize, usize), BatchError> {
     let mut count = 0;
     let mut skipped_empty_packets = 0;
@@ -532,6 +635,7 @@ fn validate_packets(body: &[u8], maximum: Option<usize>) -> Result<(usize, usize
 }
 
 /// Reads up to five bytes, retaining the low 32 bits like the peer decoder; packet headers remain the protocol codec's responsibility.
+#[inline]
 fn read_length(bytes: &[u8], offset: usize) -> Result<(u32, usize), BatchError> {
     if let Some(&byte) = bytes.first()
         && byte < 0x80

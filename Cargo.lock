@@ -235,6 +235,7 @@ dependencies = [
  "serde_json",
  "sha2",
  "snap",
+ "snipsnap",
  "subtle",
  "thiserror 2.0.21",
  "tokio",
@@ -3068,6 +3069,12 @@ name = "snap"
 version = "1.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "199905e6153d6405f9728fe44daace35f8f837bbf830bb6e85fbd5828709a886"
+
+[[package]]
+name = "snipsnap"
+version = "0.0.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "777ffec062805c2b852a96078278359580ee45e7aeff9a89dce3ccf2857fb32e"
 
 [[package]]
 name = "socket2"

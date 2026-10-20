@@ -73,6 +73,7 @@ pub(crate) struct Encoder {
     pub(crate) body: Vec<u8>,
     flate: Option<libdeflater::Compressor>,
     snappy: snappy::Encoder,
+    small_snappy: Option<snipsnap::raw::Encoder>,
 }
 
 impl Encoder {
@@ -95,7 +96,21 @@ impl Encoder {
                 out.truncate(offset + length);
             }
             CompressionAlgorithm::Snappy => {
-                if snap::raw::max_compress_len(self.body.len()) == 0 {
+                if self.body.len() <= 65536 {
+                    let offset = out.len();
+                    out.resize(offset + snap::raw::max_compress_len(self.body.len()), 0);
+                    let length = match self
+                        .small_snappy
+                        .get_or_insert_with(snipsnap::raw::Encoder::new)
+                        .compress(&self.body, &mut out[offset..])
+                    {
+                        Ok(length) => length,
+                        Err(_) => snap::raw::Encoder::new()
+                            .compress(&self.body, &mut out[offset..])
+                            .map_err(BatchError::Snappy)?,
+                    };
+                    out.truncate(offset + length);
+                } else if snap::raw::max_compress_len(self.body.len()) == 0 {
                     let compressed = snap::raw::Encoder::new()
                         .compress_vec(&self.body)
                         .map_err(BatchError::Snappy)?;
@@ -116,19 +131,33 @@ impl std::fmt::Debug for Encoder {
     }
 }
 
+/// Retained decode state; cached Snappy storage is bounded to one small block.
+#[derive(Default)]
+pub(crate) struct Decoder {
+    flate: Option<Decompress>,
+    pub(crate) snappy: Vec<u8>,
+}
+
+impl std::fmt::Debug for Decoder {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Decoder").finish_non_exhaustive()
+    }
+}
+
 /// Bounds decompression and distinguishes a discarded payload from a fatal limit violation.
 pub(crate) fn decompress(
     id: u8,
     body: Bytes,
     maximum: usize,
-    decoder: &std::sync::Mutex<Option<Decompress>>,
+    decoder: &std::sync::Mutex<Option<Decoder>>,
 ) -> Result<Result<Bytes, DropReason>, BatchError> {
     match id {
         DEFLATE_ID => {
             let mut decoder = decoder.lock().unwrap_or_else(|error| error.into_inner());
-            let decoder = decoder.get_or_insert_with(|| Decompress::new(false));
-            decoder.reset(false);
-            inflate(decoder, &body, maximum)
+            let decoder = decoder.get_or_insert_with(Decoder::default);
+            let flate = decoder.flate.get_or_insert_with(|| Decompress::new(false));
+            flate.reset(false);
+            inflate(flate, &body, maximum)
         }
         SNAPPY_ID => {
             let length = match snap::raw::decompress_len(&body) {

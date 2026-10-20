@@ -49,6 +49,7 @@ serde = { version = "1", features = ["derive"], optional = true }
 serde_json = { version = "1", features = ["raw_value"], optional = true }
 sha2 = "0.11"
 snap = "1"
+snipsnap = "=0.0.2"
 subtle = "2"
 thiserror = "2"
 tokio = { version = "1", features = ["net", "time", "macros"], optional = true }
