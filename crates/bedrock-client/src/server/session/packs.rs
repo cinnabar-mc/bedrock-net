@@ -273,9 +273,7 @@ impl Delivery {
             let version = &pack.version;
             if version.len() > options.limits.max_version_bytes
                 || (!archives.iter().any(|a| a.id == id && &a.version == version)
-                    && !version
-                        .to_str()
-                        .is_ok_and(|version| builtins::contains(id, version)))
+                    && !builtins::contains(id, version.as_bytes()))
             {
                 return Err(invalid("accepting stack contains unavailable content"));
             }

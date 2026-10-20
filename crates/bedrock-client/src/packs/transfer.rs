@@ -337,7 +337,7 @@ pub(super) fn finish(
         if downloads.get(&id).is_none_or(|download| {
             download.offer.pack_id_version.pack_version.version != pack.version
         }) {
-            if super::builtins::contains(id, &pack.version.to_string_lossy()) {
+            if super::builtins::contains(id, pack.version.as_bytes()) {
                 if let Some(stack) = &mut retained_stack {
                     stack.texture_pack_list.push(pack);
                 }
@@ -367,8 +367,8 @@ pub(super) fn finish(
         seen.insert(id, pack.version.clone());
         archives.push(ResourcePackArchive::with_content_key(
             id,
-            pack.version.to_string_lossy().into_owned(),
-            pack.sub_pack_name.to_string_lossy().into_owned(),
+            pack.version.as_bytes().to_vec(),
+            pack.sub_pack_name.as_bytes().to_vec(),
             bytes,
             download.offer.content_key.as_bytes().to_vec(),
         ));

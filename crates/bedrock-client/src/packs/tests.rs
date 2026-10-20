@@ -331,7 +331,7 @@ fn final_stack_selects_order_subpack_and_offer_key_without_applying_unselected_a
             .collect::<Vec<_>>(),
         [2, 1]
     );
-    assert_eq!(archives[0].sub_pack_name, "stack-subpack");
+    assert_eq!(archives[0].sub_pack_name, b"stack-subpack");
     assert_eq!(archives[0].content_key.expose(), b"synthetic-content-key");
     let missing = PackInstanceId {
         pack_id: uuid::Uuid::from_u128(99).to_string().into(),
@@ -761,7 +761,7 @@ fn public_negotiation_preserves_preloads_request_order_and_final_stack_ownership
     let archives = handoff.into_archives();
     assert_eq!(archives[0].pack_id, streamed);
     assert_eq!(archives[0].archive, data);
-    assert_eq!(archives[0].sub_pack_name, "selected");
+    assert_eq!(archives[0].sub_pack_name, b"selected");
     assert_eq!(archives[0].content_key.expose(), b"synthetic-key");
     assert_eq!(archives[1].pack_id, cached);
     assert_eq!(archives[1].archive, [9, 8]);

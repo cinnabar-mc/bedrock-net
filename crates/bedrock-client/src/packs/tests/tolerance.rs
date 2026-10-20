@@ -237,3 +237,50 @@ fn client_chunk_count_includes_the_last_signed_request_index() {
         }
     }
 }
+
+/// The archive handoff preserves opaque stack text even without retained packet metadata.
+#[test]
+fn archive_handoff_keeps_opaque_versions_and_subpack_names() {
+    for metadata in [false, true] {
+        let id = uuid::Uuid::from_u128(1);
+        let version = Bytes::from_static(b"\xff");
+        let subpack = Bytes::from_static(b"sub\xfe");
+        let mut entry = offer(id, 3);
+        entry.pack_id_version.pack_version.version = version.clone().into();
+        let info = packets::ResourcePacksInfo {
+            resource_packs: vec![entry],
+            ..Default::default()
+        };
+        let mut offered = if metadata {
+            PackOffer::new_with_metadata(info, PackTransferLimits::default())
+        } else {
+            PackOffer::new(info, PackTransferLimits::default())
+        }
+        .unwrap();
+        offered.supply_preloaded(id, b"abc".to_vec()).unwrap();
+        let (mut transfer, _) = offered.start().unwrap();
+        let PackEvent::Finished(complete) = transfer
+            .receive(
+                packets::ResourcePackStack {
+                    texture_pack_required: true,
+                    texture_pack_list: vec![PackInstanceId {
+                        pack_id: id.to_string().into(),
+                        version: version.clone().into(),
+                        sub_pack_name: subpack.clone().into(),
+                    }],
+                    ..Default::default()
+                }
+                .into(),
+            )
+            .unwrap()
+        else {
+            panic!("stack must complete")
+        };
+        let (_, handoff, retained) = complete.into_parts_with_metadata();
+        assert_eq!(retained.is_some(), metadata);
+        let archives = handoff.into_archives();
+        assert_eq!(archives[0].version.as_slice(), version.as_ref());
+        assert_eq!(archives[0].sub_pack_name.as_slice(), subpack.as_ref());
+        assert_eq!(archives[0].archive, b"abc");
+    }
+}

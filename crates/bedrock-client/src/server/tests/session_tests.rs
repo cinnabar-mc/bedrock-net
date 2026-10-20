@@ -337,7 +337,7 @@ fn typed_accepting_packs_and_spawn_preserve_memory_file_order_keys_and_original_
     );
     assert_eq!(archives[0].archive, std::fs::read(disk_payload()).unwrap());
     assert_eq!(archives[1].archive.as_slice(), MEMORY_PAYLOAD);
-    assert_eq!(archives[0].sub_pack_name, "selected-2");
+    assert_eq!(archives[0].sub_pack_name, b"selected-2");
     assert_eq!(archives[1].content_key.expose(), b"synthetic-key-1");
     let accepted = initialize(world, spawn, &provider, now, utc)
         .finish(&provider, now, utc)

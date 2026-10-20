@@ -70,7 +70,7 @@ fn optional_stack(offer_required: bool) {
         let archives = handoff.into_archives();
         assert_eq!(archives.len(), 1);
         assert_eq!(archives[0].archive, fixture_bytes(uuid::Uuid::from_u128(1)));
-        assert_eq!(archives[0].sub_pack_name, "original-selected");
+        assert_eq!(archives[0].sub_pack_name, b"original-selected");
         let metadata = metadata.expect("original wire metadata was explicitly retained");
         assert_eq!(metadata.offer.resource_pack_required, offer_required);
         assert!(!metadata.stack.texture_pack_required);
