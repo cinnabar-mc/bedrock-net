@@ -30,10 +30,7 @@ use crate::{
 };
 
 /// Known differences from a Go Dialer, each naming its audit item.
-const EXPECTED_DIVERGENCES: &[(&str, &str)] = &[
-    // Audit C c314b9cb: Go and vanilla open 100 chunk requests; Rust opens up to 1024 in order.
-    ("chunk-pack/initial_requests", "pack request window"),
-];
+const EXPECTED_DIVERGENCES: &[(&str, &str)] = &[];
 
 /// One running helper and the defaults it reported.
 struct Helper {
@@ -392,7 +389,7 @@ fn chunked_pack_is_downloaded() {
         chunks > window,
         "the pack must span more chunks than Go's request window"
     );
-    // Pins the divergence to the Rust default, so it cannot silently become some other count.
+    // Check the configured default as well as the independently reported Go window.
     let rust_window = bedrock_client::packs::DEFAULT_REQUEST_WINDOW as usize;
     assert_eq!(observed.initial_requests, chunks.min(rust_window));
     let mut ledger = Ledger::default();

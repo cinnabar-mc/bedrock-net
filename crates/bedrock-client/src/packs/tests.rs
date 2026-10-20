@@ -247,7 +247,8 @@ fn chunk(download: &Download, index: u32, bytes: &[u8]) -> packets::ResourcePack
 }
 
 #[test]
-fn chunk_window_accepts_reordering_without_serializing_the_tail_and_checks_hashes() {
+fn chunk_window_replenishes_each_response_before_the_in_order_prefix() {
+    assert_eq!(DEFAULT_REQUEST_WINDOW, 100);
     let bytes = vec![7; DEFAULT_REQUEST_WINDOW as usize + 5];
     let (mut downloads, mut budget) = admit(vec![offer(uuid::Uuid::from_u128(1), bytes.len())]);
     let mut download = downloads.remove(0);
@@ -266,7 +267,10 @@ fn chunk_window_accepts_reordering_without_serializing_the_tail_and_checks_hashe
     let mut replenished = Vec::new();
     for index in (0..DEFAULT_REQUEST_WINDOW).rev() {
         let packet = chunk(&download, index, &[7]);
-        replenished.extend(download.chunk(packet).unwrap());
+        let requests = download.chunk(packet).unwrap();
+        let remaining = 5_usize.saturating_sub(replenished.len());
+        assert_eq!(requests.len(), remaining.min(1));
+        replenished.extend(requests);
     }
     assert_eq!(replenished.len(), 5);
     for index in DEFAULT_REQUEST_WINDOW..bytes.len() as u32 {
@@ -705,7 +709,7 @@ fn public_negotiation_preserves_preloads_request_order_and_final_stack_ownership
             .unwrap(),
     );
     assert_eq!(request_indices(requests), [0, 1]);
-    for (index, expected) in [(1, vec![]), (1, vec![]), (0, vec![2])] {
+    for (index, expected) in [(1, vec![2]), (1, vec![]), (0, vec![])] {
         let replies = sends(
             negotiation
                 .receive(
