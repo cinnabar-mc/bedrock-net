@@ -9,7 +9,9 @@ use zeroize::Zeroizing;
 mod client_data;
 mod exchange_key;
 mod fields;
+mod offline;
 pub use exchange_key::ClientExchangeKey;
+pub use offline::OfflineLogin;
 
 /// Pure authority for the configured multiplayer provider, never a client-selected issuer/key.
 ///
@@ -225,11 +227,11 @@ pub fn verify_authenticated_request(
         .map_err(LoginError::redact_peer)?;
     let client = std::str::from_utf8(client).map_err(|_| LoginError::MalformedToken)?;
     let payload = jwt::verify_client(client, &identity.public_key, max_request_bytes)?;
-    let original_client_data = std::str::from_utf8(&payload)
-        .err()
-        .map(|_| payload.trim_ascii().to_vec().into_boxed_slice());
-    let client_data = client_data::parse_json(&payload)?;
-    let metadata = client_data::validate(&client_data, |address| {
+    let client_data::Payload {
+        client_data,
+        original_client_data,
+        metadata,
+    } = client_data::validate_payload(&payload, |address| {
         verifier.resolve_client_address(address)
     })?;
     let exchange_key = metadata

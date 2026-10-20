@@ -108,6 +108,30 @@ fn go_utf8(mut bytes: &[u8]) -> Cow<'_, str> {
     Cow::Owned(text)
 }
 
+/// Retains validated JSON, its original signed bytes and interpreted protocol metadata together.
+pub(super) struct Payload {
+    pub(super) client_data: Box<RawValue>,
+    pub(super) original_client_data: Option<Box<[u8]>>,
+    pub(super) metadata: Metadata,
+}
+
+/// Validates metadata after its caller has verified the exact signed payload bytes.
+pub(super) fn validate_payload(
+    payload: &[u8],
+    resolve: impl FnOnce(&str) -> Result<(), LoginError>,
+) -> Result<Payload, LoginError> {
+    let original_client_data = std::str::from_utf8(payload)
+        .err()
+        .map(|_| payload.trim_ascii().to_vec().into_boxed_slice());
+    let client_data = parse_json(payload)?;
+    let metadata = validate(&client_data, resolve)?;
+    Ok(Payload {
+        client_data,
+        original_client_data,
+        metadata,
+    })
+}
+
 pub(super) struct Metadata {
     pub(super) nonce: String,
     pub(super) exchange_key: Option<ClientExchangeKey>,
