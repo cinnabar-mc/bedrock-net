@@ -31,7 +31,7 @@ default = []
 login = ["dep:base64", "dep:md-5", "dep:p384", "dep:serde", "dep:serde_json", "dep:uuid", "sha2/zeroize"]
 provider-verification = ["login", "dep:nethernet"]
 raknet = ["dep:raknet", "dep:tokio"]
-messaging = ["dep:bedrock-services", "dep:futures", "dep:nethernet", "dep:nethernet-tokio", "dep:tokio", "dep:uuid"]
+messaging = ["dep:bedrock-services", "dep:futures", "dep:nethernet", "dep:nethernet-tokio", "dep:tokio", "dep:uuid", "uuid/v4"]
 
 [dependencies]
 aes = { version = "0.9", features = ["zeroize"] }
@@ -54,7 +54,7 @@ subtle = "2"
 thiserror = "2"
 tokio = { version = "1", features = ["net", "time", "macros"], optional = true }
 zeroize = "1"
-uuid = { version = "1", features = ["v4"], optional = true }
+uuid = { version = "1", optional = true }
 
 [dev-dependencies]
 rand = "0.10"
