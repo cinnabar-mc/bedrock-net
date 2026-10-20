@@ -1,9 +1,9 @@
-use std::io::Write;
-
 use bytes::Bytes;
-use flate2::{Decompress, FlushDecompress, Status, write::DeflateEncoder};
+use flate2::{Compress, Compression, Decompress, FlushCompress, FlushDecompress, Status};
 
 use crate::{BatchError, DropReason};
+
+mod snappy;
 
 const DEFLATE_ID: u8 = 0;
 const SNAPPY_ID: u8 = 1;
@@ -67,22 +67,91 @@ pub struct CompressionSettings {
     pub threshold: u16,
 }
 
-/// Compresses a batch body without adding any protocol headers.
-pub(crate) fn compress(
-    algorithm: CompressionAlgorithm,
-    body: &[u8],
-) -> Result<Vec<u8>, BatchError> {
-    match algorithm {
-        CompressionAlgorithm::Deflate => {
-            let mut encoder = DeflateEncoder::new(Vec::new(), flate2::Compression::new(6));
-            encoder.write_all(body).map_err(BatchError::Deflate)?;
-            encoder.finish().map_err(BatchError::Deflate)
+/// Per-connection scratch and lazily allocated compressors, reset between independent batches.
+#[derive(Default)]
+pub(crate) struct Encoder {
+    pub(crate) body: Vec<u8>,
+    flate: Option<Compress>,
+    snappy: snappy::Encoder,
+    small_snappy: Option<snipsnap::raw::Encoder>,
+}
+
+impl Encoder {
+    /// Appends compressed scratch bytes directly to the transport envelope.
+    pub(crate) fn compress(
+        &mut self,
+        algorithm: CompressionAlgorithm,
+        out: &mut Vec<u8>,
+    ) -> Result<(), BatchError> {
+        match algorithm {
+            CompressionAlgorithm::Deflate => {
+                let encoder = self
+                    .flate
+                    .get_or_insert_with(|| Compress::new(Compression::fast(), false));
+                encoder.reset();
+                let mut input = self.body.as_slice();
+                loop {
+                    out.reserve(8192);
+                    let before = encoder.total_in();
+                    let before_out = out.len();
+                    let status = encoder
+                        .compress_vec(input, out, FlushCompress::Finish)
+                        .map_err(|error| BatchError::Deflate(std::io::Error::other(error)))?;
+                    input = &input[(encoder.total_in() - before) as usize..];
+                    if status == Status::StreamEnd {
+                        break;
+                    }
+                    if encoder.total_in() == before && out.len() == before_out {
+                        return Err(BatchError::Deflate(std::io::Error::other(
+                            "DEFLATE compressor made no progress",
+                        )));
+                    }
+                }
+            }
+            CompressionAlgorithm::Snappy => {
+                if self.body.len() <= 65536 {
+                    let offset = out.len();
+                    out.resize(offset + snap::raw::max_compress_len(self.body.len()), 0);
+                    let length = match self
+                        .small_snappy
+                        .get_or_insert_with(snipsnap::raw::Encoder::new)
+                        .compress(&self.body, &mut out[offset..])
+                    {
+                        Ok(length) => length,
+                        Err(_) => snap::raw::Encoder::new()
+                            .compress(&self.body, &mut out[offset..])
+                            .map_err(BatchError::Snappy)?,
+                    };
+                    out.truncate(offset + length);
+                } else if snap::raw::max_compress_len(self.body.len()) == 0 {
+                    let compressed = snap::raw::Encoder::new()
+                        .compress_vec(&self.body)
+                        .map_err(BatchError::Snappy)?;
+                    out.extend_from_slice(&compressed);
+                } else {
+                    self.snappy.compress(&self.body, out);
+                }
+            }
+            CompressionAlgorithm::None => out.extend_from_slice(&self.body),
         }
-        CompressionAlgorithm::Snappy => snap::raw::Encoder::new()
-            .compress_vec(body)
-            .map_err(BatchError::Snappy),
-        CompressionAlgorithm::None => Ok(body.to_vec()),
+        Ok(())
     }
+}
+
+impl std::fmt::Debug for Encoder {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Encoder").finish_non_exhaustive()
+    }
+}
+
+/// Decodes into initialized storage whose length matches the already checked declaration.
+pub(crate) fn decompress_snappy_into(body: &[u8], output: &mut [u8]) -> Result<(), snap::Error> {
+    if snappy::decompress_into(body, output).is_some() {
+        return Ok(());
+    }
+    snap::raw::Decoder::new()
+        .decompress(body, output)
+        .map(|_| ())
 }
 
 /// Bounds decompression and distinguishes a discarded payload from a fatal limit violation.
@@ -90,9 +159,15 @@ pub(crate) fn decompress(
     id: u8,
     body: Bytes,
     maximum: usize,
+    decoder: &std::sync::Mutex<Option<Decompress>>,
 ) -> Result<Result<Bytes, DropReason>, BatchError> {
     match id {
-        DEFLATE_ID => inflate(&body, maximum),
+        DEFLATE_ID => {
+            let mut decoder = decoder.lock().unwrap_or_else(|error| error.into_inner());
+            let flate = decoder.get_or_insert_with(|| Decompress::new(false));
+            flate.reset(false);
+            inflate(flate, &body, maximum)
+        }
         SNAPPY_ID => {
             let length = match snap::raw::decompress_len(&body) {
                 Ok(length) => length,
@@ -100,6 +175,9 @@ pub(crate) fn decompress(
             };
             if length > maximum {
                 return Err(BatchError::DecodedTooLarge { maximum });
+            }
+            if let Some(decoded) = snappy::decompress(&body, length) {
+                return Ok(Ok(decoded));
             }
             Ok(snap::raw::Decoder::new()
                 .decompress_vec(&body)
@@ -117,33 +195,36 @@ pub(crate) fn decompress(
 }
 
 /// Inflates incrementally, requiring a final block and stopping at the decoded-byte limit.
-fn inflate(body: &[u8], maximum: usize) -> Result<Result<Bytes, DropReason>, BatchError> {
-    let mut decoder = Decompress::new(false);
+fn inflate(
+    decoder: &mut Decompress,
+    body: &[u8],
+    maximum: usize,
+) -> Result<Result<Bytes, DropReason>, BatchError> {
     let mut input = body;
-    let mut decoded = Vec::new();
-    let mut scratch = [0; 8192];
+    let ceiling = maximum.saturating_add(1);
+    let mut decoded = Vec::with_capacity(body.len().saturating_mul(2).max(8192).min(ceiling));
     loop {
+        if decoded.len() == decoded.capacity() {
+            decoded.reserve_exact(decoded.len().max(8192).min(ceiling - decoded.len()));
+        }
         let before_in = decoder.total_in();
-        let before_out = decoder.total_out();
-        let status = decoder.decompress(input, &mut scratch, FlushDecompress::None);
-        // Each delta is bounded by this call's input or fixed-size output slice.
+        let before_out = decoded.len();
+        let status = decoder.decompress_vec(input, &mut decoded, FlushDecompress::None);
+        // Each delta is bounded by this call's input slice and available output capacity.
         let consumed = usize::try_from(decoder.total_in() - before_in)
             .expect("consumed bytes fit the input slice");
-        let produced = usize::try_from(decoder.total_out() - before_out)
-            .expect("produced bytes fit the scratch buffer");
-        if produced > maximum - decoded.len() {
+        if decoded.len() > maximum {
             return Err(BatchError::DecodedTooLarge { maximum });
         }
         let status = match status {
             Ok(status) => status,
             Err(error) => return Ok(Err(DropReason::InvalidDeflate(error))),
         };
-        decoded.extend_from_slice(&scratch[..produced]);
         input = &input[consumed..];
         if status == Status::StreamEnd {
             return Ok(Ok(Bytes::from(decoded)));
         }
-        if consumed == 0 && produced == 0 {
+        if consumed == 0 && decoded.len() == before_out {
             return Ok(Err(DropReason::TruncatedDeflate));
         }
     }

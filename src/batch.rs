@@ -1,3 +1,5 @@
+use std::sync::Mutex;
+
 use bytes::{Buf, Bytes};
 
 use crate::compression::{self, CompressionAlgorithm, CompressionSettings};
@@ -144,9 +146,30 @@ impl std::fmt::Debug for BatchPackets {
 }
 
 mod phase_private {
+    use super::{BatchError, Bytes, CompressionAlgorithm, DropReason};
+
     pub trait Sealed {
+        /// Frames stable packet views into connection scratch and appends their compressed bytes.
+        fn compress(
+            &self,
+            _: CompressionAlgorithm,
+            _: &[&[u8]],
+            _: usize,
+            _: &mut Vec<u8>,
+        ) -> Result<(), BatchError> {
+            unreachable!("plaintext batches do not use compression")
+        }
         /// Borrows bounded scratch for synchronous Snappy packet visits.
         fn snappy_scratch(&mut self) -> &mut Vec<u8> {
+            unreachable!("plaintext batches do not use compression")
+        }
+        /// Decodes the declared algorithm with the connection's retained inflater.
+        fn decompress(
+            &self,
+            _: u8,
+            _: Bytes,
+            _: usize,
+        ) -> Result<Result<Bytes, DropReason>, BatchError> {
             unreachable!("plaintext batches do not use compression")
         }
     }
@@ -160,6 +183,8 @@ pub struct Plain(());
 pub struct Negotiated {
     settings: CompressionSettings,
     snappy_scratch: Vec<u8>,
+    encoder: Mutex<Option<Box<compression::Encoder>>>,
+    decoder: Mutex<Option<flate2::Decompress>>,
 }
 
 impl std::fmt::Debug for Negotiated {
@@ -177,6 +202,33 @@ pub trait BatchPhase: phase_private::Sealed {
 }
 impl phase_private::Sealed for Plain {}
 impl phase_private::Sealed for Negotiated {
+    /// Reuses bounded framing storage and a lazy per-connection compressor.
+    fn compress(
+        &self,
+        algorithm: CompressionAlgorithm,
+        packets: &[&[u8]],
+        body_len: usize,
+        out: &mut Vec<u8>,
+    ) -> Result<(), BatchError> {
+        let mut encoder = self
+            .encoder
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let encoder = encoder.get_or_insert_with(Box::default);
+        encoder.body.clear();
+        encoder.body.reserve_exact(body_len);
+        write_packets(packets, &mut encoder.body);
+        encoder.compress(algorithm, out)
+    }
+    /// Resets the connection inflater before each independent compressed batch.
+    fn decompress(
+        &self,
+        id: u8,
+        body: Bytes,
+        maximum: usize,
+    ) -> Result<Result<Bytes, DropReason>, BatchError> {
+        compression::decompress(id, body, maximum, &self.decoder)
+    }
     #[inline]
     fn snappy_scratch(&mut self) -> &mut Vec<u8> {
         &mut self.snappy_scratch
@@ -234,6 +286,8 @@ impl BatchCodec<Plain> {
             phase: Negotiated {
                 settings,
                 snappy_scratch: Vec::new(),
+                encoder: Mutex::new(None),
+                decoder: Mutex::new(None),
             },
         }
     }
@@ -292,28 +346,27 @@ impl<S: BatchPhase> BatchCodec<S> {
         batches: &mut Vec<Bytes>,
         recycled: &mut std::vec::IntoIter<Bytes>,
     ) -> Result<(), BatchError> {
-        if packets.is_empty() {
-            return Ok(());
-        }
-        if self.limits.max_packets == 0 {
+        if !packets.is_empty() && self.limits.max_packets == 0 {
             return Err(BatchError::TooManyPackets { maximum: 0 });
         }
-        let mut message = self.start_batch(recycled.next());
-        let prefix = message.len();
+        let packets: Vec<&[u8]> = packets.iter().map(AsRef::as_ref).collect();
+        let mut start = 0;
+        let mut body_len = 0;
         let mut count = 0;
-        for packet in packets {
-            let packet = packet.as_ref();
+        for (index, &packet) in packets.iter().enumerate() {
             if packet.is_empty() {
                 return Err(BatchError::EmptyPacket);
             }
             let length = u32::try_from(packet.len())
                 .map_err(|_| BatchError::PacketTooLarge(packet.len()))?;
-            let entry_len = packet
-                .len()
-                .checked_add(((u32::BITS - length.leading_zeros()).div_ceil(7)) as usize)
-                .ok_or(BatchError::DecodedTooLarge {
-                    maximum: self.limits.max_decoded_bytes,
-                })?;
+            let prefix_len = ((u32::BITS - length.leading_zeros()).div_ceil(7)) as usize;
+            let entry_len =
+                packet
+                    .len()
+                    .checked_add(prefix_len)
+                    .ok_or(BatchError::DecodedTooLarge {
+                        maximum: self.limits.max_decoded_bytes,
+                    })?;
             if entry_len > self.limits.max_decoded_bytes {
                 return Err(BatchError::DecodedTooLarge {
                     maximum: self.limits.max_decoded_bytes,
@@ -321,18 +374,23 @@ impl<S: BatchPhase> BatchCodec<S> {
             }
             if count != 0
                 && (count == self.limits.max_packets
-                    || entry_len > self.limits.max_decoded_bytes - (message.len() - prefix))
+                    || entry_len > self.limits.max_decoded_bytes - body_len)
             {
-                batches.push(self.finish_batch(message)?);
-                message = self.start_batch(recycled.next());
+                batches.push(self.encode_packets(
+                    &packets[start..index],
+                    body_len,
+                    recycled.next(),
+                )?);
+                start = index;
+                body_len = 0;
                 count = 0;
             }
-            message.reserve(entry_len.saturating_add(8));
-            write_length(length, &mut message);
-            message.extend_from_slice(packet);
+            body_len += entry_len;
             count += 1;
         }
-        batches.push(self.finish_batch(message)?);
+        if count != 0 {
+            batches.push(self.encode_packets(&packets[start..], body_len, recycled.next())?);
+        }
         Ok(())
     }
 
@@ -382,7 +440,7 @@ impl<S: BatchPhase> BatchCodec<S> {
                 scratch.reserve_exact(length - scratch.len());
             }
             scratch.resize(length, 0);
-            if let Err(error) = snap::raw::Decoder::new().decompress(&body, scratch) {
+            if let Err(error) = compression::decompress_snappy_into(&body, scratch) {
                 return Ok(VisitOutcome::Dropped(DropReason::InvalidSnappy(error)));
             }
             let (count, skipped_empty_packets) = validate_packets(scratch, maximum)?;
@@ -438,7 +496,10 @@ impl<S: BatchPhase> BatchCodec<S> {
         mut message: Bytes,
     ) -> Result<DecodeOutcome, BatchError> {
         if let Some(id) = id {
-            message = match compression::decompress(id, message, self.max_incoming_decoded_bytes)? {
+            message = match self
+                .phase
+                .decompress(id, message, self.max_incoming_decoded_bytes)?
+            {
                 Ok(body) => body,
                 Err(reason) => return Ok(DecodeOutcome::Dropped(reason)),
             };
@@ -460,39 +521,54 @@ impl<S: BatchPhase> BatchCodec<S> {
         })
     }
 
-    /// Reclaims an unshared output and starts its transport/compression envelope.
-    fn start_batch(&self, recycled: Option<Bytes>) -> Vec<u8> {
+    /// Writes one bounded packet group directly into its final envelope or compression scratch.
+    fn encode_packets(
+        &self,
+        packets: &[&[u8]],
+        body_len: usize,
+        recycled: Option<Bytes>,
+    ) -> Result<Bytes, BatchError> {
+        let algorithm = self.phase.compression().map(|settings| {
+            if body_len < usize::from(settings.threshold) {
+                CompressionAlgorithm::None
+            } else {
+                settings.algorithm
+            }
+        });
+        let compressed = matches!(
+            algorithm,
+            Some(CompressionAlgorithm::Deflate | CompressionAlgorithm::Snappy)
+        );
         let mut message = recycled
             .filter(Bytes::is_unique)
             .map(Vec::from)
             .unwrap_or_default();
         message.clear();
+        // Keep room for the directional checksum so encryption can retain this allocation.
+        message.reserve(if compressed {
+            10
+        } else {
+            body_len.saturating_add(10)
+        });
         if self.header == BatchHeader::RakNet {
             message.push(RAKNET_BATCH_HEADER);
         }
-        if self.phase.compression().is_some() {
-            message.push(CompressionAlgorithm::None.batch_id());
+        if let Some(algorithm) = algorithm {
+            message.push(algorithm.batch_id());
         }
-        message
-    }
-
-    /// Compresses a complete framed group when required and retains checksum space.
-    fn finish_batch(&self, mut message: Vec<u8>) -> Result<Bytes, BatchError> {
-        if let Some(settings) = self.phase.compression() {
-            let marker = usize::from(self.header == BatchHeader::RakNet);
-            let body = &message[marker + 1..];
-            if body.len() >= usize::from(settings.threshold)
-                && settings.algorithm != CompressionAlgorithm::None
-            {
-                let compressed = compression::compress(settings.algorithm, body)?;
-                message.truncate(marker + 1);
-                message[marker] = settings.algorithm.batch_id();
-                message.extend_from_slice(&compressed);
-                let retained = message.len().saturating_add(8);
-                if message.capacity() > retained.saturating_mul(2).max(4096) {
-                    message.shrink_to(retained);
-                }
+        if compressed {
+            self.phase.compress(
+                algorithm.expect("compressed envelope"),
+                packets,
+                body_len,
+                &mut message,
+            )?;
+            let retained = message.len().saturating_add(8);
+            if message.capacity() > retained.saturating_mul(2).max(4096) {
+                message.shrink_to(retained);
             }
+        } else {
+            write_packets(packets, &mut message);
         }
         self.check_encoded_size(message.len())?;
         message.reserve(8);
@@ -508,6 +584,14 @@ impl<S: BatchPhase> BatchCodec<S> {
             });
         }
         Ok(())
+    }
+}
+
+/// Writes already validated packets with their shortest length prefixes.
+fn write_packets(packets: &[&[u8]], out: &mut Vec<u8>) {
+    for &packet in packets {
+        write_length(packet.len() as u32, out);
+        out.extend_from_slice(packet);
     }
 }
 
@@ -636,6 +720,18 @@ mod tests {
                 .unwrap();
             assert_eq!(visits, 1);
             assert!(codec.phase.snappy_scratch.capacity() <= 65536);
+        }
+    }
+    #[test]
+    fn retained_encoding_scratch_stays_within_decoded_limit() {
+        for algorithm in [CompressionAlgorithm::Deflate, CompressionAlgorithm::Snappy] {
+            let mut codec = bounded(algorithm);
+            for length in [65532, 65533, 3] {
+                let wire = codec.encode(&[vec![0x42; length]]).unwrap();
+                assert_eq!(wire.len(), 1);
+                let encoder = codec.phase.encoder.get_mut().unwrap().as_ref().unwrap();
+                assert!(encoder.body.capacity() <= 65536);
+            }
         }
     }
 }

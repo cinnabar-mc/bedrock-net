@@ -66,6 +66,9 @@ After negotiating compression, `with_incoming_decoded_limit` can set a separate
 incoming decoded-byte ceiling. It preserves the original outgoing, wire and
 packet-count limits; the initial plaintext phase keeps its original byte policy.
 
+DEFLATE uses zlib-rs at its fast setting. Compressor state is reused between
+independent batches. Compressed bytes may differ from other encoders.
+
 Keep one codec per connection to reuse its decode scratch. For synchronous
 packet handling, `codec.decode_with(message, callback)` visits borrowed packet
 bytes and reuses scratch for small Snappy batches. It validates the complete batch
