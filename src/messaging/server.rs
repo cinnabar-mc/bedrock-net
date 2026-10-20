@@ -238,7 +238,7 @@ impl ClosingMessagingServer {
                 if service.is_none() {
                     *service = Some(driver.finish_close().await);
                 }
-                service.expect("completed original service close")
+                service.clone().expect("completed original service close")
             },
             async {
                 if !*joined {
