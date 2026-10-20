@@ -308,7 +308,7 @@ func writeTable(w io.Writer, rows []row, margin float64) {
 		}
 		fmt.Fprintf(w, "| %s | %s | %s | %s | %s | %s | %s | %s | %s |\n",
 			r.path, num(r.goNs), num(r.rustNs), fixed(ratio, 2), fixed(r.goMBps, 1), fixed(r.rustMBps, 1),
-			num(r.goBytes), num(r.goAllocs), status)
+			fixed(r.goBytes, 0), fixed(r.goAllocs, 0), status)
 	}
 }
 

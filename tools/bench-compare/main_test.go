@@ -31,7 +31,7 @@ func TestJoinPairsMedianAndSlope(t *testing.T) {
 	if r.path != "batch/encode_flate" || r.goNs != 1100 || r.rustNs != 1155 || r.status != statusOK {
 		t.Fatalf("paired row = %+v", r)
 	}
-	if r.goBytes != 512 || r.goAllocs != 2 || math.Abs(r.rustMBps-64000/1155.0*1e3) > 1e-6 {
+	if r.goBytes != 512 || r.goAllocs != 2 || math.Abs(r.rustMBps-64/1155.0*1e3) > 1e-6 {
 		t.Fatalf("paired metrics = %+v", r)
 	}
 	if rows[1].path != "batch/go_only" || rows[1].status != statusGoOnly {

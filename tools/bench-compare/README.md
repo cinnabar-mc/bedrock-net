@@ -15,5 +15,10 @@ go run github.com/cinnabar-mc/bedrock-net/tools/bench-compare@<commit> \
   --go go-bench.txt --criterion target/criterion >> "$GITHUB_STEP_SUMMARY"
 ```
 
+Until this module is on `dev`, `go run module@commit` fails its `latest`
+deprecation lookup; pin it from a module instead with
+`go get -tool github.com/cinnabar-mc/bedrock-net/tools/bench-compare@<commit>`
+and run `go tool bench-compare`.
+
 `--strict-pairs` also fails on benchmarks without a counterpart. Exit status 2
 means unreadable input.
