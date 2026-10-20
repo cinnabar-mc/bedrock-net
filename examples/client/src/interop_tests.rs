@@ -299,10 +299,9 @@ fn scenario(name: &str) -> Option<(Observed, Value, Value)> {
         .enable_all()
         .build()
         .unwrap();
-    let joined = runtime.block_on(tokio::time::timeout(
-        HANDSHAKE_TIMEOUT,
-        join(helper.address, &mut observed),
-    ));
+    let joined = runtime.block_on(async {
+        tokio::time::timeout(HANDSHAKE_TIMEOUT, join(helper.address, &mut observed)).await
+    });
     let go = helper.go.clone();
     let verdict = helper.finish();
     match joined {
