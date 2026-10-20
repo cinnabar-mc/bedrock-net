@@ -9,8 +9,9 @@ use super::{Engine, RakNetError};
 
 /// One negotiated socket and its original bounded receive FIFO.
 ///
-/// Queue once, then drive `flush` or `recv`; cancelling either wait retains all
-/// accepted messages and the front pending datagram. No background task is spawned.
+/// Queuing attempts socket I/O immediately. Drive `recv` or `maintain` for
+/// acknowledgments and backpressure; cancellation retains accepted messages and
+/// the front pending datagram. No background task is spawned.
 #[must_use]
 pub struct RakNetConnection {
     pub(super) engine: Box<Engine>,
