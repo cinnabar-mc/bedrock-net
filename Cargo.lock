@@ -240,6 +240,8 @@ dependencies = [
  "num-bigint",
  "p384",
  "raknet",
+ "rand",
+ "rsa",
  "serde",
  "serde_json",
  "sha2",

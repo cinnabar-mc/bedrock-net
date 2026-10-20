@@ -1,0 +1,19 @@
+[
+  {"name":"plain", "token":"\"text\"", "accepted":true, "decoded":"text"},
+  {"name":"empty", "token":"\"\"", "accepted":true, "decoded":""},
+  {"name":"escapes", "token":"\"\\\"\\\\\\/\\b\\f\\n\\r\\t\"", "accepted":true, "decoded":"\"\\/\b\f\n\r\t"},
+  {"name":"bmp", "token":"\"\\u0000\\ufffd\\uFFFF\"", "accepted":true, "decoded":"\u0000\ufffd\uffff"},
+  {"name":"pair", "token":"\"\\ud83d\\ude00\"", "accepted":true, "decoded":"😀"},
+  {"name":"high", "token":"\"\\ud800\"", "accepted":true, "decoded":"�"},
+  {"name":"low", "token":"\"\\udfff\"", "accepted":true, "decoded":"�"},
+  {"name":"high_then_text", "token":"\"\\ud800x\"", "accepted":true, "decoded":"�x"},
+  {"name":"high_then_bmp", "token":"\"\\ud800\\u0041\"", "accepted":true, "decoded":"�A"},
+  {"name":"high_high_low", "token":"\"\\ud800\\ud83d\\ude00\"", "accepted":true, "decoded":"�😀"},
+  {"name":"low_high_low", "token":"\"\\udfff\\ud83d\\ude00\"", "accepted":true, "decoded":"�😀"},
+  {"name":"literal_escape", "token":"\"\\\\ud800\"", "accepted":true, "decoded":"\\ud800"},
+  {"name":"null", "token":"null", "accepted":true, "decoded":null},
+  {"name":"boolean", "token":"true", "accepted":false, "decoded":null},
+  {"name":"number", "token":"1", "accepted":false, "decoded":null},
+  {"name":"array", "token":"[]", "accepted":false, "decoded":null},
+  {"name":"object", "token":"{}", "accepted":false, "decoded":null}
+]

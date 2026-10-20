@@ -1,14 +1,18 @@
 //! Network-level Login requests and verified server key exchange.
 //!
-//! The caller owns the connection proof key, UTC clock and application metadata policy.
+//! The caller owns the connection proof key, UTC clock and device/identity policy.
 //! These helpers format and verify opaque requests consumed by protocolgen's
 //! Login packet and derive the existing directional batch ciphers. Accepting
 //! authentication requires a caller-owned provider verifier. No helper performs I/O.
 
 mod accepting;
+pub mod client_data;
 mod error;
+mod fields;
 mod identity;
 mod jwt;
+#[cfg(feature = "provider-verification")]
+pub mod provider;
 pub use accepting::{
     AuthenticatedLogin, ClientExchangeKey, LoginVerifier, TrustedIdentity,
     verify_authenticated_request,

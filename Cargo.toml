@@ -29,6 +29,7 @@ publish = false
 [features]
 default = []
 login = ["dep:base64", "dep:md-5", "dep:p384", "dep:serde", "dep:serde_json", "dep:uuid", "sha2/zeroize", "dep:num-bigint"]
+provider-verification = ["login", "dep:nethernet"]
 raknet = ["dep:raknet", "dep:tokio"]
 messaging = ["dep:bedrock-services", "dep:futures", "dep:nethernet", "dep:nethernet-tokio", "dep:tokio", "dep:uuid"]
 
@@ -57,6 +58,8 @@ zeroize = "1"
 uuid = { version = "1", features = ["v4"], optional = true }
 
 [dev-dependencies]
+rand = "0.10"
+rsa = { version = "0.10.0-rc.19", default-features = false, features = ["std", "sha2"] }
 base64 = "0.22"
 criterion.workspace = true
 bedrock-services = { workspace = true, features = ["test-support"] }

@@ -66,6 +66,23 @@ After negotiating compression, `with_incoming_decoded_limit` can set a separate
 incoming decoded-byte ceiling. It preserves the original outgoing, wire and
 packet-count limits; the initial plaintext phase keeps its original byte policy.
 
+Keep one codec per connection to reuse its decode scratch. For synchronous
+packet handling, `codec.decode_with(message, callback)` visits borrowed packet
+bytes and reuses scratch for small Snappy batches. It validates the complete batch
+before invoking the callback. Use the owning iterator when packets must outlive
+the callback.
+
+After sending a batch group, `encode_into(packets, &mut batches)` can reuse its
+uncompressed buffers for the next group. Retained shared batches keep their
+original bytes. Keep unsent encrypted batches until delivery before recycling.
+
+`BatchEncryptor::encrypt_batch(header, message)` and
+`BatchDecryptor::decrypt_batch(header, message)` accept complete batches and
+preserve the clear transport marker. Pass an owned `Bytes` value to allow
+in-place encryption or decryption; shared inputs are copied. The
+[probe session](examples/client/src/session.rs) shows this flow and sends each
+batch immediately.
+
 ## Typed connection flow
 
 `bedrock-client` exposes consumed owners for completed local transitions:
@@ -120,7 +137,8 @@ ordering, pack/startup handoffs and owner-preserving error/close handling. The
 | Root feature | Provides |
 | --- | --- |
 | Default | Synchronous batch codec and directional batch ciphers. |
-| `login` | Offline/acquired-credential request formatting, server exchange and accepting verification primitives. |
+| `login` | Offline/acquired-credential request formatting, server exchange, accepting verification and pure ClientData validation. |
+| `provider-verification` | Pure configured issuer/JWK verification for Login and signed SDP, using caller-supplied UTC; includes `login` and NetherNet identity primitives. |
 | `raknet` | `RakNetConnection`, a caller-polled Tokio socket driver over the Cinnabar RakNet fork. |
 | `messaging` | `PreparedMessaging`/`MessagingConnection` and `messaging::server`, composing a supplied SDK service socket with connecting or accepting NetherNet. |
 
@@ -237,3 +255,7 @@ seals that transition. Resolver-independent literals and HTTP URLs need no looku
 callback; empty IPv6 zones and nonstandard IP spellings use the cached resolver.
 Application authorization remains separate from these validation steps. The rules follow gophertunnel; see [LICENSE-GOPHERTUNNEL](LICENSE-GOPHERTUNNEL).
 Language registry data and parsing follow Go; see [LICENSE-GO](LICENSE-GO).
+
+`RawClientData::validate()` applies caller-selected title/version and presentation
+policy to relay metadata. Accepting signed Login uses the separate wire-admission
+rules above, including authenticated key updates and required cached UDP resolution.
