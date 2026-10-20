@@ -222,6 +222,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "bedrock-client-tokio"
+version = "0.1.0"
+dependencies = [
+ "bedrock-net",
+ "bedrock-protocol-1-26-51",
+ "bytes",
+ "futures",
+ "nethernet-tokio",
+ "thiserror 2.0.21",
+ "tokio",
+ "tracing",
+ "uuid",
+ "zeroize",
+]
+
+[[package]]
 name = "bedrock-net"
 version = "0.1.0"
 dependencies = [
@@ -268,6 +284,7 @@ version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
  "bedrock-client",
+ "bedrock-client-tokio",
  "bedrock-net",
  "bedrock-protocol-1-26-51",
  "bedrock_auth",
