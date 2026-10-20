@@ -24,10 +24,10 @@ impl Drop for ResourcePackContentKey {
 pub struct ResourcePackArchive {
     /// Identity selected by the server stack.
     pub pack_id: uuid::Uuid,
-    /// Exact advertised and selected version.
-    pub version: String,
-    /// Subpack selected by the final stack.
-    pub sub_pack_name: String,
+    /// Exact advertised and selected version bytes; they need not be UTF-8.
+    pub version: Vec<u8>,
+    /// Exact subpack name bytes selected by the final stack; they need not be UTF-8.
+    pub sub_pack_name: Vec<u8>,
     /// Original compressed archive bytes, before admission or application.
     pub archive: Vec<u8>,
     /// Optional decryption key; exposed only through an explicit borrow.
@@ -38,8 +38,8 @@ impl ResourcePackArchive {
     /// A locally sourced archive with no content key.
     pub fn unencrypted(
         pack_id: uuid::Uuid,
-        version: String,
-        sub_pack_name: String,
+        version: Vec<u8>,
+        sub_pack_name: Vec<u8>,
         archive: Vec<u8>,
     ) -> Self {
         Self::with_content_key(pack_id, version, sub_pack_name, archive, Vec::new())
@@ -48,8 +48,8 @@ impl ResourcePackArchive {
     /// An archive and the key its content is encrypted with.
     pub fn with_content_key(
         pack_id: uuid::Uuid,
-        version: String,
-        sub_pack_name: String,
+        version: Vec<u8>,
+        sub_pack_name: Vec<u8>,
         archive: Vec<u8>,
         key: Vec<u8>,
     ) -> Self {

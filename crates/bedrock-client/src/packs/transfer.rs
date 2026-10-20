@@ -5,7 +5,6 @@ use super::{invalid, pack_id};
 use bedrock_packs::{ResourcePackArchive, ResourcePackHandoff};
 use bedrock_protocol::{packets, types::PackInfoData, wire};
 use bytes::Bytes;
-use sha2::{Digest, Sha256};
 use std::{collections::BTreeMap, sync::Arc};
 
 /// A completed transfer may be intentionally excluded from application admission.
@@ -229,8 +228,6 @@ pub(super) struct Download {
     pub(super) complete: Option<Completion>,
     chunk_size: u32,
     chunk_count: u32,
-    hash: [u8; 32],
-    digest: Sha256,
     retain: bool,
     requested: u32,
     received: u32,
@@ -245,19 +242,16 @@ pub(super) struct Download {
 impl Download {
     /// Retains only validated offer identity; all bytes are reserved as they arrive.
     pub(super) fn new(offer: PackInfoData, limits: PackTransferLimits) -> Result<Self, PackError> {
-        let version = offer
-            .pack_id_version
-            .pack_version
-            .version
-            .to_str()
-            .map_err(|_| invalid("pack version is not UTF-8"))?;
-        if version.is_empty() || version.len() > limits.max_version_bytes {
+        let version = offer.pack_id_version.pack_version.version.as_bytes();
+        if version.len() > limits.max_version_bytes {
             return Err(invalid("pack version exceeds identity limit"));
         }
         if offer.pack_size.0 > isize::MAX as u64 {
             return Err(invalid("pack archive size is not representable"));
         }
-        let name = format!("{}_{}", offer.pack_id_version.pack_uuid, version).into();
+        let mut name = format!("{}_", offer.pack_id_version.pack_uuid).into_bytes();
+        name.extend_from_slice(version);
+        let name = Bytes::from(name).into();
         Ok(Self {
             size: offer.pack_size.0,
             offer,
@@ -265,8 +259,6 @@ impl Download {
             complete: None,
             chunk_size: 0,
             chunk_count: 0,
-            hash: [0; 32],
-            digest: Sha256::new(),
             retain: true,
             requested: 0,
             received: 0,
@@ -289,28 +281,23 @@ impl Download {
             return Err(invalid("repeated pack data info"));
         }
         self.check_name(&info.resource_name)?;
-        if info.file_size.0 == 0
-            || info.file_size.0 > isize::MAX as u64
-            || info.chunk_size.0 == 0
-            || info.file_hash.len() != 32
-        {
-            return Err(invalid("invalid pack size, chunk size or SHA-256"));
+        if info.file_size.0 == 0 || info.file_size.0 > isize::MAX as u64 || info.chunk_size.0 == 0 {
+            return Err(invalid("invalid pack size or chunk size"));
         }
         let count = info.file_size.0.div_ceil(info.chunk_size.0.into());
         self.chunk_count = u32::try_from(count)
             .ok()
-            .filter(|count| *count <= i32::MAX as u32)
+            .filter(|count| *count <= i32::MAX as u32 + 1)
             .ok_or_else(|| invalid("pack chunk count exceeds transfer budget"))?;
         self.size = info.file_size.0;
         self.retain = retain;
         self.chunk_size = info.chunk_size.0;
-        self.hash.copy_from_slice(&info.file_hash);
         // This short name outlives its packet, so release the packet's decoded batch.
         self.name = Bytes::copy_from_slice(info.resource_name.as_bytes()).into();
         Ok(self.requests())
     }
 
-    /// Accepts requested chunks in any order and verifies the completed original archive.
+    /// Accepts requested chunks in any order and assembles the original archive.
     pub(super) fn chunk(
         &mut self,
         chunk: packets::ResourcePackChunkData,
@@ -349,7 +336,6 @@ impl Download {
                         .expect("received chunk has pages");
                     let length = (end - offset).min(bytes.len() as u64 - position as u64) as usize;
                     let page_consumed = position + length == bytes.len();
-                    self.digest.update(&bytes[position..position + length]);
                     if self.retain {
                         self.bytes
                             .try_reserve(length)
@@ -382,9 +368,6 @@ impl Download {
             self.observe_payload();
         }
         if self.next_write == self.chunk_count {
-            if <[u8; 32]>::from(self.digest.clone().finalize()) != self.hash {
-                return Err(invalid("downloaded pack SHA-256 mismatch"));
-            }
             self.complete = Some(if self.retain {
                 Completion::Archive(Arc::new(std::mem::take(&mut self.bytes)))
             } else {
@@ -403,7 +386,6 @@ impl Download {
 
     /// Writes one contiguous range without retaining its decoded batch allocation.
     fn append(&mut self, bytes: &[u8]) -> Result<(), PackError> {
-        self.digest.update(bytes);
         if self.retain {
             self.bytes
                 .try_reserve(bytes.len())
@@ -413,19 +395,10 @@ impl Download {
         Ok(())
     }
 
-    /// Rejects a conflicting version suffix without interpreting the name as a path.
+    /// Matches the UUID while leaving transfer version suffixes uninterpreted.
     fn check_name(&self, name: &wire::Str) -> Result<(), PackError> {
-        let name = name
-            .to_str()
-            .map_err(|_| invalid("pack resource name is not UTF-8"))?;
-        let id = pack_id(name)?;
-        if id != self.offer.pack_id_version.pack_uuid {
+        if super::resource_id(name)? != self.offer.pack_id_version.pack_uuid {
             return Err(invalid("pack transfer identity differs from offer"));
-        }
-        if let Some((_, version)) = name.split_once('_')
-            && version.as_bytes() != self.offer.pack_id_version.pack_version.version.as_bytes()
-        {
-            return Err(invalid("pack transfer version differs from offer"));
         }
         Ok(())
     }
@@ -473,7 +446,7 @@ pub(super) fn finish(
     let entries = std::mem::take(&mut stack.texture_pack_list);
     let mut retained_stack = metadata.as_ref().map(|_| stack);
     let mut retained_offers = BTreeMap::new();
-    let mut seen = std::collections::BTreeSet::new();
+    let mut seen = BTreeMap::new();
     let mut skipped = 0_usize;
     for pack in entries {
         let id = pack
@@ -488,17 +461,16 @@ pub(super) fn finish(
             skipped += 1;
             continue;
         };
-        if seen.contains(&id) {
-            if stack_required {
-                return Err(invalid("required stack contains a duplicate pack"));
+        if seen.get(&id) == Some(&pack.version) {
+            if let Some(stack) = &mut retained_stack {
+                stack.texture_pack_list.push(pack);
             }
-            skipped += 1;
             continue;
         }
         if downloads.get(&id).is_none_or(|download| {
             download.offer.pack_id_version.pack_version.version != pack.version
         }) {
-            if super::builtins::contains(id, &pack.version.to_string_lossy()) {
+            if super::builtins::contains(id, pack.version.as_bytes()) {
                 if let Some(stack) = &mut retained_stack {
                     stack.texture_pack_list.push(pack);
                 }
@@ -510,7 +482,6 @@ pub(super) fn finish(
             skipped += 1;
             continue;
         }
-        seen.insert(id);
         let download = downloads
             .remove(&id)
             .expect("matching stack offer is available");
@@ -526,10 +497,11 @@ pub(super) fn finish(
         };
         let bytes =
             Arc::try_unwrap(bytes).map_err(|_| invalid("pack cache worker still owns archive"))?;
+        seen.insert(id, pack.version.clone());
         archives.push(ResourcePackArchive::with_content_key(
             id,
-            pack.version.to_string_lossy().into_owned(),
-            pack.sub_pack_name.to_string_lossy().into_owned(),
+            pack.version.as_bytes().to_vec(),
+            pack.sub_pack_name.as_bytes().to_vec(),
             bytes,
             download.offer.content_key.as_bytes().to_vec(),
         ));
@@ -571,6 +543,7 @@ pub(super) fn finish(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use sha2::{Digest, Sha256};
 
     #[test]
     fn withheld_first_chunk_uses_lazy_pages_for_tiny_and_cross_page_chunks() {
