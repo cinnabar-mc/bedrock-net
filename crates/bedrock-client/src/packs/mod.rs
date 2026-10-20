@@ -16,7 +16,7 @@ use thiserror::Error;
 use transfer::{Budget, Completion, Download};
 
 /// Default number of outstanding in-band chunk requests per pack.
-pub const DEFAULT_REQUEST_WINDOW: u32 = 1024;
+pub const DEFAULT_REQUEST_WINDOW: u32 = 100;
 
 /// Caller-selected archive, transfer and request bounds, validated before admission.
 /// Defaults admit complete server selections without inheriting local import policy;

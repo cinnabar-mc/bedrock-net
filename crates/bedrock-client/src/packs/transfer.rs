@@ -148,6 +148,80 @@ impl Budget {
     }
 }
 
+const FRAGMENT_PAGE_BYTES: u64 = 4096;
+const CHUNKS_PER_BITMAP: u32 = 4096;
+
+/// Sparse payload pages and chunk bits keep tiny reordered chunks from allocating one node each.
+#[derive(Default)]
+struct Fragments {
+    pages: BTreeMap<u64, Vec<u8>>,
+    received: BTreeMap<u32, Box<[u64; 64]>>,
+}
+
+impl Fragments {
+    /// Checks receipt without tying request replenishment to contiguous writes.
+    fn contains(&self, index: u32) -> bool {
+        self.received
+            .get(&(index / CHUNKS_PER_BITMAP))
+            .is_some_and(|bits| {
+                bits[(index % CHUNKS_PER_BITMAP / 64) as usize] & (1 << (index % 64)) != 0
+            })
+    }
+
+    /// Clears one receipt bit and releases an empty bitmap page.
+    fn take(&mut self, index: u32) -> bool {
+        let key = index / CHUNKS_PER_BITMAP;
+        let Some(bits) = self.received.get_mut(&key) else {
+            return false;
+        };
+        let word = &mut bits[(index % CHUNKS_PER_BITMAP / 64) as usize];
+        let mask = 1 << (index % 64);
+        if *word & mask == 0 {
+            return false;
+        }
+        *word &= !mask;
+        if bits.iter().all(|word| *word == 0) {
+            self.received.remove(&key);
+        }
+        true
+    }
+
+    /// Copies received bytes into lazy archive-offset pages, independent of chunk granularity.
+    fn insert(
+        &mut self,
+        index: u32,
+        mut offset: u64,
+        size: u64,
+        mut bytes: &[u8],
+    ) -> Result<(), PackError> {
+        while !bytes.is_empty() {
+            let page = offset / FRAGMENT_PAGE_BYTES;
+            let length = (size - page * FRAGMENT_PAGE_BYTES).min(FRAGMENT_PAGE_BYTES) as usize;
+            let data = match self.pages.entry(page) {
+                std::collections::btree_map::Entry::Occupied(entry) => entry.into_mut(),
+                std::collections::btree_map::Entry::Vacant(entry) => {
+                    let mut data = Vec::new();
+                    data.try_reserve_exact(length)
+                        .map_err(|_| invalid("pack allocation failed"))?;
+                    data.resize(length, 0);
+                    entry.insert(data)
+                }
+            };
+            let start = (offset % FRAGMENT_PAGE_BYTES) as usize;
+            let copied = bytes.len().min(data.len() - start);
+            data[start..start + copied].copy_from_slice(&bytes[..copied]);
+            offset += copied as u64;
+            bytes = &bytes[copied..];
+        }
+        let bits = self
+            .received
+            .entry(index / CHUNKS_PER_BITMAP)
+            .or_insert_with(|| Box::new([0; 64]));
+        bits[(index % CHUNKS_PER_BITMAP / 64) as usize] |= 1 << (index % 64);
+        Ok(())
+    }
+}
+
 pub(super) struct Download {
     pub(super) offer: PackInfoData,
     pub(super) name: wire::Str,
@@ -159,10 +233,13 @@ pub(super) struct Download {
     digest: Sha256,
     retain: bool,
     requested: u32,
+    received: u32,
     next_write: u32,
-    fragments: BTreeMap<u32, Bytes>,
+    fragments: Fragments,
     bytes: Vec<u8>,
     request_window: u32,
+    #[cfg(test)]
+    payload_high_water: usize,
 }
 
 impl Download {
@@ -192,10 +269,13 @@ impl Download {
             digest: Sha256::new(),
             retain: true,
             requested: 0,
+            received: 0,
             next_write: 0,
-            fragments: BTreeMap::new(),
+            fragments: Fragments::default(),
             bytes: Vec::new(),
             request_window: limits.request_window,
+            #[cfg(test)]
+            payload_high_water: 0,
         })
     }
 
@@ -240,7 +320,7 @@ impl Download {
         if self.chunk_size == 0 || index >= self.requested {
             return Err(invalid("pack chunk was not requested"));
         }
-        if index < self.next_write || self.fragments.contains_key(&index) {
+        if index < self.next_write || self.fragments.contains(index) {
             tracing::debug!("skipped duplicate pack chunk");
             return Ok(Vec::new());
         }
@@ -249,22 +329,57 @@ impl Download {
         if chunk.chunk_data.len() as u64 != expected {
             return Err(invalid("pack chunk length does not match remaining data"));
         }
-        // A retained slice must not pin the decoded batch containing unrelated siblings.
-        let bytes = if index == self.next_write {
-            chunk.chunk_data
-        } else {
-            Bytes::copy_from_slice(&chunk.chunk_data)
-        };
-        self.fragments.insert(index, bytes);
-        while let Some(bytes) = self.fragments.remove(&self.next_write) {
-            self.digest.update(&bytes);
-            if self.retain {
-                self.bytes
-                    .try_reserve(bytes.len())
-                    .map_err(|_| invalid("pack allocation failed"))?;
-                self.bytes.extend_from_slice(&bytes);
-            }
+        self.received += 1;
+        if index == self.next_write {
+            self.append(&chunk.chunk_data)?;
+            #[cfg(test)]
+            self.observe_payload();
             self.next_write += 1;
+            while self.fragments.take(self.next_write) {
+                let start = u64::from(self.next_write) * u64::from(self.chunk_size);
+                let end = (start + u64::from(self.chunk_size)).min(self.size);
+                let mut offset = start;
+                while offset < end {
+                    let page = offset / FRAGMENT_PAGE_BYTES;
+                    let position = (offset % FRAGMENT_PAGE_BYTES) as usize;
+                    let bytes = self
+                        .fragments
+                        .pages
+                        .get(&page)
+                        .expect("received chunk has pages");
+                    let length = (end - offset).min(bytes.len() as u64 - position as u64) as usize;
+                    let page_consumed = position + length == bytes.len();
+                    self.digest.update(&bytes[position..position + length]);
+                    if self.retain {
+                        self.bytes
+                            .try_reserve(length)
+                            .map_err(|_| invalid("pack allocation failed"))?;
+                        self.bytes
+                            .extend_from_slice(&bytes[position..position + length]);
+                    }
+                    offset += length as u64;
+                    #[cfg(test)]
+                    self.observe_payload();
+                    // A partial page can still contain later chunks; a fully copied one cannot.
+                    if page_consumed {
+                        self.fragments.pages.remove(&page);
+                    }
+                }
+                self.next_write += 1;
+            }
+            // A page can contain later chunks; release it only after its whole range is consumed.
+            let consumed = (u64::from(self.next_write) * u64::from(self.chunk_size)).min(self.size);
+            while let Some((&page, bytes)) = self.fragments.pages.first_key_value() {
+                if page * FRAGMENT_PAGE_BYTES + bytes.len() as u64 > consumed {
+                    break;
+                }
+                self.fragments.pages.pop_first();
+            }
+        } else {
+            self.fragments
+                .insert(index, offset, self.size, &chunk.chunk_data)?;
+            #[cfg(test)]
+            self.observe_payload();
         }
         if self.next_write == self.chunk_count {
             if <[u8; 32]>::from(self.digest.clone().finalize()) != self.hash {
@@ -277,6 +392,25 @@ impl Download {
             });
         }
         Ok(self.requests())
+    }
+
+    /// Observes actual retained payload at copy boundaries; spare capacity and allocator RSS are separate.
+    #[cfg(test)]
+    fn observe_payload(&mut self) {
+        let payload = self.bytes.len() + self.fragments.pages.values().map(Vec::len).sum::<usize>();
+        self.payload_high_water = self.payload_high_water.max(payload);
+    }
+
+    /// Writes one contiguous range without retaining its decoded batch allocation.
+    fn append(&mut self, bytes: &[u8]) -> Result<(), PackError> {
+        self.digest.update(bytes);
+        if self.retain {
+            self.bytes
+                .try_reserve(bytes.len())
+                .map_err(|_| invalid("pack allocation failed"))?;
+            self.bytes.extend_from_slice(bytes);
+        }
+        Ok(())
     }
 
     /// Rejects a conflicting version suffix without interpreting the name as a path.
@@ -296,11 +430,11 @@ impl Download {
         Ok(())
     }
 
-    /// Keeps a bounded contiguous request window, with no flush timer.
+    /// Replenishes the request window for every accepted chunk, regardless of order.
     fn requests(&mut self) -> Vec<packets::ResourcePackChunkRequest> {
         let mut requests = Vec::new();
         while self.requested < self.chunk_count
-            && self.requested - self.next_write < self.request_window
+            && self.requested - self.received < self.request_window
         {
             requests.push(packets::ResourcePackChunkRequest {
                 resource_name: self.name.clone(),
@@ -432,4 +566,96 @@ pub(super) fn finish(
         ResourcePackHandoff::from_archives(archives).with_required(required),
         metadata,
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn withheld_first_chunk_uses_lazy_pages_for_tiny_and_cross_page_chunks() {
+        let bytes: Vec<u8> = (0..12_291).map(|index| (index % 251) as u8).collect();
+        for retain in [false, true] {
+            for chunk_size in [1, 3000, 5000, FRAGMENT_PAGE_BYTES as usize] {
+                let limits = PackTransferLimits {
+                    request_window: 2,
+                    max_archive_bytes: Some(if retain { bytes.len() as u64 } else { 1 }),
+                    max_stack_bytes: Some(bytes.len() as u64),
+                    max_transfer_bytes: Some(bytes.len() as u64),
+                    ..Default::default()
+                };
+                let mut offer = PackInfoData::default();
+                offer.pack_id_version.pack_uuid = uuid::Uuid::from_u128(1);
+                offer.pack_id_version.pack_version.version = "1.0.0".into();
+                offer.pack_size = wire::U64LE(1);
+                let (mut downloads, mut budget) = Budget::offers(vec![offer], limits);
+                let mut download = downloads.remove(0);
+                let count = bytes.len().div_ceil(chunk_size);
+                let name = download.name.clone();
+                let requests = budget
+                    .begin(
+                        &mut download,
+                        packets::ResourcePackDataInfo {
+                            resource_name: name,
+                            chunk_size: wire::U32LE(chunk_size as u32),
+                            file_size: wire::U64LE(bytes.len() as u64),
+                            file_hash: Bytes::copy_from_slice(&Sha256::digest(&bytes)),
+                            ..Default::default()
+                        },
+                    )
+                    .unwrap();
+                assert_eq!(requests.len(), 2);
+                for index in (1..count).chain(std::iter::once(0)) {
+                    let start = index * chunk_size;
+                    let packet = packets::ResourcePackChunkData {
+                        resource_name: download.name.clone(),
+                        chunk_id: wire::U32LE(index as u32),
+                        chunk_data: Bytes::copy_from_slice(
+                            &bytes[start..(start + chunk_size).min(bytes.len())],
+                        ),
+                        ..Default::default()
+                    };
+                    let requests = download.chunk(packet.clone()).unwrap();
+                    assert_eq!(requests.len(), usize::from(index != 0 && index + 1 < count));
+                    assert!(download.chunk(packet).unwrap().is_empty());
+                    assert!(download.requested - download.received <= 2);
+                    assert!(
+                        download.fragments.pages.len()
+                            <= bytes.len().div_ceil(FRAGMENT_PAGE_BYTES as usize)
+                    );
+                    assert!(
+                        download
+                            .fragments
+                            .pages
+                            .values()
+                            .map(Vec::len)
+                            .sum::<usize>()
+                            <= bytes.len()
+                    );
+                    assert!(
+                        download.fragments.received.len()
+                            <= count.div_ceil(CHUNKS_PER_BITMAP as usize)
+                    );
+                    if index != 0 {
+                        assert!(download.bytes.is_empty());
+                    }
+                }
+                assert!(download.fragments.pages.is_empty());
+                assert!(download.fragments.received.is_empty());
+                let payload_high_water = download.payload_high_water;
+                match download.complete.unwrap() {
+                    Completion::Archive(archive) => {
+                        assert!(retain);
+                        assert_eq!(archive.as_slice(), bytes);
+                    }
+                    Completion::Excluded => assert!(!retain),
+                }
+                assert!(
+                    payload_high_water <= bytes.len() + FRAGMENT_PAGE_BYTES as usize,
+                    "contiguous drain retained already copied payload: peak={payload_high_water}, archive={}, chunk_size={chunk_size}, retain={retain}",
+                    bytes.len(),
+                );
+            }
+        }
+    }
 }
