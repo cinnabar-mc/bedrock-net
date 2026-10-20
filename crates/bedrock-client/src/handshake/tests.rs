@@ -1,6 +1,8 @@
 use super::*;
 use crate::packs::PackEvent;
 
+mod packless;
+
 #[test]
 fn public_handshake_enables_retained_metadata_only_for_the_original_requested_owner() {
     for retain in [false, true] {
