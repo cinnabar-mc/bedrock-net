@@ -3,9 +3,9 @@
 Joins `go test -bench -benchmem` text with criterion's
 `target/criterion/**/new/{benchmark,estimates}.json` into one markdown table and
 exits 1 when a Rust benchmark is slower than its Go counterpart by more than
-`--margin` percent (default 5). Names pair case-insensitively: criterion
-`group/case` matches Go `BenchmarkGroup/case`, with the shared `-N` GOMAXPROCS
-suffix removed. Go repeats (`-count`) use the median; criterion uses its slope
+`--margin` percent (default 5), or 3 when a measurement is missing. Names pair
+case-insensitively: criterion `group/case` matches Go `BenchmarkGroup/case`, with
+the shared `-N` GOMAXPROCS suffix removed. Go repeats (`-count`) use the median; criterion uses its slope
 estimate, else the mean.
 
 ```sh
@@ -20,5 +20,6 @@ deprecation lookup; pin it from a module instead with
 `go get -tool github.com/cinnabar-mc/bedrock-net/tools/bench-compare@<commit>`
 and run `go tool bench-compare`.
 
-`--strict-pairs` also fails on benchmarks without a counterpart. Exit status 2
-means unreadable input.
+Exit 3 means either side read no results, a path has no counterpart and is
+not declared with `--one-sided PATH` (repeatable), or a declared one-sided path
+is missing or now has both sides. Exit status 2 means unreadable input.

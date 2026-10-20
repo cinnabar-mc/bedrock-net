@@ -81,6 +81,9 @@ func ignore([]byte) error { return nil }
 func codecGroup(b *testing.B, group string, compression packet.Compression) {
 	c := load(b)
 	threshold := c.CompressionThreshold
+	if len(c.Cases(group)) == 0 {
+		b.Fatalf("cases.json lists no %s cases", group)
+	}
 	for _, tc := range c.Cases(group) {
 		pks := packets(b, c, tc.Set)
 		b.Run(tc.Name(), func(b *testing.B) {
@@ -138,6 +141,9 @@ func BenchmarkEncryption(b *testing.B) {
 	var key [32]byte
 	for i := range key {
 		key[i] = c.EncryptionKeyByte
+	}
+	if len(c.Cases("Encryption")) == 0 {
+		b.Fatal("cases.json lists no Encryption cases")
 	}
 	for _, tc := range c.Cases("Encryption") {
 		pks := packets(b, c, tc.Set)

@@ -17,31 +17,86 @@ use bedrock_net::{
 use bytes::{Bytes, BytesMut};
 use serde_json::{Value, json};
 
-/// Known Go/Rust differences, each naming its audit item; a fixed divergence must be removed here.
-const EXPECTED_DIVERGENCES: &[(&str, &str)] = &[
+/// Known Go/Rust differences: case, the Rust result's [`Summary`], and its audit item.
+/// A listed case must still diverge with exactly that Rust result; a fix must remove it here.
+const EXPECTED_DIVERGENCES: &[(&str, &str, &str)] = &[
     // Audit A "readBatch, empty transport message": Go skips it, Rust is fatal.
-    ("decode/empty_message", "empty transport message"),
-    ("decode/encrypted_empty_message", "empty transport message"),
+    ("decode/empty_message", "fatal", "empty transport message"),
+    (
+        "decode/encrypted_empty_message",
+        "fatal",
+        "empty transport message",
+    ),
     // Audit stricter-limits list: incoming wire messages over 32 MiB are fatal.
-    ("decode/wire_over_32mib", "max_encoded_bytes wire cap"),
+    (
+        "decode/wire_over_32mib",
+        "fatal",
+        "max_encoded_bytes wire cap",
+    ),
     // Audit stricter-limits list: outgoing batches split at 16 MiB; Go has no outgoing cap.
-    ("encode/split_16mib", "outgoing 16 MiB split"),
+    ("encode/split_16mib", "2", "outgoing 16 MiB split"),
     // NEW: Go keeps the low 32 bits of a five-byte length whose last byte overflows.
     (
         "decode/length_overflow_fifth_byte",
+        "fatal",
         "NEW: varuint32 overflow",
     ),
     // NEW: Go's accepting decoder rejects empty entries; Rust skips them in both directions.
     (
         "decode/accepting_empty_entry",
+        "packets(1)",
         "NEW: accepting empty entries",
     ),
     // NEW: Go Parse validates ClientData content; Rust accepting checks only object shape and Nonce.
     (
         "login/client_fails_go_validation",
+        "accept",
         "NEW: accepting client-data validation",
     ),
 ];
+
+/// A short description of a result, so a listed divergence cannot silently change shape.
+trait Summary {
+    fn summary(&self) -> String;
+}
+
+impl Summary for Vec<Outcome> {
+    fn summary(&self) -> String {
+        let parts: Vec<_> = self
+            .iter()
+            .map(|outcome| match outcome {
+                Outcome::Packets(packets) => format!("packets({})", packets.len()),
+                Outcome::Dropped => "dropped".into(),
+                Outcome::Fatal => "fatal".into(),
+            })
+            .collect();
+        parts.join(",")
+    }
+}
+
+/// Frames written per encode call.
+impl Summary for Vec<Vec<Vec<u8>>> {
+    fn summary(&self) -> String {
+        let parts: Vec<_> = self.iter().map(|call| call.len().to_string()).collect();
+        parts.join(",")
+    }
+}
+
+impl Summary for Vec<(u8, Vec<Outcome>)> {
+    fn summary(&self) -> String {
+        let parts: Vec<_> = self
+            .iter()
+            .map(|(marker, outcomes)| format!("{marker:#04x}:{}", outcomes.summary()))
+            .collect();
+        parts.join(",")
+    }
+}
+
+impl Summary for bool {
+    fn summary(&self) -> String {
+        if *self { "accept" } else { "reject" }.into()
+    }
+}
 
 const KEY: [u8; 32] = [7; 32];
 
@@ -89,6 +144,11 @@ fn oracle() -> Option<std::sync::MutexGuard<'static, Oracle>> {
     match oracle {
         Some(oracle) => Some(oracle.lock().unwrap_or_else(|poison| poison.into_inner())),
         None => {
+            // CI sets BEDROCK_NET_REQUIRE_FIXTURES so a dropped helper fails instead of skipping.
+            assert!(
+                std::env::var_os("BEDROCK_NET_REQUIRE_FIXTURES").is_none(),
+                "missing fixture: BEDROCK_NET_GO_ORACLE; build tools/go-oracle"
+            );
             eprintln!("missing fixture: BEDROCK_NET_GO_ORACLE; build tools/go-oracle");
             None
         }
@@ -111,11 +171,18 @@ struct Ledger {
 }
 
 impl Ledger {
-    fn compare<T: PartialEq + std::fmt::Debug>(&mut self, name: &str, go: T, rust: T) {
-        let listed = EXPECTED_DIVERGENCES.iter().find(|(case, _)| *case == name);
+    fn compare<T: PartialEq + std::fmt::Debug + Summary>(&mut self, name: &str, go: T, rust: T) {
+        let listed = EXPECTED_DIVERGENCES.iter().find(|(case, ..)| *case == name);
         match (go == rust, listed) {
             (true, None) => {}
-            (false, Some((case, _))) => self.seen.push(case),
+            (false, Some((case, expected, _))) if rust.summary() == *expected => {
+                self.seen.push(case)
+            }
+            (false, Some((_, expected, _))) => self.unexpected.push(format!(
+                "{name}: Rust result changed from {expected} to {}; Go {}",
+                rust.summary(),
+                go.summary()
+            )),
             (true, Some(_)) => self.unexpected.push(format!(
                 "{name}: now matches Go; remove its divergence entry"
             )),
@@ -128,8 +195,8 @@ impl Ledger {
     fn finish(self, prefix: &str) {
         let missing: Vec<_> = EXPECTED_DIVERGENCES
             .iter()
-            .filter(|(case, _)| case.starts_with(prefix) && !self.seen.contains(case))
-            .map(|(case, _)| *case)
+            .filter(|(case, ..)| case.starts_with(prefix) && !self.seen.contains(case))
+            .map(|(case, ..)| *case)
             .collect();
         assert!(
             self.unexpected.is_empty() && missing.is_empty(),
@@ -195,6 +262,10 @@ impl Settings {
             "key": if self.key { b64(&KEY) } else { Value::Null },
         })
     }
+}
+
+fn algorithm_id(name: &str) -> u8 {
+    algorithm(name).network_id() as u8
 }
 
 fn algorithm(name: &str) -> CompressionAlgorithm {
@@ -531,9 +602,28 @@ fn decode_corpus() -> Vec<(&'static str, Settings, Vec<Vec<u8>>)> {
 #[test]
 fn decode_decisions_match_go() {
     let Some(mut oracle) = oracle() else { return };
+    // Go's own decision for these cases, so an agreeing pair of failures cannot pass.
+    let anchors = [
+        ("flate_multi", "packets(3)"),
+        ("snappy_multi", "packets(3)"),
+        ("uncompressed_multi", "packets(3)"),
+        ("unknown_compression_02", "dropped,packets(3)"),
+        ("plain_multi", "packets(3)"),
+        ("nethernet_flate", "packets(3)"),
+        ("missing_compression_id", "fatal"),
+        ("encrypted_consecutive", "packets(3),packets(3),packets(1)"),
+        (
+            "encrypted_drop_keeps_stream",
+            "packets(3),dropped,packets(3)",
+        ),
+        ("encrypted_bad_checksum", "packets(3),fatal"),
+    ];
     let mut ledger = Ledger::default();
     for (name, settings, messages) in decode_corpus() {
         let go = go_decode(&mut oracle, settings, &messages);
+        if let Some((_, expected)) = anchors.iter().find(|(case, _)| *case == name) {
+            assert_eq!(go.summary(), *expected, "Go decision for {name}");
+        }
         ledger.compare(
             &format!("decode/{name}"),
             go,
@@ -683,6 +773,18 @@ fn encode_output_matches_go() {
     let mut ledger = Ledger::default();
     for case in &exact {
         let go = go_encode(&mut oracle, case);
+        assert!(
+            go.iter().all(|frames| !frames.is_empty()),
+            "Go wrote no batch for {}",
+            case.name
+        );
+        if case.name == "split_1600" {
+            assert_eq!(
+                go.summary(),
+                "3",
+                "Go splits 3201 packets into three batches"
+            );
+        }
         ledger.compare(&format!("encode/{}", case.name), go, rust_encode(case));
     }
     for (name, algorithm) in [("at_threshold", "flate"), ("snappy_at_threshold", "snappy")] {
@@ -695,6 +797,13 @@ fn encode_output_matches_go() {
         };
         let go = go_encode(&mut oracle, &case);
         let rust = rust_encode(&case);
+        let marker = algorithm_id(algorithm);
+        let expected = vec![(marker, vec![Outcome::Packets(sample.clone())])];
+        assert_eq!(
+            semantic(&mut oracle, &go),
+            expected,
+            "Go compresses at the threshold"
+        );
         // Go's compressed bytes must decode the same in Rust, and Rust's in Go.
         let rust_reads_go: Vec<_> = go
             .iter()
@@ -1026,6 +1135,14 @@ mod login {
             let go = response["accepted"].as_bool().unwrap()
                 && response["authenticated"].as_bool().unwrap();
             let rust = verify_authenticated_request(&request, &verifier, now, LIMIT).is_ok();
+            // Anchors Go's decision so an agreeing pair of failures cannot pass.
+            match name {
+                "valid" => assert!(go, "Go must accept the valid request"),
+                "client_signed_by_other_key" | "client_fails_go_validation" => {
+                    assert!(!go, "Go must reject {name}")
+                }
+                _ => {}
+            }
             ledger.compare(&format!("login/{name}"), go, rust);
         }
         ledger.finish("login/");

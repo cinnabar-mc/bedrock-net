@@ -51,6 +51,11 @@ struct Helper {
 impl Helper {
     fn start(scenario: &str) -> Option<Self> {
         let Some(binary) = std::env::var_os("BEDROCK_NET_GO_INTEROP") else {
+            // CI sets BEDROCK_NET_REQUIRE_FIXTURES so a dropped helper fails instead of skipping.
+            assert!(
+                std::env::var_os("BEDROCK_NET_REQUIRE_FIXTURES").is_none(),
+                "missing fixture: BEDROCK_NET_GO_INTEROP; build tools/go-oracle/cmd/interop-server"
+            );
             eprintln!(
                 "missing fixture: BEDROCK_NET_GO_INTEROP; build tools/go-oracle/cmd/interop-server"
             );
@@ -382,6 +387,13 @@ fn chunked_pack_is_downloaded() {
     assert!(observed.spawned && observed.archives.len() == 1);
     let chunks = go["pack_chunk_count"].as_u64().unwrap() as usize;
     let window = go["request_window"].as_u64().unwrap() as usize;
+    assert!(
+        chunks > window,
+        "the pack must span more chunks than Go's request window"
+    );
+    // Pins the divergence to the Rust default, so it cannot silently become some other count.
+    let rust_window = bedrock_client::packs::DEFAULT_REQUEST_WINDOW as usize;
+    assert_eq!(observed.initial_requests, chunks.min(rust_window));
     let mut ledger = Ledger::default();
     ledger.compare(
         "chunk-pack/initial_requests",
@@ -407,6 +419,10 @@ fn start_game_without_pack_phase() {
     let Some((observed, _, _)) = scenario("startgame-without-packs") else {
         return;
     };
+    assert!(
+        observed.unhandled.is_empty() || observed.unhandled == ["StartGame"],
+        "{observed:?}"
+    );
     let mut ledger = Ledger::default();
     // A Go Dialer handles StartGame here; the Rust Login owner hands it back unhandled.
     ledger.compare(

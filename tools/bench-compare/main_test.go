@@ -8,7 +8,7 @@ import (
 	"testing"
 )
 
-func load(t *testing.T) []row {
+func loadMaps(t *testing.T) (map[string]*goResult, map[string]rustResult) {
 	t.Helper()
 	goResults := map[string]*goResult{}
 	if err := readGoFile(filepath.Join("testdata", "go.txt"), goResults); err != nil {
@@ -18,6 +18,12 @@ func load(t *testing.T) []row {
 	if err := readCriterion(filepath.Join("testdata", "criterion"), rustResults); err != nil {
 		t.Fatal(err)
 	}
+	return goResults, rustResults
+}
+
+func load(t *testing.T) []row {
+	t.Helper()
+	goResults, rustResults := loadMaps(t)
 	return join(goResults, rustResults, 5)
 }
 
@@ -40,19 +46,36 @@ func TestJoinPairsMedianAndSlope(t *testing.T) {
 	if rows[2].path != "batch/rust_only" || rows[2].rustNs != 5 || rows[2].status != statusRustOnly {
 		t.Fatalf("rust-only row = %+v", rows[2])
 	}
-	if failed(rows, false) || !failed(rows, true) {
-		t.Fatal("unpaired rows fail only under --strict-pairs")
+	goResults, rustResults := loadMaps(t)
+	if got := check(rows, goResults, rustResults, nil); len(got) != 2 || exitCode(got) != 3 {
+		t.Fatalf("undeclared unpaired rows are harness failures: %v", got)
+	}
+	if got := check(rows, goResults, rustResults, []string{"Batch/go_only", "batch/rust_only"}); len(got) != 0 {
+		t.Fatalf("declared one-sided rows pass: %v", got)
+	}
+	if got := check(rows, goResults, rustResults, []string{"batch/go_only", "batch/rust_only", "batch/encode_flate", "batch/gone"}); len(got) != 2 {
+		t.Fatalf("stale one-sided declarations must fail: %v", got)
 	}
 }
 
 // A Rust path beyond the margin fails; within it does not.
 func TestMarginDecidesFailure(t *testing.T) {
 	goResults := map[string]*goResult{"a": {ns: []float64{100}}}
-	if failed(join(goResults, map[string]rustResult{"a": {ns: 105}}, 5), false) {
-		t.Fatal("5% slower is inside a 5% margin")
+	for rust, fails := range map[float64]bool{105: false, 106: true} {
+		rustResults := map[string]rustResult{"a": {ns: rust}}
+		got := check(join(goResults, rustResults, 5), goResults, rustResults, nil)
+		if want := map[bool]int{false: 0, true: 1}[fails]; exitCode(got) != want {
+			t.Fatalf("Rust %v ns vs Go 100 ns at 5%%: %v", rust, got)
+		}
 	}
-	if !failed(join(goResults, map[string]rustResult{"a": {ns: 106}}, 5), false) {
-		t.Fatal("6% slower must fail a 5% margin")
+}
+
+// A side that produced no results fails even when nothing is unpaired against it.
+func TestEmptySideFails(t *testing.T) {
+	goResults := map[string]*goResult{}
+	rustResults := map[string]rustResult{}
+	if got := check(nil, goResults, rustResults, nil); len(got) != 2 || exitCode(got) != 3 {
+		t.Fatalf("empty inputs are harness failures: %v", got)
 	}
 }
 

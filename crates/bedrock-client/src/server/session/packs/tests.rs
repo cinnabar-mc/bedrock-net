@@ -29,6 +29,11 @@ struct DeliveryResult {
 #[test]
 fn delivery_constants_and_chunk_indexes_match_actual_pinned_go_owner() {
     let Some(binary) = std::env::var_os("BEDROCK_NET_PACK_DELIVERY_ORACLE") else {
+        // CI sets BEDROCK_NET_REQUIRE_FIXTURES so a dropped helper fails instead of skipping.
+        assert!(
+            std::env::var_os("BEDROCK_NET_REQUIRE_FIXTURES").is_none(),
+            "missing fixture: BEDROCK_NET_PACK_DELIVERY_ORACLE; build tools/go-oracle/cmd/pack-delivery-check"
+        );
         eprintln!(
             "missing fixture: BEDROCK_NET_PACK_DELIVERY_ORACLE; build tools/go-oracle/cmd/pack-delivery-check"
         );

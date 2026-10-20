@@ -29,7 +29,8 @@ func main() {
 	flag.Var(&goFiles, "go", "`go test -bench -benchmem` output file, or - for stdin (repeatable)")
 	flag.Var(&criterionDirs, "criterion", "criterion output directory (repeatable; default target/criterion)")
 	margin := flag.Float64("margin", 5, "percent by which Rust may be slower than Go before failing")
-	strictPairs := flag.Bool("strict-pairs", false, "also fail when a benchmark has no counterpart")
+	var oneSided listFlag
+	flag.Var(&oneSided, "one-sided", "`path` expected on only one side (repeatable); any other unpaired path fails")
 	flag.Parse()
 	if len(goFiles) == 0 {
 		fmt.Fprintln(os.Stderr, "bench-compare: at least one --go input is required")
@@ -56,9 +57,11 @@ func main() {
 
 	rows := join(goResults, rustResults, *margin)
 	writeTable(os.Stdout, rows, *margin)
-	if failed(rows, *strictPairs) {
-		os.Exit(1)
+	problems := check(rows, goResults, rustResults, oneSided)
+	for _, problem := range problems {
+		fmt.Fprintln(os.Stderr, "bench-compare:", problem.text)
 	}
+	os.Exit(exitCode(problems))
 }
 
 // goResult accumulates repeated runs (`-count`) of one benchmark.
@@ -330,11 +333,56 @@ func fixed(v float64, prec int) string {
 	return strconv.FormatFloat(v, 'f', prec, 64)
 }
 
-func failed(rows []row, strictPairs bool) bool {
-	for _, r := range rows {
-		if r.status == statusSlower || (strictPairs && (r.status == statusGoOnly || r.status == statusRustOnly)) {
-			return true
+// problem is one reason to fail; harness problems mean a measurement is missing or stale.
+type problem struct {
+	text    string
+	harness bool
+}
+
+// exitCode is 0 when clean, 1 when only Rust slowness was found, and 3 for any harness problem.
+func exitCode(problems []problem) int {
+	code := 0
+	for _, p := range problems {
+		if p.harness {
+			return 3
 		}
+		code = 1
 	}
-	return false
+	return code
+}
+
+// check lists every reason the comparison must fail: a slower Rust path, an empty side, an
+// unpaired path not declared one-sided, or a one-sided declaration that no longer holds.
+func check(rows []row, goResults map[string]*goResult, rustResults map[string]rustResult, oneSided []string) []problem {
+	var problems []problem
+	harness := func(format string, args ...any) {
+		problems = append(problems, problem{fmt.Sprintf(format, args...), true})
+	}
+	if len(goResults) == 0 {
+		harness("no Go benchmark results were read")
+	}
+	if len(rustResults) == 0 {
+		harness("no criterion results were read")
+	}
+	declared := map[string]bool{}
+	for _, name := range oneSided {
+		declared[key(name)] = true
+	}
+	for _, r := range rows {
+		unpaired := r.status == statusGoOnly || r.status == statusRustOnly
+		switch {
+		case r.status == statusSlower:
+			problems = append(problems, problem{r.path + ": Rust is slower than Go beyond the margin", false})
+		case unpaired && !declared[r.path]:
+			harness("%s: %s, and not declared --one-sided", r.path, r.status)
+		case !unpaired && declared[r.path]:
+			harness("%s: declared --one-sided but has both sides", r.path)
+		}
+		delete(declared, r.path)
+	}
+	for name := range declared {
+		harness("%s: declared --one-sided but has no result", name)
+	}
+	sort.Slice(problems, func(i, j int) bool { return problems[i].text < problems[j].text })
+	return problems
 }

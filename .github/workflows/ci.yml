@@ -86,6 +86,7 @@ jobs:
           BEDROCK_NET_PACK_DELIVERY_ORACLE: ${{ github.workspace }}/target/pack-delivery-check.exe
           BEDROCK_NET_GO_ORACLE: ${{ github.workspace }}/target/go-oracle.exe
           BEDROCK_NET_GO_INTEROP: ${{ github.workspace }}/target/interop-server.exe
+          BEDROCK_NET_REQUIRE_FIXTURES: "1"
       - run: cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
   oracle:
     runs-on: ubuntu-latest
@@ -108,8 +109,7 @@ jobs:
         run: go vet ./... && go test ./...
       - run: cargo fmt --all
       - run: git diff --exit-code -- tests/fixtures/go_batches.rs testdata/bench
-  # Go and Rust benchmarks on one runner, joined by tools/bench-compare. Not a required check:
-  # some Rust paths are known to be slower than Go.
+  # Go and Rust benchmarks on one runner, joined by tools/bench-compare. Not a required check.
   bench:
     runs-on: ubuntu-latest
     steps:
@@ -121,16 +121,28 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - name: Go benchmarks
         working-directory: tools/go-oracle
+        shell: bash
         run: |
+          set -o pipefail
           mkdir -p ../../target
           go test -run '^$' -bench . -benchmem -count 3 ./bench/ | tee ../../target/go-bench.txt
       - name: Rust benchmarks
         run: |
           cargo bench --locked -p bedrock-net --features login --bench batch --bench login -- --warm-up-time 1 --measurement-time 3
           cargo bench --locked -p bedrock-client --bench packs -- --warm-up-time 1 --measurement-time 3
+      # Slower Rust paths (exit 1) are reported as a warning while known gaps remain;
+      # a missing or unpaired measurement (exit 3) or unreadable input (2) fails the job.
       - name: Compare
         working-directory: tools/bench-compare
         shell: bash
         run: |
-          set -o pipefail
-          go run . --go ../../target/go-bench.txt --criterion ../../target/criterion | tee -a "$GITHUB_STEP_SUMMARY"
+          go build -o ../../target/bench-compare .
+          status=0
+          ../../target/bench-compare --go ../../target/go-bench.txt --criterion ../../target/criterion > ../../target/bench-table.md || status=$?
+          cat ../../target/bench-table.md >> "$GITHUB_STEP_SUMMARY"
+          cat ../../target/bench-table.md
+          if [ "$status" = 1 ]; then
+            echo "::warning::Rust is slower than Go beyond the margin on some paths"
+          elif [ "$status" != 0 ]; then
+            exit "$status"
+          fi

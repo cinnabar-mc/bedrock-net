@@ -60,6 +60,7 @@ impl Cases {
                 });
             }
         }
+        assert!(!out.is_empty(), "cases.json lists no {group} cases");
         out.sort_by_key(Case::name);
         out
     }
