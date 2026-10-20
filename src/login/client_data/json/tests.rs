@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 use super::{MAX_NESTING_DEPTH, object_or_null};
 
+mod bytes;
+
 /// Opaque claims retain their lexemes but still obey the complete document's generated bound.
 #[test]
 fn raw_client_data_preserves_the_go_nesting_boundary() {
