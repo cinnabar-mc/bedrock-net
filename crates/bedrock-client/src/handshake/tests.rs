@@ -141,11 +141,11 @@ fn settings_login_and_verified_exchange_use_one_key_and_one_transition() {
                     handshake_web_token: token.into(),
                 }
             )),
-            Err(HandshakeError::RepeatedKeyExchange)
+            Ok(EngineEvent::Unhandled(_))
         ));
         assert!(matches!(
             client.receive(packets::Packet::ResourcePacksInfo(Default::default())),
-            Err(HandshakeError::InvalidState)
+            Ok(EngineEvent::Packs { .. })
         ));
     }
 }
@@ -354,7 +354,7 @@ fn deferred_spawn_does_not_admit_login_before_settings_or_login_construction() {
         client.receive(packets::Packet::PlayStatus(packets::PlayStatus {
             status: PlayStatusType::Loginsuccess,
         })),
-        Err(HandshakeError::InvalidState)
+        Ok(EngineEvent::Unhandled(_))
     ));
 }
 
@@ -402,5 +402,62 @@ fn start_game_during_an_advertised_pack_phase_keeps_the_original_completion() {
             .receive(packets::ResourcePackStack::default().into())
             .unwrap(),
         PackEvent::Finished(_)
+    ));
+}
+
+#[test]
+fn unexpected_login_controls_do_not_consume_the_original_transition() {
+    let mut client = handshake(true);
+    client.start().unwrap();
+    for packet in [
+        packets::Packet::ServerToClientHandshake(packets::ServerToClientHandshake {
+            handshake_web_token: "unexpected".into(),
+        }),
+        packets::Packet::PlayStatus(packets::PlayStatus {
+            status: PlayStatusType::Loginsuccess,
+        }),
+    ] {
+        assert!(
+            matches!(client.receive(packet.clone()).unwrap(), EngineEvent::Unhandled(returned) if *returned == packet)
+        );
+    }
+    assert!(matches!(
+        client
+            .receive(packets::NetworkSettings::default().into())
+            .unwrap(),
+        EngineEvent::Compression(_)
+    ));
+    let repeated = packets::Packet::NetworkSettings(Default::default());
+    assert!(
+        matches!(client.receive(repeated.clone()).unwrap(), EngineEvent::Unhandled(returned) if *returned == repeated)
+    );
+    let request = client
+        .login_offline(
+            &OfflineIdentity {
+                display_name: "Fixture",
+                identity: "",
+                xuid: "",
+                playfab_id: "",
+                playfab_title_id: "",
+            },
+            &RawValue::from_string("{}".into()).unwrap(),
+            SystemTime::UNIX_EPOCH,
+        )
+        .unwrap();
+    let packet = packets::Packet::ServerToClientHandshake(packets::ServerToClientHandshake {
+        handshake_web_token: exchange_token(&request).into(),
+    });
+    assert!(matches!(
+        client.receive(packet.clone()).unwrap(),
+        EngineEvent::KeyExchange { .. }
+    ));
+    assert!(
+        matches!(client.receive(packet.clone()).unwrap(), EngineEvent::Unhandled(returned) if *returned == packet)
+    );
+    assert!(matches!(
+        client
+            .receive(packets::ResourcePacksInfo::default().into())
+            .unwrap(),
+        EngineEvent::Packs { .. }
     ));
 }

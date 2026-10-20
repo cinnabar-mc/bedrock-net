@@ -41,12 +41,6 @@ const EXPECTED_DIVERGENCES: &[(&str, &str, &str)] = &[
         "dropped,packets(3)",
         "incomplete DEFLATE output",
     ),
-    // NEW: Go Parse validates ClientData content; Rust accepting checks only object shape and Nonce.
-    (
-        "login/client_fails_go_validation",
-        "accept",
-        "NEW: accepting client-data validation",
-    ),
 ];
 
 /// A short description of a result, so a listed divergence cannot silently change shape.

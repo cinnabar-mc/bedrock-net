@@ -223,7 +223,7 @@ impl Engine {
     /// Advances one received packet without taking ownership of any batch FIFO.
     ///
     /// # Errors
-    /// A malformed exchange, repeated transition, refused Login or invalid pack
+    /// A malformed expected exchange, refused Login or invalid pack
     /// offer is terminal. Keep all packets from the current decoded batch on
     /// the caller's FIFO, even when this method returns a codec transition.
     fn receive(&mut self, packet: packets::Packet) -> Result<EngineEvent, HandshakeError> {
@@ -240,10 +240,9 @@ impl Engine {
             return Err(HandshakeError::InvalidState);
         }
         match packet {
-            packets::Packet::NetworkSettings(settings) => {
-                if !matches!(self.phase, Phase::NetworkSettings) {
-                    return Err(HandshakeError::InvalidState);
-                }
+            packets::Packet::NetworkSettings(settings)
+                if matches!(self.phase, Phase::NetworkSettings) =>
+            {
                 let raw = settings.compression_algorithm.to_raw();
                 let algorithm = CompressionAlgorithm::try_from(raw).unwrap_or_else(|_| {
                     tracing::warn!(
@@ -258,11 +257,9 @@ impl Engine {
                     threshold: settings.compression_threshold.0,
                 }))
             }
-            packets::Packet::ServerToClientHandshake(handshake) => {
-                self.require_login_sent()?;
-                if self.key_exchanged {
-                    return Err(HandshakeError::RepeatedKeyExchange);
-                }
+            packets::Packet::ServerToClientHandshake(handshake)
+                if matches!(self.phase, Phase::Login | Phase::Packs) && !self.key_exchanged =>
+            {
                 let token = handshake
                     .handshake_web_token
                     .to_str()
@@ -276,6 +273,12 @@ impl Engine {
                 })
             }
             packets::Packet::PlayStatus(status) if status.status == PlayStatusType::Playerspawn => {
+                Ok(EngineEvent::Unhandled(Box::new(status.into())))
+            }
+            packets::Packet::PlayStatus(status)
+                if status.status == PlayStatusType::Loginsuccess
+                    && !matches!(self.phase, Phase::Login | Phase::Packs) =>
+            {
                 Ok(EngineEvent::Unhandled(Box::new(status.into())))
             }
             packets::Packet::PlayStatus(status) => {

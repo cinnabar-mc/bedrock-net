@@ -82,8 +82,10 @@ pub(super) fn ready_with_client(
     let (client, mut login) = client
         .login_authenticated(
             CREDENTIAL,
-            &RawValue::from_string("{\"Nonce\":\"original-nonce\",\"XUID\":\"999\"}".into())
-                .unwrap(),
+            &RawValue::from_string(
+                "{\"Nonce\":\"original-nonce\",\"XUID\":\"999\",\"SkinId\":\"synthetic\"}".into(),
+            )
+            .unwrap(),
         )
         .unwrap();
     login.client_network_version = wire::I32BE(0);
