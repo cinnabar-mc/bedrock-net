@@ -272,7 +272,7 @@ dependencies = [
 [[package]]
 name = "bedrock-services"
 version = "0.1.0"
-source = "git+https://github.com/cinnabar-mc/bedrock-services?rev=3b2e9be4605c8ac14b4541ee86ccf8353dbebee3#3b2e9be4605c8ac14b4541ee86ccf8353dbebee3"
+source = "git+https://github.com/cinnabar-mc/bedrock-services?rev=b9fcee8320c6ca275f7a8d465bac406fc4c68571#b9fcee8320c6ca275f7a8d465bac406fc4c68571"
 dependencies = [
  "aws-lc-rs",
  "base64 0.22.1",
