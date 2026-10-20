@@ -7,8 +7,9 @@ and title metadata validation from cinnabar-mc/cinnabar. They retain the PolyFor
 Noncommercial License 1.0.0 reproduced in LICENSE-CINNABAR. They are not covered by the root
 crate's MIT/Apache license choice; individual source files identify this exception.
 
-The bedrock-client and bedrock-packs crates extract resource-pack negotiation,
-archive handoff and text handling from cinnabar-mc/cinnabar. These extracted
+The bedrock-client, bedrock-client-tokio and bedrock-packs crates extract resource-pack negotiation,
+caller-driven Tokio connection/transport lifecycles, archive handoff and text
+handling from cinnabar-mc/cinnabar. These extracted
 implementations retain the PolyForm Noncommercial License 1.0.0 reproduced in
 LICENSE-CINNABAR; they are not covered by the root crate's MIT/Apache license
 choice. Their Cargo manifests identify that retained license explicitly.

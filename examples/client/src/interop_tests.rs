@@ -14,16 +14,16 @@ use bedrock_client::handshake::{
     ClientHandshake, ClientLogin, HandshakeOptions, LoginEvent, OfferEvent, PacksEvent,
 };
 use bedrock_client::spawn::SpawnNegotiation;
+use bedrock_net::BatchLimits;
 use bedrock_net::login::OfflineIdentity;
-use bedrock_net::{BatchLimits, BatchPhase, Negotiated};
 use bedrock_protocol::{
     packets,
     wire::{self, PacketHeader, Peer, Reader},
 };
 use serde_json::Value;
 
-use crate::session::Session;
-use crate::transport::Transport;
+use bedrock_client_tokio::connection::Connection;
+
 use crate::{
     HANDSHAKE_TIMEOUT, PROBE_NAME, PROBE_UUID, apply_exchange, client_data, is_login_success,
     receive_settings, send_responses,
@@ -102,12 +102,12 @@ struct Observed {
 }
 
 /// Decodes the next known server packet; unknown IDs are recorded, as no generated packet holds them.
-async fn next_packet<S: BatchPhase>(
-    session: &mut Session<S>,
+async fn next_packet(
+    session: &mut Connection,
     observed: &mut Observed,
 ) -> Result<packets::Packet, Box<dyn Error>> {
     loop {
-        let bytes = session.next_packet().await?;
+        let bytes = session.next_raw().await?;
         let mut reader = Reader::from_shared(&bytes);
         let header = PacketHeader::from_raw(reader.read_var_u32()?);
         if packets::PacketId::from_raw(header.id).is_none() {
@@ -128,22 +128,29 @@ fn name(packet: &packets::Packet) -> String {
 
 /// Runs Login, packs and startup with the probe's session until the server ends the connection.
 async fn join(address: SocketAddr, observed: &mut Observed) -> Result<(), Box<dyn Error>> {
-    let transport = Transport::connect("raknet", address).await?;
+    let (transport, key) = crate::transport::connect("raknet", address).await?;
     let configured = ClientHandshake::new(
-        transport.key(),
+        key,
         HandshakeOptions {
             batch_encryption: transport.batch_encryption(),
             max_login_bytes: BatchLimits::default().max_decoded_bytes,
             ..Default::default()
         },
     )?;
-    let mut session = Session::new(transport);
+    let mut session = Connection::new(
+        transport,
+        BatchLimits::default(),
+        bedrock_protocol::wire::Limits::receiving_from(Peer::Server),
+        BatchLimits::default().max_decoded_bytes,
+    );
     let (settings, request) = configured.start()?;
-    session.send(request.into()).await?;
+    session
+        .send_packet(&request.into(), Peer::Client, 0, 0)
+        .await?;
     let (ready, compression) = receive_settings(&mut session, settings).await?;
     observed.compression = Some(format!("{:?}", compression.algorithm));
-    let mut session = session.negotiate(compression);
-    let metadata = client_data("raknet", address, session.transport.nonce())?;
+    session.enable_compression(compression)?;
+    let metadata = client_data("raknet", address, session.transport().nonce())?;
     let (login, request) = ready.login_offline(
         &OfflineIdentity {
             display_name: PROBE_NAME,
@@ -155,13 +162,19 @@ async fn join(address: SocketAddr, observed: &mut Observed) -> Result<(), Box<dy
         &metadata,
         SystemTime::now(),
     )?;
-    session.send(request.into()).await?;
+    session
+        .send_packet(&request.into(), Peer::Client, 0, 0)
+        .await?;
     login_phase(&mut session, login, observed).await?;
-    session.transport.close().await
+    session
+        .transport_mut()
+        .finish_close()
+        .await
+        .map_err(Into::into)
 }
 
 async fn login_phase(
-    session: &mut Session<Negotiated>,
+    session: &mut Connection,
     mut login: ClientLogin,
     observed: &mut Observed,
 ) -> Result<(), Box<dyn Error>> {
@@ -186,7 +199,9 @@ async fn login_phase(
                 packs,
             } => {
                 if let Some(status) = cache_status {
-                    session.send(status.into()).await?;
+                    session
+                        .send_packet(&status.into(), Peer::Client, 0, 0)
+                        .await?;
                 }
                 break packs;
             }
@@ -228,7 +243,9 @@ async fn login_phase(
         }
     }
     let (mut packs, response) = offer.start()?;
-    session.send(response.into()).await?;
+    session
+        .send_packet(&response.into(), Peer::Client, 0, 0)
+        .await?;
     let mut first_send = true;
     let complete = loop {
         let packet = next_packet(session, observed).await?;
@@ -269,12 +286,14 @@ async fn login_phase(
         .iter()
         .map(|pack| pack.archive.len())
         .collect();
-    session.send(response.into()).await?;
+    session
+        .send_packet(&response.into(), Peer::Client, 0, 0)
+        .await?;
     spawn_phase(session, &mut spawn, observed).await
 }
 
 async fn spawn_phase(
-    session: &mut Session<Negotiated>,
+    session: &mut Connection,
     spawn: &mut SpawnNegotiation,
     observed: &mut Observed,
 ) -> Result<(), Box<dyn Error>> {
@@ -289,10 +308,14 @@ async fn spawn_phase(
         }
         let update = spawn.receive(packet)?;
         if let Some(radius) = update.request_radius {
-            session.send(radius.into()).await?;
+            session
+                .send_packet(&radius.into(), Peer::Client, 0, 0)
+                .await?;
         }
         if let Some(ready) = update.ready {
-            session.send(ready.finish_loading().into()).await?;
+            session
+                .send_packet(&ready.finish_loading().into(), Peer::Client, 0, 0)
+                .await?;
             observed.spawned = true;
         }
     }

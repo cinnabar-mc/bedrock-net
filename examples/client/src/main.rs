@@ -2,7 +2,6 @@
 
 #[cfg(test)]
 mod interop_tests;
-mod session;
 mod transport;
 
 use std::error::Error;
@@ -17,7 +16,7 @@ use bedrock_client::handshake::{
     ClientSettings, HandshakeOptions, LoginEvent, OfferEvent, SettingsEvent,
 };
 use bedrock_net::login::OfflineIdentity;
-use bedrock_net::{BatchLimits, BatchPhase, CompressionSettings, Negotiated};
+use bedrock_net::{BatchLimits, CompressionSettings};
 use bedrock_protocol::{
     enums::PlayStatusType,
     packets,
@@ -26,8 +25,7 @@ use bedrock_protocol::{
 use rand::TryRng;
 use serde_json::value::RawValue;
 
-use session::Session;
-use transport::Transport;
+use bedrock_client_tokio::connection::Connection;
 
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(30);
 const OFFLINE_IDENTITY_LIFETIME: Duration = Duration::from_secs(3600);
@@ -64,20 +62,27 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
 /// Negotiates settings and, when requested, stops after Login acceptance and the pack offer.
 async fn probe(kind: &str, address: SocketAddr, login: bool) -> Result<(), Box<dyn Error>> {
-    let transport = Transport::connect(kind, address).await?;
+    let (transport, key) = crate::transport::connect(kind, address).await?;
     let configured = ClientHandshake::new(
-        transport.key(),
+        key,
         HandshakeOptions {
             batch_encryption: transport.batch_encryption(),
             max_login_bytes: BatchLimits::default().max_decoded_bytes,
             ..Default::default()
         },
     )?;
-    let mut session = Session::new(transport);
+    let mut session = Connection::new(
+        transport,
+        BatchLimits::default(),
+        bedrock_protocol::wire::Limits::receiving_from(Peer::Server),
+        BatchLimits::default().max_decoded_bytes,
+    );
     let (settings, request) = configured.start()?;
-    session.send(request.into()).await?;
+    session
+        .send_packet(&request.into(), Peer::Client, 0, 0)
+        .await?;
     let (ready, compression) = receive_settings(&mut session, settings).await?;
-    let mut session = session.negotiate(compression);
+    session.enable_compression(compression)?;
     println!(
         "requested_protocol={} compression={:?} threshold={}",
         bedrock_protocol::PROTOCOL_VERSION,
@@ -85,7 +90,7 @@ async fn probe(kind: &str, address: SocketAddr, login: bool) -> Result<(), Box<d
         compression.threshold
     );
     if login {
-        let metadata = client_data(kind, address, session.transport.nonce())?;
+        let metadata = client_data(kind, address, session.transport().nonce())?;
         let (pending, request) = ready.login_offline(
             &OfflineIdentity {
                 display_name: PROBE_NAME,
@@ -97,10 +102,12 @@ async fn probe(kind: &str, address: SocketAddr, login: bool) -> Result<(), Box<d
             &metadata,
             SystemTime::now(),
         )?;
-        session.send(request.into()).await?;
+        session
+            .send_packet(&request.into(), Peer::Client, 0, 0)
+            .await?;
         receive_login(&mut session, pending).await?;
     }
-    session.transport.close().await?;
+    session.transport_mut().finish_close().await?;
     Ok(())
 }
 
@@ -152,7 +159,7 @@ fn client_data(
 
 /// Retains the actual settings owner and unread FIFO until its typed Login handoff.
 async fn receive_settings(
-    session: &mut Session,
+    session: &mut Connection,
     mut settings: ClientSettings,
 ) -> Result<(ClientLoginReady, CompressionSettings), Box<dyn Error>> {
     loop {
@@ -174,7 +181,7 @@ async fn receive_settings(
 
 /// Observes Login acceptance and the real pack offer without starting a download.
 async fn receive_login(
-    session: &mut Session<Negotiated>,
+    session: &mut Connection,
     mut login: ClientLogin,
 ) -> Result<(), Box<dyn Error>> {
     let mut accepted = false;
@@ -200,7 +207,9 @@ async fn receive_login(
                 packs,
             } => {
                 if let Some(status) = cache_status {
-                    session.send(status.into()).await?;
+                    session
+                        .send_packet(&status.into(), Peer::Client, 0, 0)
+                        .await?;
                 }
                 println!("admitted_pack_offer={}", packs.offers().count());
                 return finish_offer(session, packs, accepted, encrypted).await;
@@ -222,7 +231,7 @@ async fn receive_login(
 
 /// Preserves the original late control owner when the offer precedes LoginSuccess.
 async fn finish_offer(
-    session: &mut Session<Negotiated>,
+    session: &mut Connection,
     mut offer: ClientPackOffer,
     mut accepted: bool,
     mut encrypted: bool,
@@ -258,7 +267,7 @@ async fn finish_offer(
 
 /// Applies the exact verified streams and acknowledgment before returning the same continuation.
 async fn apply_exchange<C>(
-    session: &mut Session<Negotiated>,
+    session: &mut Connection,
     exchange: ClientKeyExchange<C>,
 ) -> Result<(C, bool), Box<dyn Error>> {
     let (continuation, ciphers, response) = exchange.into_parts();
@@ -268,17 +277,19 @@ async fn apply_exchange<C>(
     } else {
         false
     };
-    session.send(response.into()).await?;
+    session
+        .send_packet(&response.into(), Peer::Client, 0, 0)
+        .await?;
     Ok((continuation, encrypted))
 }
 
 /// Sends original generated effects in order, without another batching or cipher owner.
 async fn send_responses(
-    session: &mut Session<Negotiated>,
+    session: &mut Connection,
     packets: Vec<packets::Packet>,
 ) -> Result<(), Box<dyn Error>> {
     for packet in packets {
-        session.send(packet).await?;
+        session.send_packet(&packet, Peer::Client, 0, 0).await?;
     }
     Ok(())
 }
@@ -295,11 +306,11 @@ fn is_login_success(packet: &packets::Packet) -> bool {
 
 /// Decodes only negotiation input while bounded framing/FIFO remain in the existing session.
 /// Unknown or unused well-formed entries are counted locally without dumping their bodies.
-async fn next_negotiation_packet<S: BatchPhase>(
-    session: &mut Session<S>,
+async fn next_negotiation_packet(
+    session: &mut Connection,
 ) -> Result<packets::Packet, Box<dyn Error>> {
     loop {
-        let bytes = session.next_packet().await?;
+        let bytes = session.next_raw().await?;
         let mut reader = Reader::from_shared(&bytes);
         let header = PacketHeader::from_raw(reader.read_var_u32()?);
         let Some(id) = packets::PacketId::from_raw(header.id) else {

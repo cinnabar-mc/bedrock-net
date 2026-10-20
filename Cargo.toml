@@ -1,5 +1,5 @@
 [workspace]
-members = [".", "crates/bedrock-client", "crates/bedrock-packs", "examples/client"]
+members = [".", "crates/bedrock-client", "crates/bedrock-client-tokio", "crates/bedrock-packs", "examples/client"]
 default-members = [".", "crates/bedrock-client", "crates/bedrock-packs"]
 resolver = "3"
 

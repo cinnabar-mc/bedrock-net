@@ -1,0 +1,35 @@
+[package]
+name = "bedrock-client-tokio"
+version = "0.1.0"
+edition = "2024"
+rust-version.workspace = true
+license-file = "../../LICENSE-CINNABAR"
+description = "Caller-owned Tokio connection and transport adapters for Bedrock"
+repository = "https://github.com/cinnabar-mc/bedrock-net"
+readme = "README.md"
+publish = false
+
+[features]
+default = []
+raknet = ["bedrock-net/raknet"]
+nethernet = ["bedrock-net/messaging", "dep:nethernet-tokio"]
+# Read-only observations used by integration fixtures.
+test-support = []
+
+[dependencies]
+bedrock-net = { path = "../.." }
+bedrock-protocol.workspace = true
+bytes = "1"
+futures = "0.3"
+nethernet-tokio = { workspace = true, optional = true }
+tokio = { version = "1", features = ["rt", "time", "macros", "sync"] }
+thiserror = "2"
+tracing = "0.1"
+uuid = "1"
+zeroize = "1"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["rt", "macros", "net", "time", "test-util"] }
+
+[lints]
+workspace = true
