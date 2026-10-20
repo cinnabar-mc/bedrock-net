@@ -72,7 +72,8 @@ enum Phase {
 struct SessionEngine<A> {
     login: AuthenticatedLogin,
     grant: A,
-    packs: packs::Delivery,
+    packs: Option<packs::Delivery>,
+    metadata_limit: usize,
     world: Option<spawn::Startup>,
     deadline: Instant,
     phase: Phase,
@@ -87,6 +88,7 @@ impl<A> SessionEngine<A> {
         mut packs: packs::Delivery,
         deadline: Instant,
     ) -> (Self, Vec<packets::Packet>) {
+        let metadata_limit = packs.metadata_limit();
         let offer = packs
             .start()
             .expect("validated delivery owns its original offer");
@@ -94,7 +96,8 @@ impl<A> SessionEngine<A> {
             Self {
                 login,
                 grant,
-                packs,
+                packs: Some(packs),
+                metadata_limit,
                 world: None,
                 deadline,
                 phase: Phase::Packs,
@@ -131,7 +134,10 @@ impl<A> SessionEngine<A> {
     fn chunk_flushed(&mut self, now: Instant) -> Result<Vec<packets::Packet>, ServerSessionError> {
         let result = (|| {
             self.require(Phase::Packs, now)?;
-            self.packs.flushed()
+            self.packs
+                .as_mut()
+                .ok_or(ServerSessionError::InvalidState)?
+                .flushed()
         })();
         self.terminal(result)
     }
@@ -149,7 +155,10 @@ impl<A> SessionEngine<A> {
     ) -> Result<ServerSessionEvent, ServerSessionError> {
         let result = (|| {
             self.require(Phase::Packs, now)?;
-            self.packs.supply(request, bytes)
+            self.packs
+                .as_mut()
+                .ok_or(ServerSessionError::InvalidState)?
+                .supply(request, bytes)
         })();
         self.terminal(result)
     }
@@ -169,7 +178,7 @@ impl<A> SessionEngine<A> {
         let result = (|| {
             self.require(Phase::World, now)?;
             self.login.revalidate(verifier, utc)?;
-            let (startup, packets) = spawn::Startup::new(world, self.packs.metadata_limit())?;
+            let (startup, packets) = spawn::Startup::new(world, self.metadata_limit)?;
             self.world = Some(startup);
             self.phase = Phase::Spawning;
             Ok(ServerSessionEvent::Send(packets))
@@ -215,7 +224,11 @@ impl<A> SessionEngine<A> {
             return Err(ServerSessionError::InvalidState);
         }
         let event = match self.phase {
-            Phase::Packs => self.packs.receive(packet)?,
+            Phase::Packs => self
+                .packs
+                .as_mut()
+                .ok_or(ServerSessionError::InvalidState)?
+                .receive(packet)?,
             Phase::Spawning => self
                 .world
                 .as_mut()
