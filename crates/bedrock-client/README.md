@@ -208,3 +208,7 @@ sizes; stack entries keep application order and original metadata. Original
 data-information packets stay aligned with offer order; caller-preloaded content
 has no invented classification or premium information. The default path retains
 its ordinary archive handoff without metadata copies. No relay I/O is started.
+
+`transfer::TransferTarget` normalizes a decoded server target under the shared
+byte/character/port bounds. It does not resolve, authorize or follow that target;
+those decisions and presentation remain caller-owned.

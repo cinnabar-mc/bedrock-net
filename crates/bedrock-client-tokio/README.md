@@ -20,6 +20,23 @@ and a malformed later header remains behind an already accepted read prefix.
 `next_packet` decodes generated packets under the supplied field limits; UI and
 other application validation remain above this owner.
 
+`handshake::settings` consumes the original client settings continuation and
+installs compression before the caller constructs metadata. `handshake::login`
+accepts the caller's opaque, verified proof-bound token and original absolute
+credential deadline, or explicit offline identity and caller UTC. Its result
+retains the actual advertised pack offer, or the actual packless StartGame in
+the same deferred FIFO. Late key exchange installs the verified streams before
+its acknowledgment. UI errors, redirects and account/provider decisions remain
+with the caller through typed `NegotiationError` values.
+
+`packs::acquire` drives the original consuming pack states and flushes every
+response immediately. Its borrowed `PackIo` performs only caller-owned preload,
+completed-archive storage and store flush; the library opens no cache or HTTP
+client. Early stack input remains in the same byte-bounded raw FIFO until the
+original transfer is ready, with store references released before exclusive
+archive handoff. A synchronous borrowed observer can record original reads and
+successful effect vectors, but cannot replace packets or admit state.
+
 Keep the same connection through settings, encryption and play. A canceled
 receive, maintenance or close wait retains its original FIFO and lifecycle
 owner. `prepare_body` retains one encoded accepted-NetherNet send; canceling a

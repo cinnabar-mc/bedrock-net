@@ -10,24 +10,23 @@ use std::net::SocketAddr;
 use std::process::{Child, ChildStdout, Command, Stdio};
 use std::time::SystemTime;
 
-use bedrock_client::handshake::{
-    ClientHandshake, ClientLogin, HandshakeOptions, LoginEvent, OfferEvent, PacksEvent,
-};
+use bedrock_client::handshake::{ClientHandshake, HandshakeOptions};
 use bedrock_client::spawn::SpawnNegotiation;
+use bedrock_client_tokio::{
+    connection::Connection,
+    error::NegotiationError,
+    handshake::{self, LoginData, Observation},
+    packs::{self as pack_driver, InBand},
+};
 use bedrock_net::BatchLimits;
 use bedrock_net::login::OfflineIdentity;
 use bedrock_protocol::{
     packets,
-    wire::{self, PacketHeader, Peer, Reader},
+    wire::{self, Peer},
 };
 use serde_json::Value;
 
-use bedrock_client_tokio::connection::Connection;
-
-use crate::{
-    HANDSHAKE_TIMEOUT, PROBE_NAME, PROBE_UUID, apply_exchange, client_data, is_login_success,
-    receive_settings, send_responses,
-};
+use crate::{HANDSHAKE_TIMEOUT, PROBE_NAME, PROBE_UUID, client_data, is_login_success};
 
 /// Known differences from a Go Dialer, each naming its audit item.
 const EXPECTED_DIVERGENCES: &[(&str, &str)] = &[];
@@ -98,29 +97,46 @@ struct Observed {
     packless_startup: bool,
 }
 
-/// Decodes the next known server packet; unknown IDs are recorded, as no generated packet holds them.
+/// Observes the actual driver reads/effects without replacing their packets or authority.
+fn observe(observed: &mut Observed, event: Observation<'_>) {
+    match event {
+        Observation::Unknown(header) => observed.unknown_ids.push(header.id),
+        Observation::Received(_, packet) => observed.login_success |= is_login_success(packet),
+        Observation::Sent(packets) if observed.initial_requests == 0 => {
+            observed.initial_requests = packets
+                .iter()
+                .filter(|packet| matches!(packet, packets::Packet::ResourcePackChunkRequest(_)))
+                .count();
+        }
+        Observation::Sent(_) => {}
+    }
+}
+
+/// Keeps real server terminal observations in the probe's original comparison vocabulary.
+fn terminal(error: NegotiationError, observed: &mut Observed) -> Result<(), Box<dyn Error>> {
+    match error {
+        NegotiationError::Disconnect(disconnect) => {
+            observed.unhandled.push("Disconnect".into());
+            observed.disconnect = Some(format!("{:?}", disconnect.messages));
+            Ok(())
+        }
+        NegotiationError::Transfer(_) => {
+            observed.unhandled.push("Transfer".into());
+            Ok(())
+        }
+        error => Err(error.into()),
+    }
+}
+
+/// Uses the original generated decoder and records unknown IDs before continuing.
 async fn next_packet(
     session: &mut Connection,
     observed: &mut Observed,
 ) -> Result<packets::Packet, Box<dyn Error>> {
-    loop {
-        let bytes = session.next_raw().await?;
-        let mut reader = Reader::from_shared(&bytes);
-        let header = PacketHeader::from_raw(reader.read_var_u32()?);
-        if packets::PacketId::from_raw(header.id).is_none() {
-            observed.unknown_ids.push(header.id);
-            continue;
-        }
-        return Ok(packets::Packet::decode_from(
-            header.id,
-            Peer::Server,
-            &mut reader,
-        )?);
-    }
-}
-
-fn name(packet: &packets::Packet) -> String {
-    format!("{:?}", packet.id())
+    Ok(session
+        .next_packet_observed(&mut |event| observe(observed, event))
+        .await?
+        .1)
 }
 
 /// Runs Login, packs and startup with the probe's session until the server ends the connection.
@@ -140,162 +156,78 @@ async fn join(address: SocketAddr, observed: &mut Observed) -> Result<(), Box<dy
         bedrock_protocol::wire::Limits::receiving_from(Peer::Server),
         BatchLimits::default().max_decoded_bytes,
     );
-    let (settings, request) = configured.start()?;
-    session
-        .send_packet(&request.into(), Peer::Client, 0, 0)
-        .await?;
-    let (ready, compression) = receive_settings(&mut session, settings).await?;
+    let (ready, compression) = handshake::settings(&mut session, configured, &mut |event| {
+        observe(observed, event)
+    })
+    .await?;
     observed.compression = Some(format!("{:?}", compression.algorithm));
-    session.enable_compression(compression)?;
     let metadata = client_data("raknet", address, session.transport().nonce())?;
-    let (login, request) = ready.login_offline(
-        &OfflineIdentity {
-            display_name: PROBE_NAME,
-            identity: PROBE_UUID,
-            xuid: "",
-            playfab_id: "",
-            playfab_title_id: "",
+    let result = handshake::login(
+        &mut session,
+        ready,
+        LoginData::Offline {
+            identity: OfflineIdentity {
+                display_name: PROBE_NAME,
+                identity: PROBE_UUID,
+                xuid: "",
+                playfab_id: "",
+                playfab_title_id: "",
+            },
+            claims: &metadata,
+            now: SystemTime::now(),
         },
-        &metadata,
-        SystemTime::now(),
-    )?;
-    session
-        .send_packet(&request.into(), Peer::Client, 0, 0)
-        .await?;
-    login_phase(&mut session, login, observed).await?;
-    session
-        .transport_mut()
-        .finish_close()
-        .await
-        .map_err(Into::into)
+        &mut |event| observe(observed, event),
+    )
+    .await;
+    observed.encrypted |= session.has_batch_ciphers();
+    let outcome = match result {
+        Ok(Some(offer)) => login_phase(&mut session, offer, observed).await,
+        Ok(None) => {
+            observed.packless_startup = true;
+            Ok(())
+        }
+        Err(error) => terminal(error, observed),
+    };
+    let closed = session.transport_mut().finish_close().await;
+    outcome?;
+    closed.map_err(Into::into)
 }
 
+/// Preserves the original late LoginSuccess wait before starting actual pack acquisition.
 async fn login_phase(
     session: &mut Connection,
-    mut login: ClientLogin,
+    mut offer: bedrock_client::handshake::ClientPackOffer,
     observed: &mut Observed,
 ) -> Result<(), Box<dyn Error>> {
-    let mut offer = loop {
-        let packet = next_packet(session, observed).await?;
-        observed.login_success |= is_login_success(&packet);
-        match login.receive(packet)? {
-            LoginEvent::Send {
-                login: next,
-                packets,
-            } => {
-                send_responses(session, packets).await?;
-                login = next;
-            }
-            LoginEvent::KeyExchange(exchange) => {
-                let (next, installed) = apply_exchange(session, exchange).await?;
-                observed.encrypted |= installed;
-                login = next;
-            }
-            LoginEvent::Packs {
-                cache_status,
-                packs,
-            } => {
-                if let Some(status) = cache_status {
-                    session
-                        .send_packet(&status.into(), Peer::Client, 0, 0)
-                        .await?;
-                }
-                break packs;
-            }
-            // Startup without a pack phase; the scenario sends nothing further.
-            LoginEvent::Startup { .. } => {
-                observed.packless_startup = true;
-                return Ok(());
-            }
-            // Terminal or out-of-phase input stays with the caller; the scenario ends here.
-            LoginEvent::Unhandled { packet, .. } => {
-                observed.unhandled.push(name(&packet));
-                if let packets::Packet::Disconnect(disconnect) = *packet {
-                    observed.disconnect = Some(format!("{:?}", disconnect.messages));
-                }
-                return Ok(());
-            }
-        }
-    };
     while !observed.login_success {
-        let packet = next_packet(session, observed).await?;
-        observed.login_success |= is_login_success(&packet);
-        match offer.receive_control(packet)? {
-            OfferEvent::Send {
-                offer: next,
-                packets,
-            } => {
-                send_responses(session, packets).await?;
-                offer = next;
-            }
-            OfferEvent::KeyExchange(exchange) => {
-                let (next, installed) = apply_exchange(session, exchange).await?;
-                observed.encrypted |= installed;
-                offer = next;
-            }
-            OfferEvent::Unhandled { packet, .. } => {
-                observed.unhandled.push(name(&packet));
-                return Ok(());
-            }
-        }
-    }
-    let (mut packs, response) = offer.start()?;
-    session
-        .send_packet(&response.into(), Peer::Client, 0, 0)
-        .await?;
-    let mut first_send = true;
-    let mut deferred_stacks: std::collections::VecDeque<Box<packets::ResourcePackStack>> =
-        std::collections::VecDeque::new();
-    let complete = loop {
-        let packet = if packs.ready_for_stack() && !deferred_stacks.is_empty() {
-            packets::Packet::ResourcePackStack(*deferred_stacks.pop_front().unwrap())
-        } else {
-            next_packet(session, observed).await?
+        let result =
+            handshake::offer_control(session, offer, &mut |event| observe(observed, event)).await;
+        observed.encrypted |= session.has_batch_ciphers();
+        offer = match result {
+            Ok(offer) => offer,
+            Err(error) => return terminal(error, observed),
         };
-        match packs.receive(packet)? {
-            PacksEvent::Send {
-                packs: next,
-                packets,
-            } => {
-                let requests = packets
-                    .iter()
-                    .filter(|p| matches!(p, packets::Packet::ResourcePackChunkRequest(_)))
-                    .count();
-                if first_send && requests != 0 {
-                    observed.initial_requests = requests;
-                    first_send = false;
-                }
-                send_responses(session, packets).await?;
-                packs = next;
-            }
-            PacksEvent::KeyExchange(exchange) => {
-                let (next, installed) = apply_exchange(session, exchange).await?;
-                observed.encrypted |= installed;
-                packs = next;
-            }
-            PacksEvent::DeferredStack { packs: next, stack } => {
-                deferred_stacks.push_back(stack);
-                packs = next;
-            }
-            PacksEvent::Finished(complete) => break complete,
-            PacksEvent::Unhandled { packet, .. } => {
-                observed.unhandled.push(name(&packet));
-                return Ok(());
-            }
-        }
+    }
+    let result = pack_driver::acquire(session, offer, &mut InBand, &mut |event| {
+        observe(observed, event)
+    })
+    .await;
+    observed.encrypted |= session.has_batch_ciphers();
+    let acquired = match result {
+        Ok(acquired) => acquired,
+        Err(error) => return terminal(error, observed),
     };
-    let (mut spawn, response, handoff) = complete.start_spawn(packets::RequestChunkRadius {
-        chunk_radius: wire::ZigZag32(4),
-        max_chunk_radius: wire::U8(4),
-    })?;
-    observed.archives = handoff
+    observed.archives = acquired
+        .handoff
         .into_archives()
         .iter()
         .map(|pack| pack.archive.len())
         .collect();
-    session
-        .send_packet(&response.into(), Peer::Client, 0, 0)
-        .await?;
+    let mut spawn = SpawnNegotiation::new(packets::RequestChunkRadius {
+        chunk_radius: wire::ZigZag32(4),
+        max_chunk_radius: wire::U8(4),
+    })?;
+    session.replay_deferred();
     spawn_phase(session, &mut spawn, observed).await
 }
 

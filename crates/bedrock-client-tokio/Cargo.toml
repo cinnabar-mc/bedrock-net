@@ -11,12 +11,15 @@ publish = false
 
 [features]
 default = []
-raknet = ["bedrock-net/raknet"]
-nethernet = ["bedrock-net/messaging", "dep:nethernet-tokio"]
+raknet = ["bedrock-net/raknet", "dep:bedrock-client", "dep:bedrock-packs", "dep:serde_json"]
+nethernet = ["bedrock-net/messaging", "dep:nethernet-tokio", "dep:bedrock-client", "dep:bedrock-packs", "dep:serde_json"]
 # Read-only observations used by integration fixtures.
 test-support = []
 
 [dependencies]
+bedrock-client = { path = "../bedrock-client", optional = true }
+bedrock-packs = { path = "../bedrock-packs", optional = true }
+serde_json = { version = "1", features = ["raw_value"], optional = true }
 bedrock-net = { path = "../.." }
 bedrock-protocol.workspace = true
 bytes = "1"

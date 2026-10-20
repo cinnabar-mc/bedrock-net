@@ -8,6 +8,10 @@ use std::io;
 #[cfg(any(feature = "raknet", feature = "nethernet"))]
 pub mod connection;
 pub mod error;
+#[cfg(any(feature = "raknet", feature = "nethernet"))]
+pub mod handshake;
+#[cfg(any(feature = "raknet", feature = "nethernet"))]
+pub mod packs;
 pub mod rtt;
 #[cfg(any(feature = "raknet", feature = "nethernet"))]
 pub mod transport;

@@ -242,6 +242,18 @@ impl Connection {
         target_subclient: u8,
     ) -> io::Result<()> {
         self.ensure_send_idle()?;
+        let body = self.packet_body(packet, sender, sender_subclient, target_subclient)?;
+        self.send_body_until(body, None).await
+    }
+
+    /// Encodes one original generated entry before any write/cipher effect is admitted.
+    pub(crate) fn packet_body(
+        &self,
+        packet: &packets::Packet,
+        sender: wire::Peer,
+        sender_subclient: u8,
+        target_subclient: u8,
+    ) -> io::Result<Bytes> {
         let mut body = Vec::new();
         let id = packet.id();
         if !id.direction().permits(sender) {
@@ -258,7 +270,17 @@ impl Connection {
             packet.encode(writer)
         })
         .map_err(io::Error::other)?;
-        self.send_body_until(Bytes::from(body), None).await
+        Ok(Bytes::from(body))
+    }
+
+    /// Reads the existing output count bound without defining another batching policy.
+    pub(crate) fn max_packets(&self) -> usize {
+        self.limits.max_packets
+    }
+
+    /// Observes only whether the original verified batch cipher has been installed.
+    pub fn has_batch_ciphers(&self) -> bool {
+        self.ciphers.is_some()
     }
 
     /// Encodes the original bounded packet entries once on the current codec.
@@ -435,6 +457,13 @@ impl Connection {
 
     /// Shares the original header/body and skips only unknown IDs under the existing policy.
     pub async fn next_known_raw(&mut self) -> io::Result<(wire::PacketHeader, Bytes)> {
+        self.next_known_raw_observed(&mut |_| {}).await
+    }
+
+    async fn next_known_raw_observed(
+        &mut self,
+        observe: &mut (impl FnMut(super::handshake::Observation<'_>) + Send),
+    ) -> io::Result<(wire::PacketHeader, Bytes)> {
         loop {
             let bytes = self.next_raw().await?;
             self.current = None;
@@ -442,6 +471,7 @@ impl Connection {
             let header =
                 wire::PacketHeader::from_raw(reader.read_var_u32().map_err(io::Error::other)?);
             let Some(_) = packets::PacketId::from_raw(header.id) else {
+                observe(super::handshake::Observation::Unknown(header));
                 self.negotiation_skips = self.negotiation_skips.saturating_add(1);
                 tracing::debug!(
                     skipped = self.negotiation_skips,
@@ -458,11 +488,20 @@ impl Connection {
 
     /// Decodes one generated packet under the caller's field limits, retaining batch siblings.
     pub async fn next_packet(&mut self) -> io::Result<(wire::PacketHeader, packets::Packet)> {
-        let (header, body) = self.next_known_raw().await?;
+        self.next_packet_observed(&mut |_| {}).await
+    }
+
+    /// Calls a synchronous read-only observer on the actual original header/decoded body.
+    pub async fn next_packet_observed(
+        &mut self,
+        observe: &mut (impl FnMut(super::handshake::Observation<'_>) + Send),
+    ) -> io::Result<(wire::PacketHeader, packets::Packet)> {
+        let (header, body) = self.next_known_raw_observed(observe).await?;
         let id = packets::PacketId::from_raw(header.id).expect("known generated packet");
         let data = self
             .decode_body(id, &body)
             .inspect_err(|_| self.current = None)?;
+        observe(super::handshake::Observation::Received(header, &data));
         Ok((header, data))
     }
 

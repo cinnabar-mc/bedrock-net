@@ -14,7 +14,7 @@ return the next owned continuation and its effects.
 | --- | --- |
 | [`bedrock-net`](src/lib.rs) | Encoded packet batches, compression and directional ciphers; optional Login primitives and transport edges. |
 | [`bedrock-client`](crates/bedrock-client) | Sans-I/O client and accepting negotiation over generated packets, including pack transfer and startup. |
-| [`bedrock-client-tokio`](crates/bedrock-client-tokio) | Optional caller-owned connection, codec/FIFO/cipher and established transport lifecycles; no runtime or session task is created. |
+| [`bedrock-client-tokio`](crates/bedrock-client-tokio) | Optional caller-owned settings/Login/pack wire loops, codec/FIFO/cipher and established transport lifecycles; no runtime or session task is created. |
 | [`bedrock-packs`](crates/bedrock-packs) | Runtime-independent pack text, owned archive handoffs and content-key lifetime. |
 
 [protocolgen](https://github.com/cinnabar-mc/protocolgen) owns the version-specific
