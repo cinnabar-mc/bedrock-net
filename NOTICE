@@ -1,9 +1,10 @@
 bedrock-net
 Copyright 2026 Cinnabar contributors
 
-The optional src/login/provider implementation and its tests extract provider
-verification from cinnabar-mc/cinnabar and retain the PolyForm Noncommercial
-License 1.0.0 reproduced in LICENSE-CINNABAR. They are not covered by the root
+The optional src/login/provider and src/login/client_data implementations, their
+tests and the tools/go-oracle/clientdata helper extract provider verification
+and title metadata validation from cinnabar-mc/cinnabar. They retain the PolyForm
+Noncommercial License 1.0.0 reproduced in LICENSE-CINNABAR. They are not covered by the root
 crate's MIT/Apache license choice; individual source files identify this exception.
 
 The bedrock-client and bedrock-packs crates extract resource-pack negotiation,
@@ -46,3 +47,9 @@ Login oracle shares tools/go-oracle's existing Gophertunnel pin.
 The original accepting pack/startup owner follows that same MIT Go reference
 for delivery normalization, sequential chunk flushes and startup ordering. Its
 conformance helper calls the actual pinned Go policy; no reference source is vendored.
+
+The ClientData validator and Go field-fold/URL behavior follow the pinned
+Gophertunnel Login owner (MIT) and Go encoding/json, net/url, unicode and x/text
+(BSD-3-Clause). The actual Go generator checks the reflected schema and finite
+Unicode/locale/JSON data on every oracle test run. These upstream notices are
+retained in LICENSE-MIT-gophertunnel and LICENSE-BSD-Go.
