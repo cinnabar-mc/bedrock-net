@@ -95,6 +95,8 @@ enum EngineEvent {
         /// Bounded transfer and stack state; cache and CDN I/O remain external.
         negotiation: PackOffer,
     },
+    /// The server began startup without advertising a resource-pack phase.
+    Startup(Box<packets::StartGame>),
     /// The packet is owned by the caller, including early PlayerSpawn, Disconnect and Transfer.
     Unhandled(Box<packets::Packet>),
 }
@@ -106,6 +108,7 @@ enum Phase {
     LoginReady,
     Login,
     Packs,
+    Complete,
     Failed,
 }
 
@@ -233,7 +236,7 @@ impl Engine {
 
     /// Handles protocol-owned packets while returning unrelated packets unchanged.
     fn receive_inner(&mut self, packet: packets::Packet) -> Result<EngineEvent, HandshakeError> {
-        if matches!(self.phase, Phase::Initial | Phase::Failed) {
+        if matches!(self.phase, Phase::Initial | Phase::Complete | Phase::Failed) {
             return Err(HandshakeError::InvalidState);
         }
         match packet {
@@ -299,6 +302,10 @@ impl Engine {
                     cache_status,
                     negotiation,
                 })
+            }
+            packets::Packet::StartGame(start_game) if matches!(self.phase, Phase::Login) => {
+                self.phase = Phase::Complete;
+                Ok(EngineEvent::Startup(start_game))
             }
             other => Ok(EngineEvent::Unhandled(Box::new(other))),
         }

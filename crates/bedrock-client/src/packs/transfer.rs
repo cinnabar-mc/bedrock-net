@@ -321,7 +321,8 @@ pub(super) fn finish(
     metadata: Option<RetainedOffer>,
     offer_order: &[uuid::Uuid],
 ) -> Result<(ResourcePackHandoff, Option<PackMetadata>), PackError> {
-    let required = offer_required || stack.texture_pack_required;
+    let stack_required = stack.texture_pack_required;
+    let required = offer_required || stack_required;
     if downloads
         .values()
         .any(|download| download.complete.is_none())
@@ -347,14 +348,14 @@ pub(super) fn finish(
             .ok()
             .and_then(|name| pack_id(name).ok());
         let Some(id) = id else {
-            if required {
+            if stack_required {
                 return Err(invalid("required stack identity is invalid"));
             }
             skipped += 1;
             continue;
         };
         if seen.contains(&id) {
-            if required {
+            if stack_required {
                 return Err(invalid("required stack contains a duplicate pack"));
             }
             skipped += 1;
@@ -369,7 +370,7 @@ pub(super) fn finish(
                 }
                 continue;
             }
-            if required {
+            if stack_required {
                 return Err(invalid("required stack contains an unavailable pack"));
             }
             skipped += 1;
@@ -383,7 +384,7 @@ pub(super) fn finish(
             .complete
             .ok_or_else(|| invalid("stack pack is incomplete"))?;
         let Completion::Archive(bytes) = complete else {
-            if required {
+            if stack_required {
                 return Err(invalid("required stack pack exceeds application budget"));
             }
             skipped += 1;

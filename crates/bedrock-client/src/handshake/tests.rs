@@ -1,6 +1,8 @@
 use super::*;
 use crate::packs::PackEvent;
 
+mod packless;
+
 #[test]
 fn public_handshake_enables_retained_metadata_only_for_the_original_requested_owner() {
     for retain in [false, true] {
@@ -353,5 +355,52 @@ fn deferred_spawn_does_not_admit_login_before_settings_or_login_construction() {
             status: PlayStatusType::Loginsuccess,
         })),
         Err(HandshakeError::InvalidState)
+    ));
+}
+
+#[test]
+fn packless_startup_returns_the_actual_packet_and_retires_login() {
+    let mut client = handshake(true);
+    login(&mut client);
+    let start_game = packets::StartGame {
+        runtime_id: bedrock_protocol::types::ActorRuntimeID(42),
+        ..Default::default()
+    };
+    let EngineEvent::Startup(received) = client.receive(start_game.clone().into()).unwrap() else {
+        panic!("the actual packet must end the packless Login phase");
+    };
+    assert_eq!(*received, start_game);
+    assert!(matches!(
+        client.receive(
+            packets::PlayStatus {
+                status: PlayStatusType::Loginsuccess,
+            }
+            .into()
+        ),
+        Err(HandshakeError::InvalidState)
+    ));
+}
+
+#[test]
+fn start_game_during_an_advertised_pack_phase_keeps_the_original_completion() {
+    let mut client = handshake(true);
+    login(&mut client);
+    let EngineEvent::Packs { negotiation, .. } = client
+        .receive(packets::ResourcePacksInfo::default().into())
+        .unwrap()
+    else {
+        panic!("the actual offer must retain its original transfer owner");
+    };
+    let start_game = packets::Packet::from(packets::StartGame::default());
+    assert!(matches!(
+        client.receive(start_game.clone()).unwrap(),
+        EngineEvent::Unhandled(packet) if *packet == start_game
+    ));
+    let (mut packs, _) = negotiation.start().unwrap();
+    assert!(matches!(
+        packs
+            .receive(packets::ResourcePackStack::default().into())
+            .unwrap(),
+        PackEvent::Finished(_)
     ));
 }

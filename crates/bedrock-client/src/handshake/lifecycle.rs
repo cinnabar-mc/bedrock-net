@@ -233,6 +233,12 @@ pub enum LoginEvent {
         /// The actual admitted offer and original late Login control.
         packs: ClientPackOffer,
     },
+    /// Begin startup from an actual StartGame when no pack offer was received.
+    /// Preserve this packet on the caller's original bounded FIFO; no pack acknowledgment is due.
+    Startup {
+        /// The actual received packet; it does not grant spawn or presentation readiness.
+        start_game: Box<packets::StartGame>,
+    },
     /// Return unrelated startup or terminal input to the caller without consuming it.
     Unhandled {
         /// The same pending Login owner.
@@ -272,6 +278,7 @@ impl ClientLogin {
                     offer: negotiation,
                 },
             }),
+            EngineEvent::Startup(start_game) => Ok(LoginEvent::Startup { start_game }),
             EngineEvent::Unhandled(packet) => Ok(LoginEvent::Unhandled {
                 login: self,
                 packet,
