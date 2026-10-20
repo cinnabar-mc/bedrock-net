@@ -1,10 +1,7 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 //! Provider admission controls using original synthetic signing keys.
 use super::*;
-use base64::{
-    Engine as _,
-    engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD},
-};
+use base64::engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD};
 use nethernet::identity::MINECRAFT_AUDIENCE;
 use p384::{ecdsa::SigningKey, pkcs8::EncodePublicKey};
 use rsa::{
