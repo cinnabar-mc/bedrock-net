@@ -39,7 +39,8 @@ pub struct BatchLimits {
     /// Maximum packets in one outgoing batch; larger groups split in order.
     pub max_packets: usize,
     /// Optional maximum nonempty packets in one incoming batch.
-    /// None retains the byte bounds without imposing the outgoing split ceiling.
+    /// Some enables accepting-side checks, including rejection of empty entries.
+    /// None retains the byte bounds and skips empty entries without imposing the outgoing split ceiling.
     pub max_incoming_packets: Option<usize>,
 }
 
@@ -507,6 +508,9 @@ fn validate_packets(body: &[u8], maximum: Option<usize>) -> Result<(usize, usize
             remaining: body.len() - offset,
         })?;
         if length == 0 {
+            if maximum.is_some() {
+                return Err(BatchError::EmptyPacket);
+            }
             skipped_empty_packets += 1;
             continue;
         }
@@ -527,7 +531,7 @@ fn validate_packets(body: &[u8], maximum: Option<usize>) -> Result<(usize, usize
     Ok((count, skipped_empty_packets))
 }
 
-/// Reads a bounded u32 envelope length; packet headers remain the protocol codec's responsibility.
+/// Reads up to five bytes, retaining the low 32 bits like the peer decoder; packet headers remain the protocol codec's responsibility.
 fn read_length(bytes: &[u8], offset: usize) -> Result<(u32, usize), BatchError> {
     if let Some(&byte) = bytes.first()
         && byte < 0x80
@@ -536,9 +540,6 @@ fn read_length(bytes: &[u8], offset: usize) -> Result<(u32, usize), BatchError> 
     }
     let mut value = 0;
     for (index, byte) in bytes.iter().copied().take(5).enumerate() {
-        if index == 4 && byte > 0x0f {
-            return Err(BatchError::InvalidPacketLength { offset });
-        }
         value |= u32::from(byte & 0x7f) << (index * 7);
         if byte & 0x80 == 0 {
             return Ok((value, index + 1));
