@@ -159,6 +159,8 @@ impl SessionSlot {
 
     /// Drives the same engine's explicit flush cadence.
     fn tick(&mut self, now: std::time::Instant) -> Result<(), RakSessionError> {
+        #[cfg(test)]
+        tests::record_maintenance_pass();
         match self {
             Self::Established(session) => session.tick(now),
             Self::Closing(session) => session.tick(now),
@@ -294,14 +296,7 @@ impl Engine {
             self.end(RakNetError::Closed);
             return Err(error.into());
         }
-        // The pinned core requires an explicit tick to expose newly queued frames.
-        let result = self
-            .session
-            .as_mut()
-            .ok_or(RakNetError::Closed)?
-            .tick(Instant::now().into_std())
-            .map_err(RakNetError::from)
-            .and_then(|()| self.try_flush_datagrams());
+        let result = self.try_flush_datagrams();
         if result.is_err() {
             self.end(RakNetError::Closed);
         }
