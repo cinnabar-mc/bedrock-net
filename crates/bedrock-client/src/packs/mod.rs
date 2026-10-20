@@ -16,11 +16,11 @@ use thiserror::Error;
 use transfer::{Budget, Completion, Download};
 
 /// Default number of outstanding in-band chunk requests per pack.
-pub const DEFAULT_REQUEST_WINDOW: u32 = 1024;
+pub const DEFAULT_REQUEST_WINDOW: u32 = 100;
 
 /// Caller-selected archive, transfer and request bounds, validated before admission.
 /// Defaults admit complete server selections without inheriting local import policy;
-/// framing, representable lengths, identity and in-band hash/request-window checks remain.
+/// framing, representable lengths, identity and request-window checks remain.
 #[derive(Clone, Copy, Debug)]
 pub struct PackTransferLimits {
     /// Optional maximum distinct valid offers retained from one server.
@@ -31,7 +31,7 @@ pub struct PackTransferLimits {
     pub max_stack_bytes: Option<u64>,
     /// Optional maximum total in-band bytes accepted, including excluded archives.
     pub max_transfer_bytes: Option<u64>,
-    /// Maximum UTF-8 bytes retained in one advertised version.
+    /// Maximum bytes retained in one advertised version.
     pub max_version_bytes: usize,
     /// Maximum outstanding requested chunks per archive, at most 65,535.
     pub request_window: u32,
@@ -44,7 +44,7 @@ impl Default for PackTransferLimits {
             max_archive_bytes: None,
             max_stack_bytes: None,
             max_transfer_bytes: None,
-            max_version_bytes: bedrock_packs::MAX_PACK_VERSION_BYTES,
+            max_version_bytes: usize::MAX,
             request_window: DEFAULT_REQUEST_WINDOW,
         }
     }
@@ -81,7 +81,7 @@ pub enum PackError {
     /// The requested operation does not belong to the active negotiation phase.
     #[error("resource-pack negotiation operation is out of sequence")]
     InvalidState,
-    /// Malformed framing, hash failure or an unavailable required stack entry.
+    /// Malformed framing or an unavailable required stack entry.
     #[error("{0}")]
     InvalidData(&'static str),
 }
@@ -202,7 +202,7 @@ pub struct PackComplete {
 
 /// Actual admitted metadata projected onto acquired selections; no diagnostics expose content keys.
 pub struct PackMetadata {
-    /// Original offer fields, selected entries in offer order, with actual verified archive sizes.
+    /// Original offer fields, selected entries in offer order, with actual archive sizes.
     pub offer: packets::ResourcePacksInfo,
     /// Original stack fields and selected entries in their original application order.
     pub stack: packets::ResourcePackStack,
@@ -396,7 +396,7 @@ impl Transfer {
     ///
     /// # Errors
     /// Rejects out-of-phase resource packets, unsolicited/inconsistent chunks,
-    /// hash failures or an unavailable required stack entry. Early stacks are returned for replay.
+    /// or an unavailable required stack entry. Early stacks are returned for replay.
     /// A received-packet error permanently ends this negotiation.
     fn receive(&mut self, packet: packets::Packet) -> Result<PackEvent, PackError> {
         if !matches!(self.phase, Phase::Downloading) {
@@ -413,11 +413,7 @@ impl Transfer {
     fn apply(&mut self, packet: packets::Packet) -> Result<PackEvent, PackError> {
         match packet {
             packets::Packet::ResourcePackDataInfo(info) => {
-                let id = pack_id(
-                    info.resource_name
-                        .to_str()
-                        .map_err(|_| invalid("pack identity is not UTF-8"))?,
-                )?;
+                let id = resource_id(&info.resource_name)?;
                 let download = self
                     .downloads
                     .get_mut(&id)
@@ -432,12 +428,7 @@ impl Transfer {
                 ))
             }
             packets::Packet::ResourcePackChunkData(chunk) => {
-                let id = pack_id(
-                    chunk
-                        .resource_name
-                        .to_str()
-                        .map_err(|_| invalid("chunk pack was not advertised"))?,
-                )?;
+                let id = resource_id(&chunk.resource_name)?;
                 let download = self
                     .downloads
                     .get_mut(&id)
@@ -497,6 +488,17 @@ fn finished() -> ResourcePackClientResponseData {
     ResourcePackClientResponseData::DownloadingFinished {
         response_type: "downloadingfinished".into(),
     }
+}
+
+/// Reads only the UUID prefix, so opaque version bytes cannot invalidate a transfer name.
+fn resource_id(name: &bedrock_protocol::wire::Str) -> Result<uuid::Uuid, PackError> {
+    let prefix = name
+        .as_bytes()
+        .split(|byte| *byte == b'_')
+        .next()
+        .unwrap_or_default();
+    let prefix = std::str::from_utf8(prefix).map_err(|_| invalid("pack identity is not UTF-8"))?;
+    pack_id(prefix)
 }
 
 /// Accepts UUID or UUID_version names without interpreting server text as a path.
