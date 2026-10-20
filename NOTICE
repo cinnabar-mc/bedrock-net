@@ -7,7 +7,7 @@ implementations retain the PolyForm Noncommercial License 1.0.0 reproduced in
 LICENSE-CINNABAR; they are not covered by the root crate's MIT/Apache license
 choice. Their Cargo manifests identify that retained license explicitly.
 The built-in resource-pack identity catalog follows the public Gophertunnel
-behavior reference named below. Its MIT notice is retained in
+behavior reference pinned in tools/go-oracle/go.mod. Its MIT notice is retained in
 LICENSE-MIT-gophertunnel.
 
 The batch codec is an original Rust implementation informed by public code in:
