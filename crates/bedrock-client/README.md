@@ -11,7 +11,7 @@ The public client capabilities are consumed at each handoff:
 | `ClientHandshake` | Retain the original proof key; start once | `ClientSettings` |
 | `ClientSettings` | Observe actual settings; preserve unrelated input | `ClientLoginReady` |
 | `ClientLoginReady` | Format one offline or acquired-credential Login | `ClientLogin` |
-| `ClientLogin` | Observe post-Login controls and verified exchange | `ClientPackOffer` |
+| `ClientLogin` | Observe post-Login controls and verified exchange | `ClientPackOffer` or actual packless startup |
 | `ClientPackOffer` | Supply validated cache/CDN preloads; start once | `ClientPacks` |
 | `ClientPacks` | Transfer packs and handle late Login controls | `PackComplete` |
 | `SpawnNegotiation` | Observe first definitions and PlayerSpawn; defer radius updates | `SpawnReady` |
@@ -44,6 +44,12 @@ preloads, then its consuming `start` removes preload permission. `ClientPacks`
 handles both resource packets and late Login controls; it returns startup and
 terminal input unchanged. The standalone `PackOffer`→`PackNegotiation` API reuses
 the same bounded transfer implementation when no Login control is needed.
+
+When the server sends StartGame without an earlier offer, `LoginEvent::Startup`
+consumes Login and returns that actual packet. Keep its original encoded header/body
+ahead of unread siblings on the caller's bounded FIFO. This path creates no offer,
+stack, pack acknowledgment or spawn readiness. The same startup prerequisites still
+apply; an advertised pack transfer keeps its original completion path.
 
 `PackTransferLimits` defaults its archive count and byte caps to `None`, so
 network selections do not inherit local import limits. Callers can select explicit
