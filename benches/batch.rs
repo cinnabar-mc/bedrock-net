@@ -214,15 +214,17 @@ fn encryption(c: &mut Criterion) {
                         let mut remaining = iters;
                         while remaining > 0 {
                             let n = remaining.min(chunk);
-                            let frames: Vec<Bytes> = (0..n)
+                            let mut frames: Vec<Bytes> = (0..n)
                                 .flat_map(|_| encrypt_message(&codec, &mut encryptor, &packets))
                                 .collect();
                             let start = Instant::now();
-                            for message in frames {
+                            // Keep the in-place decrypted queue alive until the untimed refill.
+                            for message in &mut frames {
                                 let plain = decryptor
-                                    .decrypt_batch(BatchHeader::RakNet, message)
+                                    .decrypt_batch(BatchHeader::RakNet, std::mem::take(message))
                                     .unwrap();
-                                drain(&mut codec, plain);
+                                drain(&mut codec, plain.clone());
+                                *message = plain;
                             }
                             elapsed += start.elapsed();
                             remaining -= n;
