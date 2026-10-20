@@ -13,7 +13,7 @@ bedrock-services = { git = "https://github.com/cinnabar-mc/bedrock-services", re
 nethernet = { git = "https://github.com/cinnabar-mc/nethernet", rev = "c5c8ee5f859a0e195091c5672c64287f3d0ef2ea" }
 nethernet-tokio = { git = "https://github.com/cinnabar-mc/nethernet", rev = "c5c8ee5f859a0e195091c5672c64287f3d0ef2ea" }
 p384 = { version = "0.14", default-features = false, features = ["alloc", "ecdsa", "ecdh", "pkcs8"] }
-raknet = { git = "https://github.com/cinnabar-mc/raknet", rev = "797f4f689191fa1a6f1e4633bd40164c1f0ee49a" }
+raknet = { git = "https://github.com/cinnabar-mc/raknet", rev = "82dfa57d33fb54eb307e8b29867214e434c46d72" }
 
 [package]
 name = "bedrock-net"
@@ -59,6 +59,7 @@ uuid = { version = "1", features = ["v4"], optional = true }
 base64 = "0.22"
 criterion.workspace = true
 bedrock-services = { workspace = true, features = ["test-support"] }
+raknet = { workspace = true, features = ["test-support"] }
 serde_json = "1"
 tokio = { version = "1", features = ["rt", "macros", "net", "time", "test-util", "process", "io-util"] }
 tokio-websockets = { version = "0.13", default-features = false, features = ["client", "server", "aws_lc_rs", "getrandom"] }
