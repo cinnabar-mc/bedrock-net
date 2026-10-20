@@ -153,6 +153,11 @@ impl Peer {
     /// Starts the peer with optional reporting of the client's advertised system uptime.
     async fn start_options(close_after: usize, ipv6: bool, report_uptime: bool) -> Option<Self> {
         let Some(binary) = std::env::var_os("BEDROCK_NET_RAKNET_PEER") else {
+            // CI sets BEDROCK_NET_REQUIRE_FIXTURES so a dropped helper fails instead of skipping.
+            assert!(
+                std::env::var_os("BEDROCK_NET_REQUIRE_FIXTURES").is_none(),
+                "missing fixture: BEDROCK_NET_RAKNET_PEER; build tools/raknet-peer"
+            );
             eprintln!("missing fixture: BEDROCK_NET_RAKNET_PEER; build tools/raknet-peer");
             return None;
         };

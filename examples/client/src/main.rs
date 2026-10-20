@@ -1,5 +1,7 @@
 //! Exercises generated settings and optional offline Login over native transports.
 
+#[cfg(test)]
+mod interop_tests;
 mod session;
 mod transport;
 

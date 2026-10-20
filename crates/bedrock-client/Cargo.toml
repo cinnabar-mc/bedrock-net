@@ -22,5 +22,12 @@ thiserror = "2"
 tracing = "0.1"
 uuid = { version = "1", features = ["serde"] }
 
+[dev-dependencies]
+criterion.workspace = true
+
+[[bench]]
+name = "packs"
+harness = false
+
 [lints]
 workspace = true

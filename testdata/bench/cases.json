@@ -1,0 +1,39 @@
+{
+  "packet_sets": {
+    "small64": { "file": "game_packets.bin", "repeat": 1 },
+    "packets1600": { "file": "game_packets.bin", "repeat": 25 },
+    "packets3200": { "file": "game_packets.bin", "repeat": 50 },
+    "chunk50k": { "file": "chunk_packet.bin", "repeat": 1 },
+    "chunks4m": { "file": "chunk_packet.bin", "repeat": 84 },
+    "chunks20m": { "file": "chunk_packet.bin", "repeat": 418 }
+  },
+  "benches": {
+    "BatchFraming/encode": ["small64", "packets1600", "packets3200", "chunks20m"],
+    "BatchFraming/decode": ["small64", "packets1600", "chunks4m"],
+    "Flate/compress": ["small64", "chunk50k", "chunks4m"],
+    "Flate/decompress": ["small64", "chunk50k", "chunks4m"],
+    "Snappy/compress": ["small64", "chunk50k", "chunks4m"],
+    "Snappy/decompress": ["small64", "chunk50k", "chunks4m"],
+    "Encryption/encrypt": ["small64", "chunk50k", "chunks4m"],
+    "Encryption/decrypt": ["small64", "chunk50k", "chunks4m"]
+  },
+  "compression_threshold": 256,
+  "encryption_key_byte": 9,
+  "packs": {
+    "source": "chunk_packet.bin",
+    "trailer": "pack_trailer.zip",
+    "chunk_size": 102400,
+    "archives": { "pack1m": 1048576, "pack16m": 16777216 }
+  },
+  "login": {
+    "client_data": "client_data.json",
+    "client_scalar_byte": 1,
+    "provider_scalar_byte": 7,
+    "issuer": "https://synthetic-login.invalid",
+    "audience": "api://auth-minecraft-services/multiplayer",
+    "xuid": "2535400000000001",
+    "display_name": "BenchProbe",
+    "identity": "00000000-0000-4000-8000-000000000001",
+    "expiry": 4102444800
+  }
+}

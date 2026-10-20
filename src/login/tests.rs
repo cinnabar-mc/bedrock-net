@@ -67,6 +67,11 @@ struct Oracle {
 #[test]
 fn go_verifies_both_login_modes_with_the_same_connection_key() {
     let Some(binary) = std::env::var_os("BEDROCK_NET_LOGIN_ORACLE") else {
+        // CI sets BEDROCK_NET_REQUIRE_FIXTURES so a dropped helper fails instead of skipping.
+        assert!(
+            std::env::var_os("BEDROCK_NET_REQUIRE_FIXTURES").is_none(),
+            "missing fixture: BEDROCK_NET_LOGIN_ORACLE; build tools/go-oracle/cmd/login-check"
+        );
         eprintln!(
             "missing fixture: BEDROCK_NET_LOGIN_ORACLE; build tools/go-oracle/cmd/login-check"
         );

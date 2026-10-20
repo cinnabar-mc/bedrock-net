@@ -31,3 +31,13 @@ and actual resource.ChunkCount results for bounded caller-supplied synthetic
 JSON cases. It copies no reference table. Build it, then provide
 `BEDROCK_NET_PACK_DELIVERY_ORACLE` when testing bedrock-client; CI does this
 for the workspace tests. This checks identified Go policy, not vanilla behavior.
+
+`go run . serve` answers length-prefixed JSON requests on stdin (batch decode/encode
+with compression and key, cipher checksums, Login build/parse) for `tests/oracle.rs`;
+build it and set `BEDROCK_NET_GO_ORACLE`. `cmd/interop-server SCENARIO` accepts one
+loopback client through `minecraft.Listen` or a scripted packet order, for the probe's
+interop tests under `BEDROCK_NET_GO_INTEROP`.
+
+`bench/` holds gophertunnel benchmarks over `testdata/bench`, named to pair with the
+criterion benches; `tools/bench-compare` joins the two. `cmd/bench-inputs` regenerates
+those synthetic inputs.
