@@ -53,3 +53,16 @@ go test ./clientdata -run 'TestNativeClientData(Schema|SemanticData)$' -update-n
 
 Use this module's selected Go version and dependencies; changing a generated
 source pin alone does not update its data or establish behavioral compatibility.
+
+`cmd/accepting-client-data` regenerates the accepting login locale registries and
+Unicode letter ranges. From this directory, run:
+
+```sh
+GOTOOLCHAIN=go1.26.1 go run -mod=readonly ./cmd/accepting-client-data ../../src/login/accepting/client_data
+```
+
+The generator requires Go 1.26.1, Unicode 15.0.0 and the checksum-pinned
+`golang.org/x/text v0.35.0` dependency without a replacement. It locates the module
+through `go list -m -json`, so it needs no fixed module-cache path. CI regenerates
+both files and fails if their committed bytes differ. Review any baseline change
+and preserve the generated files' Go license notices.
