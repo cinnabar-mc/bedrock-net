@@ -2173,7 +2173,7 @@ checksum = "f8dcc9c7d52a811697d2151c701e0d08956f92b0e24136cf4cf27b57a6a0d9bf"
 [[package]]
 name = "raknet"
 version = "0.1.0"
-source = "git+https://github.com/cinnabar-mc/raknet?rev=b92575c3ef770de7eb5c8c728cacc03cca40188d#b92575c3ef770de7eb5c8c728cacc03cca40188d"
+source = "git+https://github.com/cinnabar-mc/raknet?rev=82dfa57d33fb54eb307e8b29867214e434c46d72#82dfa57d33fb54eb307e8b29867214e434c46d72"
 dependencies = [
  "byteorder",
  "facet",
