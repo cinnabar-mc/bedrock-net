@@ -11,6 +11,48 @@ use ::raknet::prelude::{
 
 use super::*;
 
+#[tokio::test(start_paused = true)]
+async fn queued_send_reaches_the_socket_with_an_unread_receive_backlog() {
+    let (mut connection, peer, mut sender) = connected_pair().await;
+    let backlog = Bytes::from_static(b"unread input");
+    connection.engine.incoming.push_back(backlog.clone());
+    connection.engine.incoming_bytes = backlog.len();
+    let start = Instant::now();
+    let message = Bytes::from_static(&[0xfe, 42]);
+    connection.queue_send(message.clone()).unwrap();
+    let mut buffer = [0; UDP_BUFFER_BYTES];
+    let mut received = None;
+    // Poll only the peer and reactor; the sending connection is never driven again.
+    for _ in 0..128 {
+        match peer.try_recv(&mut buffer) {
+            Ok(length) => {
+                sender
+                    .handle(RakSessionInput::Datagram(
+                        buffer[..length].into(),
+                        start.into_std(),
+                    ))
+                    .unwrap();
+                while let Some(output) = sender.poll() {
+                    if let RakSessionOutput::Packet(bytes) = output {
+                        received = Some(bytes);
+                    }
+                }
+                if received.is_some() {
+                    break;
+                }
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                tokio::task::yield_now().await;
+            }
+            Err(error) => panic!("peer receive failed: {error}"),
+        }
+    }
+    assert_eq!(received.as_deref(), Some(message.as_ref()));
+    assert_eq!(Instant::now(), start);
+    assert_eq!(connection.engine.incoming.front(), Some(&backlog));
+    assert_eq!(connection.recv().await.unwrap(), backlog);
+}
+
 /// Establishes both core owners through public negotiation before attaching real UDP sockets.
 async fn connected_pair() -> (RakNetConnection, UdpSocket, RakSession<Established>) {
     let peer = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
@@ -19,6 +61,7 @@ async fn connected_pair() -> (RakNetConnection, UdpSocket, RakSession<Establishe
     let address = peer.local_addr().unwrap();
     socket.connect(address).await.unwrap();
     peer.connect(local).await.unwrap();
+    socket.writable().await.unwrap();
     let now = Instant::now().into_std();
     let mut client = RakClient::new(RakClientConfig::default(), RakClock::new(now))
         .unwrap()

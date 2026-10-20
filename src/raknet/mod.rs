@@ -267,8 +267,9 @@ impl Engine {
 
     /// Admits a complete message for reliable, ordered delivery without a fixed flush delay.
     ///
-    /// Admission is synchronous. Once accepted, do not queue it again if a later
-    /// `flush` or `recv` is cancelled: its state is retained in this connection.
+    /// Admission and the first socket-send attempt are synchronous. Socket or
+    /// congestion pressure retains the original bytes for `recv` or `maintain`.
+    /// Once accepted, do not queue it again if a later wait is cancelled.
     /// This method does not add or remove the Bedrock batch marker.
     ///
     /// # Errors
@@ -293,7 +294,18 @@ impl Engine {
             self.end(RakNetError::Closed);
             return Err(error.into());
         }
-        Ok(())
+        // The pinned core requires an explicit tick to expose newly queued frames.
+        let result = self
+            .session
+            .as_mut()
+            .ok_or(RakNetError::Closed)?
+            .tick(Instant::now().into_std())
+            .map_err(RakNetError::from)
+            .and_then(|()| self.try_flush_datagrams());
+        if result.is_err() {
+            self.end(RakNetError::Closed);
+        }
+        result
     }
 
     /// Services protocol I/O until `message_bytes` can be admitted without overflow.
@@ -394,6 +406,36 @@ impl Engine {
                 .ok_or(RakNetError::Closed)?
                 .send(datagram)
                 .await?;
+            if sent != datagram.len() {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::WriteZero,
+                    "partial UDP datagram send",
+                )
+                .into());
+            }
+            self.pending_datagram = None;
+        }
+    }
+
+    /// Emits writable output now, retaining the exact front under socket pressure.
+    fn try_flush_datagrams(&mut self) -> Result<(), RakNetError> {
+        loop {
+            if self.pending_datagram.is_none() {
+                self.collect_outputs()?;
+            }
+            let Some(datagram) = self.pending_datagram.as_ref() else {
+                return Ok(());
+            };
+            let sent = match self
+                .socket
+                .as_ref()
+                .ok_or(RakNetError::Closed)?
+                .try_send(datagram)
+            {
+                Ok(sent) => sent,
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => return Ok(()),
+                Err(error) => return Err(error.into()),
+            };
             if sent != datagram.len() {
                 return Err(std::io::Error::new(
                     std::io::ErrorKind::WriteZero,
