@@ -20,6 +20,9 @@ use tokio::{
 
 const TEST_TIMEOUT: Duration = Duration::from_secs(20);
 
+/// Excludes child fork/exec inheritance while the fixture checks physical socket retirement.
+static CHILD_SPAWN: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
 /// The original direct offline route admits a nonce but imposes no extra nonce cap.
 fn offline_options() -> DirectedLanConfig {
     DirectedLanConfig {
@@ -104,6 +107,7 @@ async fn native_lan_resolution_skips_ipv6_and_keeps_the_ready_ipv4_owner() {
 /// The actual pending RakNet socket is dropped on either cancellation or the original cutoff.
 #[tokio::test]
 async fn native_candidate_cancellation_and_original_deadline_release_actual_sockets() {
+    let _spawn = CHILD_SPAWN.lock().await;
     for expires in [false, true] {
         let blackhole = UdpSocket::bind("127.0.0.1:0").await.unwrap();
         let address = blackhole.local_addr().unwrap();
@@ -142,13 +146,16 @@ async fn native_raknet_alternative_progresses_past_a_silent_first_endpoint() {
         return;
     };
     tokio::time::timeout(TEST_TIMEOUT, async {
-        let mut child = Command::new(binary)
-            .args(["-close-after=0", "-ipv6=false"])
-            .stdout(Stdio::piped())
-            .stderr(Stdio::inherit())
-            .kill_on_drop(true)
-            .spawn()
-            .expect("start existing loopback RakNet fixture");
+        let mut child = {
+            let _spawn = CHILD_SPAWN.lock().await;
+            Command::new(binary)
+                .args(["-close-after=0", "-ipv6=false"])
+                .stdout(Stdio::piped())
+                .stderr(Stdio::inherit())
+                .kill_on_drop(true)
+                .spawn()
+                .expect("start existing loopback RakNet fixture")
+        };
         let mut lines = BufReader::new(child.stdout.take().unwrap()).lines();
         let peer: SocketAddr = lines.next_line().await.unwrap().unwrap().parse().unwrap();
         assert!(peer.ip().is_loopback());
