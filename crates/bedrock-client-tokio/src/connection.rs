@@ -8,7 +8,7 @@ use super::transport::Transport;
 use bedrock_net::encryption::{BatchDecryptor, BatchEncryptor};
 use bedrock_net::{BatchCodec, BatchError, BatchLimits, CompressionSettings, DecodeOutcome};
 use bedrock_protocol::{packets, wire};
-use bytes::{Bytes, BytesMut};
+use bytes::Bytes;
 use std::io;
 
 mod codec;
@@ -298,13 +298,9 @@ impl Connection {
     /// Advances the sole original directional cipher and checks its actual envelope size.
     fn encrypt_message(&mut self, mut message: Bytes) -> io::Result<Bytes> {
         if let Some((encryptor, _)) = &mut self.ciphers {
-            let marker = self.transport.header().marker();
-            let body = if marker.is_some() {
-                message.slice(1..)
-            } else {
-                message
-            };
-            message = envelope(marker, encryptor.encrypt(body).map_err(io::Error::other)?);
+            message = encryptor
+                .encrypt_batch(self.transport.header(), message)
+                .map_err(io::Error::other)?;
             self.check_wire_size(&message)?;
         }
         Ok(message)
@@ -349,19 +345,18 @@ impl Connection {
             let mut message = self.transport.recv().await?;
             self.check_wire_size(&message)?;
             if let Some((_, decryptor)) = &mut self.ciphers {
-                let marker = self.transport.header().marker();
-                let body = if let Some(marker) = marker {
+                let header = self.transport.header();
+                if let Some(marker) = header.marker() {
                     let actual = *message
                         .first()
                         .ok_or_else(|| io::Error::other(BatchError::MissingBatchHeader))?;
                     if actual != marker {
                         return Err(io::Error::other(BatchError::InvalidBatchHeader(actual)));
                     }
-                    message.slice(1..)
-                } else {
-                    message
-                };
-                message = envelope(marker, decryptor.decrypt(body).map_err(io::Error::other)?);
+                }
+                message = decryptor
+                    .decrypt_batch(header, message)
+                    .map_err(io::Error::other)?;
             }
             #[cfg(any(test, feature = "test-support"))]
             let message = self.observe_batch(message);
@@ -544,18 +539,6 @@ impl Connection {
             }));
         }
         Ok(())
-    }
-}
-
-/// Restores the cleartext marker around a directional cipher body when required.
-fn envelope(marker: Option<u8>, body: Bytes) -> Bytes {
-    if let Some(marker) = marker {
-        let mut message = BytesMut::with_capacity(body.len() + 1);
-        message.extend_from_slice(&[marker]);
-        message.extend_from_slice(&body);
-        message.freeze()
-    } else {
-        body
     }
 }
 

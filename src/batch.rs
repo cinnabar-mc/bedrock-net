@@ -71,6 +71,20 @@ pub enum DecodeOutcome {
     Dropped(DropReason),
 }
 
+/// Diagnostics after synchronously visiting a complete validated batch.
+#[derive(Debug)]
+pub enum VisitOutcome {
+    /// All nonempty packets were delivered in wire order.
+    Packets {
+        /// Number of packets delivered.
+        count: usize,
+        /// Empty entries skipped, for caller diagnostics.
+        skipped_empty_packets: usize,
+    },
+    /// A discarded compressed batch; no callback ran.
+    Dropped(DropReason),
+}
+
 /// One length-validated batch body, retaining only its unread cursor and packet count.
 ///
 /// Each yielded packet shares the original allocation, without a per-packet
@@ -130,7 +144,12 @@ impl std::fmt::Debug for BatchPackets {
 }
 
 mod phase_private {
-    pub trait Sealed {}
+    pub trait Sealed {
+        /// Borrows bounded scratch for synchronous Snappy packet visits.
+        fn snappy_scratch(&mut self) -> &mut Vec<u8> {
+            unreachable!("plaintext batches do not use compression")
+        }
+    }
 }
 
 /// Byte framing before the one-time compression transition.
@@ -138,8 +157,18 @@ mod phase_private {
 pub struct Plain(());
 
 /// Byte framing after actual negotiated settings have been installed once.
-#[derive(Debug)]
-pub struct Negotiated(CompressionSettings);
+pub struct Negotiated {
+    settings: CompressionSettings,
+    snappy_scratch: Vec<u8>,
+}
+
+impl std::fmt::Debug for Negotiated {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Negotiated")
+            .field("settings", &self.settings)
+            .finish_non_exhaustive()
+    }
+}
 
 /// Sealed codec phases, allowing generic framing without a public phase cast.
 pub trait BatchPhase: phase_private::Sealed {
@@ -147,7 +176,13 @@ pub trait BatchPhase: phase_private::Sealed {
     fn compression(&self) -> Option<CompressionSettings>;
 }
 impl phase_private::Sealed for Plain {}
-impl phase_private::Sealed for Negotiated {}
+impl phase_private::Sealed for Negotiated {
+    #[inline]
+    fn snappy_scratch(&mut self) -> &mut Vec<u8> {
+        &mut self.snappy_scratch
+    }
+}
+
 impl BatchPhase for Plain {
     fn compression(&self) -> Option<CompressionSettings> {
         None
@@ -155,7 +190,7 @@ impl BatchPhase for Plain {
 }
 impl BatchPhase for Negotiated {
     fn compression(&self) -> Option<CompressionSettings> {
-        Some(self.0)
+        Some(self.settings)
     }
 }
 
@@ -196,7 +231,10 @@ impl BatchCodec<Plain> {
             header: self.header,
             limits: self.limits,
             max_incoming_decoded_bytes: self.max_incoming_decoded_bytes,
-            phase: Negotiated(settings),
+            phase: Negotiated {
+                settings,
+                snappy_scratch: Vec::new(),
+            },
         }
     }
 }
@@ -223,11 +261,45 @@ impl<S: BatchPhase> BatchCodec<S> {
     /// Returns an error for empty or oversized packets, zero packet capacity,
     /// compression failures or an encoded batch exceeding the wire limit.
     pub fn encode<P: AsRef<[u8]>>(&self, packets: &[P]) -> Result<Vec<Bytes>, BatchError> {
-        if !packets.is_empty() && self.limits.max_packets == 0 {
+        let mut batches = Vec::new();
+        self.encode_into(packets, &mut batches)?;
+        Ok(batches)
+    }
+
+    /// Replaces previously consumed batches, reusing uniquely owned output buffers.
+    /// Shared batches keep their original bytes. Send each result immediately in order;
+    /// keep unsent results until delivery instead of recycling them in another call.
+    ///
+    /// # Errors
+    /// Returns the same errors as [`Self::encode`] and clears `batches` on failure.
+    pub fn encode_into<P: AsRef<[u8]>>(
+        &self,
+        packets: &[P],
+        batches: &mut Vec<Bytes>,
+    ) -> Result<(), BatchError> {
+        let mut recycled = std::mem::take(batches).into_iter();
+        let result = self.encode_reusing(packets, batches, &mut recycled);
+        if result.is_err() {
+            batches.clear();
+        }
+        result
+    }
+
+    /// Writes each caller's packet view once and clears partial groups on failure.
+    fn encode_reusing<P: AsRef<[u8]>>(
+        &self,
+        packets: &[P],
+        batches: &mut Vec<Bytes>,
+        recycled: &mut std::vec::IntoIter<Bytes>,
+    ) -> Result<(), BatchError> {
+        if packets.is_empty() {
+            return Ok(());
+        }
+        if self.limits.max_packets == 0 {
             return Err(BatchError::TooManyPackets { maximum: 0 });
         }
-        let mut batches = Vec::new();
-        let mut body = Vec::new();
+        let mut message = self.start_batch(recycled.next());
+        let prefix = message.len();
         let mut count = 0;
         for packet in packets {
             let packet = packet.as_ref();
@@ -236,14 +308,12 @@ impl<S: BatchPhase> BatchCodec<S> {
             }
             let length = u32::try_from(packet.len())
                 .map_err(|_| BatchError::PacketTooLarge(packet.len()))?;
-            let prefix_len = ((u32::BITS - length.leading_zeros()).div_ceil(7)) as usize;
-            let entry_len =
-                packet
-                    .len()
-                    .checked_add(prefix_len)
-                    .ok_or(BatchError::DecodedTooLarge {
-                        maximum: self.limits.max_decoded_bytes,
-                    })?;
+            let entry_len = packet
+                .len()
+                .checked_add(((u32::BITS - length.leading_zeros()).div_ceil(7)) as usize)
+                .ok_or(BatchError::DecodedTooLarge {
+                    maximum: self.limits.max_decoded_bytes,
+                })?;
             if entry_len > self.limits.max_decoded_bytes {
                 return Err(BatchError::DecodedTooLarge {
                     maximum: self.limits.max_decoded_bytes,
@@ -251,20 +321,19 @@ impl<S: BatchPhase> BatchCodec<S> {
             }
             if count != 0
                 && (count == self.limits.max_packets
-                    || entry_len > self.limits.max_decoded_bytes - body.len())
+                    || entry_len > self.limits.max_decoded_bytes - (message.len() - prefix))
             {
-                batches.push(self.encode_body(&body)?);
-                body.clear();
+                batches.push(self.finish_batch(message)?);
+                message = self.start_batch(recycled.next());
                 count = 0;
             }
-            write_length(length, &mut body);
-            body.extend_from_slice(packet);
+            message.reserve(entry_len.saturating_add(8));
+            write_length(length, &mut message);
+            message.extend_from_slice(packet);
             count += 1;
         }
-        if count != 0 {
-            batches.push(self.encode_body(&body)?);
-        }
-        Ok(batches)
+        batches.push(self.finish_batch(message)?);
+        Ok(())
     }
 
     /// Decodes a complete transport message without decoding packet bodies.
@@ -278,7 +347,69 @@ impl<S: BatchPhase> BatchCodec<S> {
     /// Returns an error for malformed envelopes or packet lengths, missing
     /// compression headers, or exceeded size/count limits. Invalid compression
     /// instead returns [`DecodeOutcome::Dropped`].
-    pub fn decode(&self, mut message: Bytes) -> Result<DecodeOutcome, BatchError> {
+    pub fn decode(&self, message: Bytes) -> Result<DecodeOutcome, BatchError> {
+        let (id, body) = self.strip_envelope(message)?;
+        self.decode_payload(id, body)
+    }
+
+    /// Visits a complete validated batch without transferring packet ownership.
+    ///
+    /// Small Snappy batches reuse connection scratch. Other batches retain the
+    /// storage used by [`Self::decode`] until callbacks finish. No callback runs
+    /// before the complete batch passes framing and resource checks.
+    ///
+    /// # Errors
+    /// Returns the same errors and dropped-batch diagnostics as [`Self::decode`].
+    pub fn decode_with(
+        &mut self,
+        message: Bytes,
+        mut visit: impl FnMut(&[u8]),
+    ) -> Result<VisitOutcome, BatchError> {
+        let (id, body) = self.strip_envelope(message)?;
+        if id == Some(CompressionAlgorithm::Snappy.batch_id())
+            && let Ok(length) = snap::raw::decompress_len(&body)
+            && length <= 65536
+        {
+            if length > self.max_incoming_decoded_bytes {
+                return Err(BatchError::DecodedTooLarge {
+                    maximum: self.max_incoming_decoded_bytes,
+                });
+            }
+            let maximum = self.limits.max_incoming_packets;
+            let scratch = self.phase.snappy_scratch();
+            // Keep near-limit batches from doubling the retained allocation.
+            if length > scratch.capacity() {
+                scratch.reserve_exact(length - scratch.len());
+            }
+            scratch.resize(length, 0);
+            if let Err(error) = snap::raw::Decoder::new().decompress(&body, scratch) {
+                return Ok(VisitOutcome::Dropped(DropReason::InvalidSnappy(error)));
+            }
+            let (count, skipped_empty_packets) = validate_packets(scratch, maximum)?;
+            visit_packets(scratch, count, &mut visit);
+            return Ok(VisitOutcome::Packets {
+                count,
+                skipped_empty_packets,
+            });
+        }
+        match self.decode_payload(id, body)? {
+            DecodeOutcome::Packets {
+                packets,
+                skipped_empty_packets,
+            } => {
+                let count = packets.len();
+                visit_packets(&packets.body, count, &mut visit);
+                Ok(VisitOutcome::Packets {
+                    count,
+                    skipped_empty_packets,
+                })
+            }
+            DecodeOutcome::Dropped(reason) => Ok(VisitOutcome::Dropped(reason)),
+        }
+    }
+
+    /// Checks the wire ceiling and removes transport and negotiated algorithm markers.
+    fn strip_envelope(&self, mut message: Bytes) -> Result<(Option<u8>, Bytes), BatchError> {
         self.check_encoded_size(message.len())?;
         if self.header == BatchHeader::RakNet {
             match message.first().copied() {
@@ -287,12 +418,26 @@ impl<S: BatchPhase> BatchCodec<S> {
                 None => return Err(BatchError::MissingBatchHeader),
             }
         }
-        if self.phase.compression().is_some() {
+        let id = if self.phase.compression().is_some() {
             let id = message
                 .first()
                 .copied()
                 .ok_or(BatchError::MissingCompressionHeader)?;
             message.advance(1);
+            Some(id)
+        } else {
+            None
+        };
+        Ok((id, message))
+    }
+
+    /// Validates an envelope-stripped batch while preserving owned packet lifetimes.
+    fn decode_payload(
+        &self,
+        id: Option<u8>,
+        mut message: Bytes,
+    ) -> Result<DecodeOutcome, BatchError> {
+        if let Some(id) = id {
             message = match compression::decompress(id, message, self.max_incoming_decoded_bytes)? {
                 Ok(body) => body,
                 Err(reason) => return Ok(DecodeOutcome::Dropped(reason)),
@@ -315,28 +460,42 @@ impl<S: BatchPhase> BatchCodec<S> {
         })
     }
 
-    /// Wraps an already bounded length-prefixed body in its transport/compression envelope.
-    fn encode_body(&self, body: &[u8]) -> Result<Bytes, BatchError> {
-        let mut message = Vec::new();
+    /// Reclaims an unshared output and starts its transport/compression envelope.
+    fn start_batch(&self, recycled: Option<Bytes>) -> Vec<u8> {
+        let mut message = recycled
+            .filter(Bytes::is_unique)
+            .map(Vec::from)
+            .unwrap_or_default();
+        message.clear();
         if self.header == BatchHeader::RakNet {
             message.push(RAKNET_BATCH_HEADER);
         }
+        if self.phase.compression().is_some() {
+            message.push(CompressionAlgorithm::None.batch_id());
+        }
+        message
+    }
+
+    /// Compresses a complete framed group when required and retains checksum space.
+    fn finish_batch(&self, mut message: Vec<u8>) -> Result<Bytes, BatchError> {
         if let Some(settings) = self.phase.compression() {
-            let algorithm = if body.len() < usize::from(settings.threshold) {
-                CompressionAlgorithm::None
-            } else {
-                settings.algorithm
-            };
-            message.push(algorithm.batch_id());
-            if algorithm != CompressionAlgorithm::None {
-                message.extend_from_slice(&compression::compress(algorithm, body)?);
-            } else {
-                message.extend_from_slice(body);
+            let marker = usize::from(self.header == BatchHeader::RakNet);
+            let body = &message[marker + 1..];
+            if body.len() >= usize::from(settings.threshold)
+                && settings.algorithm != CompressionAlgorithm::None
+            {
+                let compressed = compression::compress(settings.algorithm, body)?;
+                message.truncate(marker + 1);
+                message[marker] = settings.algorithm.batch_id();
+                message.extend_from_slice(&compressed);
+                let retained = message.len().saturating_add(8);
+                if message.capacity() > retained.saturating_mul(2).max(4096) {
+                    message.shrink_to(retained);
+                }
             }
-        } else {
-            message.extend_from_slice(body);
         }
         self.check_encoded_size(message.len())?;
+        message.reserve(8);
         Ok(Bytes::from(message))
     }
 
@@ -352,7 +511,24 @@ impl<S: BatchPhase> BatchCodec<S> {
     }
 }
 
+/// Visits validated packet bytes without allocating ownership handles.
+fn visit_packets(mut body: &[u8], count: usize, visit: &mut impl FnMut(&[u8])) {
+    for _ in 0..count {
+        loop {
+            let (length, prefix) = read_length(body, 0)
+                .expect("the complete immutable batch was validated before iteration");
+            let (entry, rest) = body.split_at(prefix + length as usize);
+            body = rest;
+            if length != 0 {
+                visit(&entry[prefix..]);
+                break;
+            }
+        }
+    }
+}
+
 /// Validates all boundaries and counts before exposing a cursor, without allocating packet metadata.
+#[inline]
 fn validate_packets(body: &[u8], maximum: Option<usize>) -> Result<(usize, usize), BatchError> {
     let mut count = 0;
     let mut skipped_empty_packets = 0;
@@ -389,7 +565,13 @@ fn validate_packets(body: &[u8], maximum: Option<usize>) -> Result<(usize, usize
 }
 
 /// Reads up to five bytes, retaining the low 32 bits like the peer decoder; packet headers remain the protocol codec's responsibility.
+#[inline]
 fn read_length(bytes: &[u8], offset: usize) -> Result<(u32, usize), BatchError> {
+    if let Some(&byte) = bytes.first()
+        && byte < 0x80
+    {
+        return Ok((u32::from(byte), 1));
+    }
     let mut value = 0;
     for (index, byte) in bytes.iter().copied().take(5).enumerate() {
         value |= u32::from(byte & 0x7f) << (index * 7);
@@ -401,10 +583,59 @@ fn read_length(bytes: &[u8], offset: usize) -> Result<(u32, usize), BatchError> 
 }
 
 /// Writes the shortest u32 packet-length prefix.
-fn write_length(mut length: u32, out: &mut Vec<u8>) {
+pub(crate) fn write_length(mut length: u32, out: &mut Vec<u8>) {
     while length >= 0x80 {
         out.push((length as u8) | 0x80);
         length >>= 7;
     }
     out.push(length as u8);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Creates a codec whose outgoing scratch limit matches one small Snappy block.
+    fn bounded(algorithm: CompressionAlgorithm) -> BatchCodec<Negotiated> {
+        BatchCodec::new(
+            BatchHeader::RakNet,
+            BatchLimits {
+                max_decoded_bytes: 65536,
+                ..BatchLimits::default()
+            },
+        )
+        .negotiate(CompressionSettings {
+            algorithm,
+            threshold: 0,
+        })
+    }
+
+    #[test]
+    fn retained_snappy_decode_scratch_stays_within_one_block() {
+        let mut codec = bounded(CompressionAlgorithm::Snappy);
+        for length in [65532, 65533, 3] {
+            let input = vec![0x42; length];
+            let wire = codec
+                .encode(std::slice::from_ref(&input))
+                .unwrap()
+                .pop()
+                .unwrap();
+            let DecodeOutcome::Packets { packets, .. } = codec.decode(wire.clone()).unwrap() else {
+                panic!("valid batch dropped");
+            };
+            assert_eq!(
+                packets.collect::<Vec<_>>(),
+                [Bytes::copy_from_slice(&input)]
+            );
+            let mut visits = 0;
+            codec
+                .decode_with(wire, |packet| {
+                    assert_eq!(packet, input);
+                    visits += 1;
+                })
+                .unwrap();
+            assert_eq!(visits, 1);
+            assert!(codec.phase.snappy_scratch.capacity() <= 65536);
+        }
+    }
 }

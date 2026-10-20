@@ -67,6 +67,23 @@ After negotiating compression, `with_incoming_decoded_limit` can set a separate
 incoming decoded-byte ceiling. It preserves the original outgoing, wire and
 packet-count limits; the initial plaintext phase keeps its original byte policy.
 
+Keep one codec per connection to reuse its decode scratch. For synchronous
+packet handling, `codec.decode_with(message, callback)` visits borrowed packet
+bytes and reuses scratch for small Snappy batches. It validates the complete batch
+before invoking the callback. Use the owning iterator when packets must outlive
+the callback.
+
+After sending a batch group, `encode_into(packets, &mut batches)` can reuse its
+uncompressed buffers for the next group. Retained shared batches keep their
+original bytes. Keep unsent encrypted batches until delivery before recycling.
+
+`BatchEncryptor::encrypt_batch(header, message)` and
+`BatchDecryptor::decrypt_batch(header, message)` accept complete batches and
+preserve the clear transport marker. Pass an owned `Bytes` value to allow
+in-place encryption or decryption; shared inputs are copied. The
+[Tokio connection](crates/bedrock-client-tokio/src/connection.rs) used by the
+probe applies these operations on its original codec and directional streams.
+
 ## Typed connection flow
 
 `bedrock-client` exposes consumed owners for completed local transitions:
@@ -189,7 +206,7 @@ when adapting it:
 | Example source | Shows |
 | --- | --- |
 | [main.rs](examples/client/src/main.rs) | Consuming settings/Login phases and handling returned effects. |
-| [session.rs](examples/client/src/session.rs) | One codec/cipher pair and preserving unread batch entries. |
+| [connection.rs](crates/bedrock-client-tokio/src/connection.rs) | One codec/cipher pair and preserving unread batch entries. |
 | [transport.rs](examples/client/src/transport.rs) | Concrete transport setup, send and retirement. |
 
 ```sh
