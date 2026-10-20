@@ -32,6 +32,10 @@ func nativeClientDataLocale(t *testing.T, client nativeSchemaSource, locale *nat
 		_, err := language.ParseRegion(s)
 		return err == nil
 	}, letters)
+	nativeClientDataBits(out, "REGION_THREE", 3, func(s string) bool {
+		_, err := language.ParseRegion(s)
+		return err == nil
+	}, letters)
 	nativeClientDataBits(out, "REGION_NUMBER", 3, func(s string) bool {
 		_, err := language.ParseRegion(s)
 		return err == nil

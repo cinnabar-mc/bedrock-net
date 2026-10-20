@@ -3,7 +3,7 @@
 //! Source-attributed adaptation of Go's BSD-licensed internal/language/parse.go; see notices.
 
 use super::locale_generated::{
-    BASE_THREE, BASE_TWO, GRANDFATHERED, REGION_NUMBER, REGION_TWO, SCRIPTS, VARIANTS,
+    BASE_THREE, BASE_TWO, GRANDFATHERED, REGION_NUMBER, REGION_THREE, REGION_TWO, SCRIPTS, VARIANTS,
 };
 use std::{collections::BTreeMap, str::Split};
 
@@ -173,10 +173,11 @@ fn base(word: &str) -> bool {
     }
 }
 
-/// Region tokens at this phase are alpha-two or numeric-three; alpha-three was an extlang above.
+/// A script can separate alphabetic ISO3 regions from the earlier extlang phase.
 fn region(word: &str) -> bool {
     match word.len() {
         2 => member(word, b'a', 26, REGION_TWO),
+        3 if word.as_bytes()[0].is_ascii_alphabetic() => member(word, b'a', 26, REGION_THREE),
         3 => member(word, b'0', 10, REGION_NUMBER),
         _ => false,
     }

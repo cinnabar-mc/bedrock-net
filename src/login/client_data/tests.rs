@@ -2,6 +2,8 @@
 use super::*;
 use serde_json::json;
 
+mod boundaries;
+
 /// The same bounded cases exercise the actual pinned Go decoder without claiming full validation.
 #[test]
 fn raw_fields_match_the_actual_go_decoder_cases() {

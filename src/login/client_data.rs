@@ -9,6 +9,8 @@ use serde::{
 use serde_json::{Value, value::RawValue};
 use std::{fmt, io};
 
+mod json;
+mod json_generated;
 mod schema_generated;
 mod semantic;
 mod types;
@@ -49,11 +51,15 @@ impl PartialEq for RawClientData {
 impl RawClientData {
     /// Preserves a bounded object after checking every occurrence of each known JSON field type.
     /// This does not validate skin, name, locale or account-owned identity.
+    /// Input has RawValue's UTF8 representation and retains opaque value lexemes.
+    /// Base64-decoded skin JSON is validated separately as bytes.
     ///
     /// # Errors
     /// Rejects oversized or malformed objects and any known-field JSON type mismatch.
     pub fn from_raw(raw: &RawValue) -> io::Result<Self> {
-        if raw.get().len() > crate::BatchLimits::default().max_decoded_bytes {
+        if raw.get().len() > crate::BatchLimits::default().max_decoded_bytes
+            || !json::within_nesting_limit(raw.get())
+        {
             return Err(invalid());
         }
         let entries = serde_json::from_str::<Entries>(raw.get()).map_err(|_| invalid())?;
@@ -131,9 +137,7 @@ impl RawClientData {
     /// # Errors
     /// Returns a redacted error when the present field does not decode as the requested type.
     pub fn read<T: serde::de::DeserializeOwned>(&self, name: &str) -> io::Result<Option<T>> {
-        self.scalar(name)
-            .map(|value| serde_json::from_str(value.get()).map_err(|_| invalid()))
-            .transpose()
+        self.scalar(name).map(json::decode).transpose()
     }
 
     /// Projects a signed integer token without losing Go's accepted negative-zero spelling.
@@ -184,8 +188,8 @@ impl<'de> Deserialize<'de> for Entries {
             }
             fn visit_map<M: MapAccess<'de>>(self, mut map: M) -> Result<Entries, M::Error> {
                 let mut entries = Vec::new();
-                while let Some(entry) = map.next_entry()? {
-                    entries.push(entry);
+                while let Some((name, value)) = map.next_entry::<json::GoString, Box<RawValue>>()? {
+                    entries.push((name.0, value));
                 }
                 Ok(Entries(entries))
             }
