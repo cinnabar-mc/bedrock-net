@@ -280,19 +280,41 @@ mod tests {
             raw.extend_from_slice(&claims);
             raw.push(b'}');
             let raw = parse_json(&raw).unwrap();
-            assert_eq!(
-                validate(&raw, |address| match address {
-                    "127.0.0.1:domain" | "localhost:19132" => Ok(()),
-                    "127.0.0.1:does-not-exist-service"
-                    | "bad host.invalid:19132"
-                    | "127.0.0.1:1073741824x" => Err(LoginError::InvalidClientData),
-                    _ => panic!("missing synthetic cached resolver result"),
-                })
-                .is_ok(),
-                fixture["accepted"],
-                "{}",
-                fixture["name"]
-            );
+            if let Some(expected_address) = fixture["resolve_address"].as_str() {
+                for cached in [None, Some(false), Some(true)] {
+                    let queried = std::cell::Cell::new(false);
+                    let result = validate(&raw, |address| {
+                        assert_eq!(address, expected_address, "{}", fixture["name"]);
+                        queried.set(true);
+                        match cached {
+                            None => Err(LoginError::AddressResolutionRequired),
+                            Some(false) => Err(LoginError::InvalidClientData),
+                            Some(true) => Ok(()),
+                        }
+                    });
+                    assert!(queried.get(), "resolver bypassed for {}", fixture["name"]);
+                    match cached {
+                        None => {
+                            assert!(matches!(result, Err(LoginError::AddressResolutionRequired)))
+                        }
+                        Some(false) => {
+                            assert!(matches!(result, Err(LoginError::InvalidClientData)))
+                        }
+                        Some(true) => assert!(result.is_ok(), "{}", fixture["name"]),
+                    }
+                }
+            } else {
+                assert_eq!(
+                    validate(&raw, |address| panic!(
+                        "unexpected resolver request {address} for {}",
+                        fixture["name"]
+                    ))
+                    .is_ok(),
+                    fixture["accepted"],
+                    "{}",
+                    fixture["name"]
+                );
+            }
         }
     }
 }

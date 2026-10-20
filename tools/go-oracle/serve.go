@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"io"
 	"math/big"
+	"net"
 	"time"
 
 	"github.com/coreos/go-oidc/v3/oidc"
@@ -50,6 +51,7 @@ type serveRequest struct {
 	Issuer      string          `json:"issuer"`
 	Audience    string          `json:"audience"`
 	Now         int64           `json:"now"`
+	Address     string          `json:"address"`
 }
 
 type decodeResult struct {
@@ -114,6 +116,9 @@ func handle(req *serveRequest) (any, error) {
 		return loginBuild(req)
 	case "login_parse":
 		return loginParse(req)
+	case "resolve_udp":
+		_, err := net.ResolveUDPAddr("udp", req.Address)
+		return map[string]bool{"resolved": err == nil}, nil
 	default:
 		return nil, fmt.Errorf("unknown op %q", req.Op)
 	}

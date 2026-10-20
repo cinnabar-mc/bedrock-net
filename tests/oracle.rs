@@ -927,14 +927,28 @@ mod login {
                 VerifyingKey::from_public_key_der(&der).map_err(|_| LoginError::Authentication)?,
             )
         }
-        /// Supplies deterministic cached UDP lookup results; no network runs in accepting admission.
+    }
+
+    /// Supplies the resolver result acquired from the Go helper before pure admission.
+    struct CaseVerifier<'a> {
+        provider: &'a Provider,
+        cached: Option<(&'a str, bool)>,
+    }
+
+    impl LoginVerifier for CaseVerifier<'_> {
+        /// Delegates identity verification to the independently configured provider.
+        fn verify(&self, token: &str, now: SystemTime) -> Result<TrustedIdentity, LoginError> {
+            self.provider.verify(token, now)
+        }
+
+        /// Returns only the pre-acquired result for this fixture's normalized address.
         fn resolve_client_address(&self, address: &str) -> Result<(), LoginError> {
-            match address {
-                "localhost:19132" | "127.0.0.1:domain" => Ok(()),
-                "bad host.invalid:19132"
-                | "127.0.0.1:does-not-exist-service"
-                | "127.0.0.1:1073741824x" => Err(LoginError::InvalidClientData),
-                _ => panic!("missing synthetic cached resolver result"),
+            let (expected, resolved) = self.cached.expect("unexpected resolver request");
+            assert_eq!(address, expected);
+            if resolved {
+                Ok(())
+            } else {
+                Err(LoginError::InvalidClientData)
             }
         }
     }
@@ -1145,12 +1159,24 @@ mod login {
                 "issuer":ISSUER, "audience":AUDIENCE, "now":NOW,
             }));
             let go = response["accepted"] == true && response["authenticated"] == true;
+            let cached = fixture["resolve_address"].as_str().map(|address| {
+                let result = oracle.call(json!({"op":"resolve_udp", "address":address}));
+                (address, result["resolved"].as_bool().unwrap())
+            });
+            let expected = cached.map_or_else(
+                || fixture["accepted"].as_bool().unwrap(),
+                |(_, resolved)| resolved,
+            );
             assert_eq!(
-                go, fixture["accepted"],
+                go, expected,
                 "Go fixture {}: {}",
                 fixture["name"], response["reason"]
             );
-            let rust = verify_authenticated_request(&request, &verifier, now, LIMIT);
+            let case_verifier = CaseVerifier {
+                provider: &verifier,
+                cached,
+            };
+            let rust = verify_authenticated_request(&request, &case_verifier, now, LIMIT);
             if let Ok(login) = &rust {
                 assert_eq!(
                     login.nonce(),

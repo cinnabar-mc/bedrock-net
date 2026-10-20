@@ -26,7 +26,8 @@ pub trait LoginVerifier {
     fn verify(&self, token: &str, now: SystemTime) -> Result<TrustedIdentity, LoginError>;
 
     /// Requires a cached result equivalent to Go's `ResolveUDPAddr("udp", address)`.
-    /// Called only for a validated signed UDP address needing host or service lookup.
+    /// Called only for a validated signed UDP address needing the configured resolver,
+    /// including empty IPv6 zones and IP spellings that fail literal parsing.
     /// This callback must not block or perform network I/O; acquire/cache its result before
     /// submitting Login to the consuming engine. A miss must return AddressResolutionRequired.
     /// The pure parser can be retried with the same request after asynchronous acquisition.

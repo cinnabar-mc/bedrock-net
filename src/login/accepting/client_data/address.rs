@@ -31,12 +31,11 @@ pub(super) fn resolution(address: &str) -> Option<Option<String>> {
     let literal = if host.is_empty() {
         true
     } else if host.contains(':') {
-        // UDP zone text may be empty.
-        let ip = host.split_once('%').map_or(host, |(ip, _)| ip);
-        if ip.parse::<Ipv6Addr>().is_err() {
-            return None;
-        }
-        true
+        let (ip, zone) = host
+            .split_once('%')
+            .map_or((host, None), |(ip, zone)| (ip, Some(zone)));
+        // Go falls back to its configured resolver for non-literals and empty zones.
+        ip.parse::<Ipv6Addr>().is_ok() && zone != Some("")
     } else {
         host.parse::<IpAddr>().is_ok()
     };

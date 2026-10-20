@@ -621,4 +621,38 @@ fn unresolved_signed_addresses_require_a_cached_result_before_admission() {
         verify_authenticated_request(&request, &provider.provider, now, LIMIT),
         Err(LoginError::AddressResolutionRequired)
     ));
+    for (address, normalized) in [
+        ("[::1%]:19132", "[::1%]:19132"),
+        ("::1%:19132", "[::1%]:19132"),
+        ("[::ffff:127.000.0.1]:19132", "[::ffff:127.000.0.1]:19132"),
+        ("::ffff:127.000.0.1:19132", "[::ffff:127.000.0.1]:19132"),
+        ("[::ffff:127.1]:19132", "[::ffff:127.1]:19132"),
+    ] {
+        let data = RawValue::from_string(
+            serde_json::json!({
+                "DeviceOS":1, "GameVersion":"1.26.51", "LanguageCode":"en_US",
+                "SkinId":"synthetic", "ThirdPartyName":"Probe", "ServerAddress":address,
+            })
+            .to_string(),
+        )
+        .unwrap();
+        let request = encode_authenticated_request(&signer, &token, &data, LIMIT).unwrap();
+        provider.queries.borrow_mut().clear();
+        for cached in [None, Some(false), Some(true)] {
+            provider.result.set(cached);
+            let result = verify_authenticated_request(&request, &provider, now, LIMIT);
+            match cached {
+                None => assert!(matches!(result, Err(LoginError::AddressResolutionRequired))),
+                Some(false) => assert!(matches!(result, Err(LoginError::InvalidClientData))),
+                Some(true) => assert!(result.is_ok(), "{address}"),
+            }
+        }
+        assert_eq!(
+            &*provider.queries.borrow(),
+            &[normalized, normalized, normalized]
+        );
+        let wrong = encode_authenticated_request(&key(8), &token, &data, LIMIT).unwrap();
+        assert!(verify_authenticated_request(&wrong, &provider, now, LIMIT).is_err());
+        assert_eq!(provider.queries.borrow().len(), 3);
+    }
 }

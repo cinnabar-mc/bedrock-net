@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"github.com/go-jose/go-jose/v4"
 	"github.com/go-jose/go-jose/v4/jwt"
+	"net"
 	"os"
 	"testing"
 )
@@ -21,11 +22,12 @@ func TestClientDataCases(t *testing.T) {
 		t.Fatal(err)
 	}
 	var cases []struct {
-		Name         string
-		Remove       []string
-		Claims       string
-		ClaimsBase64 string `json:"claims_base64"`
-		Accepted     bool
+		Name           string
+		Remove         []string
+		Claims         string
+		ClaimsBase64   string `json:"claims_base64"`
+		Accepted       bool
+		ResolveAddress string `json:"resolve_address"`
 	}
 	if err := json.Unmarshal(encoded, &cases); err != nil {
 		t.Fatal(err)
@@ -92,8 +94,13 @@ func TestClientDataCases(t *testing.T) {
 				t.Fatal(err)
 			}
 			r := result.(map[string]any)
-			if r["accepted"] != c.Accepted {
-				t.Fatalf("accepted=%v want %v: %v", r["accepted"], c.Accepted, r["reason"])
+			expected := c.Accepted
+			if c.ResolveAddress != "" {
+				_, err := net.ResolveUDPAddr("udp", c.ResolveAddress)
+				expected = err == nil
+			}
+			if r["accepted"] != expected {
+				t.Fatalf("accepted=%v want %v: %v", r["accepted"], expected, r["reason"])
 			}
 		})
 	}

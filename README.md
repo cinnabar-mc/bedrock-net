@@ -225,7 +225,7 @@ The provider-bound `signing_key()` and final signed `exchange_key()` are distinc
 Transport binding and cipher setup use the final exchange key; provider revalidation
 retains the original signer and identity. Nonce aliases use the final non-null signed value.
 
-Colon-containing UDP addresses that need host or service lookup require
+Colon-containing UDP addresses that need the configured resolver require
 `LoginVerifier::resolve_client_address()` to return a cached successful resolution.
 The default returns `AddressResolutionRequired`; unknown hosts/services never pass
 without a result. Match the resolver environment used by the accepting application.
@@ -233,6 +233,7 @@ The callback must not block or perform network I/O. Applications can preflight t
 pure parser, collect cache misses, resolve them asynchronously under their original
 admission deadline, and replay the same request after acquisition. Submit the Login
 to the consuming server engine only when its cache is ready, since an engine error
-seals that transition. Literal addresses and HTTP URLs need no lookup callback.
+seals that transition. Resolver-independent literals and HTTP URLs need no lookup
+callback; empty IPv6 zones and nonstandard IP spellings use the cached resolver.
 Application authorization remains separate from these validation steps. The rules follow gophertunnel; see [LICENSE-GOPHERTUNNEL](LICENSE-GOPHERTUNNEL).
 Language registry data and parsing follow Go; see [LICENSE-GO](LICENSE-GO).
