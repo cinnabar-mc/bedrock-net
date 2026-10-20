@@ -547,9 +547,15 @@ mod tests {
 
     #[test]
     fn withheld_first_chunk_uses_lazy_pages_for_tiny_and_cross_page_chunks() {
-        let bytes: Vec<u8> = (0..12_291).map(|index| (index % 251) as u8).collect();
-        for retain in [false, true] {
-            for chunk_size in [1, 3000, 5000, FRAGMENT_PAGE_BYTES as usize] {
+        for (size, chunk_size) in [
+            (12_291, 1),
+            (12_291, 3000),
+            (12_291, 5000),
+            (12_291, FRAGMENT_PAGE_BYTES as usize),
+            (8 * 1024 * 1024, FRAGMENT_PAGE_BYTES as usize),
+        ] {
+            let bytes: Vec<u8> = (0..size).map(|index| (index % 251) as u8).collect();
+            for retain in [false, true] {
                 let limits = PackTransferLimits {
                     request_window: 2,
                     max_archive_bytes: Some(if retain { bytes.len() as u64 } else { 1 }),
