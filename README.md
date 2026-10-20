@@ -120,7 +120,8 @@ ordering, pack/startup handoffs and owner-preserving error/close handling. The
 | Root feature | Provides |
 | --- | --- |
 | Default | Synchronous batch codec and directional batch ciphers. |
-| `login` | Offline/acquired-credential request formatting, server exchange and accepting verification primitives. |
+| `login` | Offline/acquired-credential request formatting, server exchange, accepting verification and pure ClientData validation. |
+| `provider-verification` | Pure configured issuer/JWK verification for Login and signed SDP, using caller-supplied UTC; includes `login` and NetherNet identity primitives. |
 | `raknet` | `RakNetConnection`, a caller-polled Tokio socket driver over the Cinnabar RakNet fork. |
 | `messaging` | `PreparedMessaging`/`MessagingConnection` and `messaging::server`, composing a supplied SDK service socket with connecting or accepting NetherNet. |
 

@@ -1,0 +1,13 @@
+[
+  {"locale":"en-Latn-US", "accepted":true},
+  {"locale":"en-Latn-840", "accepted":true},
+  {"locale":"en-Latn-USA", "accepted":true},
+  {"locale":"en-Latn-GBR", "accepted":true},
+  {"locale":"fr-Latn-FRA", "accepted":true},
+  {"locale":"ru-Cyrl-RUS", "accepted":true},
+  {"locale":"EN_lAtN_uSa", "accepted":true},
+  {"locale":"en-t-en-Latn-USA", "accepted":true},
+  {"locale":"en-Latn-US-USA", "accepted":false},
+  {"locale":"en-Latn-USAA", "accepted":false},
+  {"locale":"en-Latn-U1A", "accepted":false}
+]

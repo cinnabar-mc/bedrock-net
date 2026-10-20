@@ -238,6 +238,8 @@ dependencies = [
  "nethernet-tokio",
  "p384",
  "raknet",
+ "rand",
+ "rsa",
  "serde",
  "serde_json",
  "sha2",
