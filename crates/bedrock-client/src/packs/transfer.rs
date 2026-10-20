@@ -348,6 +348,7 @@ impl Download {
                         .get(&page)
                         .expect("received chunk has pages");
                     let length = (end - offset).min(bytes.len() as u64 - position as u64) as usize;
+                    let page_consumed = position + length == bytes.len();
                     self.digest.update(&bytes[position..position + length]);
                     if self.retain {
                         self.bytes
@@ -359,6 +360,10 @@ impl Download {
                     offset += length as u64;
                     #[cfg(test)]
                     self.observe_payload();
+                    // A partial page can still contain later chunks; a fully copied one cannot.
+                    if page_consumed {
+                        self.fragments.pages.remove(&page);
+                    }
                 }
                 self.next_write += 1;
             }
