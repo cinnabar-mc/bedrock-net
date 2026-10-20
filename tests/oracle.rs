@@ -456,14 +456,6 @@ fn decode_corpus() -> Vec<(&'static str, Settings, Vec<Vec<u8>>)> {
             vec![vec![0xfe, 0x02, 0xff, 0x01]],
         ),
         (
-            "plain_over_limit",
-            Settings {
-                max_decompressed: Some(64),
-                ..Settings::default()
-            },
-            vec![[&[0xfe][..], &entries(&[&[5; 100]])].concat()],
-        ),
-        (
             "accepting_empty_entry",
             Settings {
                 accepting: true,

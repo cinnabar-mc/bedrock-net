@@ -312,7 +312,7 @@ func loginParse(req *serveRequest) (any, error) {
 	}
 	identity, client, auth, err := login.Parse(req.Request, verifier)
 	if err != nil {
-		return map[string]any{"accepted": false, "error": err.Error()}, nil
+		return map[string]any{"accepted": false, "reason": err.Error()}, nil
 	}
 	return map[string]any{
 		"accepted":      true,
