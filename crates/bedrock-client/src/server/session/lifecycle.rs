@@ -2,8 +2,8 @@
 
 use super::{
     AuthenticatedLogin, LoginPolicy, LoginVerifier, ServerChunkRequest, ServerPackDelivery,
-    ServerPackSnapshot, ServerSessionError as Error, ServerSessionEvent as Event, ServerWorld,
-    SessionEngine, packs,
+    ServerPackSnapshot, ServerSessionError as Error, ServerSessionEvent as Event,
+    ServerSessionOutput, ServerWorld, SessionEngine, packs,
 };
 use crate::server::ServerPacksReady;
 use bedrock_protocol::packets;
@@ -23,7 +23,7 @@ impl<A> ServerPacksReady<A> {
         verifier: &impl LoginVerifier,
         now: Instant,
         utc: SystemTime,
-    ) -> Result<(ServerPacks<A>, Vec<packets::Packet>), ServerSessionTransitionError<Self>> {
+    ) -> Result<ServerSessionOutput<ServerPacks<A>>, ServerSessionTransitionError<Self>> {
         let delivery = match packs::Delivery::new(snapshot, delivery) {
             Ok(delivery) => delivery,
             Err(cause) => return Err(failure(self, cause)),
@@ -219,7 +219,7 @@ impl<A, L> PendingServerChunk<A, L> {
     pub fn flushed(
         mut self,
         now: Instant,
-    ) -> Result<(ServerPacks<A, L>, Vec<packets::Packet>), ServerSessionTransitionError<Self>> {
+    ) -> Result<ServerSessionOutput<ServerPacks<A, L>>, ServerSessionTransitionError<Self>> {
         let packets = match self.engine.chunk_flushed(now) {
             Ok(packets) => packets,
             Err(cause) => return Err(failure(self, cause)),
@@ -282,8 +282,7 @@ impl<A, L> ServerWorldReady<A, L> {
         verifier: &impl LoginPolicy<L>,
         now: Instant,
         utc: SystemTime,
-    ) -> Result<(ServerSpawning<A, L>, Vec<packets::Packet>), ServerSessionTransitionError<Self>>
-    {
+    ) -> Result<ServerSessionOutput<ServerSpawning<A, L>>, ServerSessionTransitionError<Self>> {
         let event = match self.engine.start_world(world, verifier, now, utc) {
             Ok(event) => event,
             Err(cause) => return Err(failure(self, cause)),

@@ -20,6 +20,9 @@ use super::{AuthenticatedLogin, LoginError, LoginPolicy, LoginVerifier, ServerHa
 use bedrock_protocol::{enums::PlayStatusType, packets, wire};
 use std::time::{Instant, SystemTime};
 
+/// One consumed accepting continuation and its ordered generated packet output.
+pub type ServerSessionOutput<C> = (C, Vec<packets::Packet>);
+
 /// A terminal accepting transition failure without peer metadata or content keys.
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
