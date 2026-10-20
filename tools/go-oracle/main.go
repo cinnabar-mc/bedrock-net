@@ -16,6 +16,16 @@ func main() {
 	if len(os.Args) == 2 && os.Args[1] == "serve" {
 		run = func() error { return serve(os.Stdin, os.Stdout) }
 	}
+	if len(os.Args) == 2 && os.Args[1] == "offline-fixtures" {
+		run = func() error {
+			fixtures, err := offlineFixtures()
+			if err != nil {
+				return err
+			}
+			_, err = os.Stdout.Write(offlineEncode(fixtures))
+			return err
+		}
+	}
 	if err := run(); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)

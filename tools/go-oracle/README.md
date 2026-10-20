@@ -53,3 +53,8 @@ go test ./clientdata -run 'TestNativeClientData(Schema|SemanticData)$' -update-n
 
 Use this module's selected Go version and dependencies; changing a generated
 source pin alone does not update its data or establish behavioral compatibility.
+
+`go run . offline-fixtures` emits 55 deterministic synthetic offline Login
+requests and the selected Go parser's actual results. `go test -run
+TestOfflineFixtures .` checks the decisions, key selection and repeatable bytes.
+All fixed keys and signatures belong only to these test fixtures.
