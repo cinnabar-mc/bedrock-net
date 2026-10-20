@@ -10,127 +10,6 @@ use bytes::Bytes;
 #[path = "fixtures/go_batches.rs"]
 mod go;
 
-#[test]
-fn negotiated_codec_keeps_const_construction_and_thread_safety() {
-    /// Requires the public codec to keep its original thread-safety bounds.
-    fn assert_send_sync<T: Send + Sync>(_: &T) {}
-    let codec = const {
-        BatchCodec::new(
-            BatchHeader::RakNet,
-            BatchLimits {
-                max_encoded_bytes: 1024,
-                max_decoded_bytes: 1024,
-                max_packets: 10,
-                max_incoming_packets: None,
-            },
-        )
-        .negotiate(CompressionSettings {
-            algorithm: CompressionAlgorithm::Deflate,
-            threshold: 0,
-        })
-        .with_incoming_decoded_limit(2048)
-    };
-    assert_send_sync(&codec);
-    let input = [Bytes::from_static(b"constant codec")];
-    assert_eq!(
-        packets(&codec, codec.encode(&input).unwrap().pop().unwrap()),
-        input
-    );
-}
-
-#[test]
-fn encoder_writes_the_same_packet_view_it_validated() {
-    struct ChangingPacket {
-        reads: std::cell::Cell<usize>,
-    }
-    impl AsRef<[u8]> for ChangingPacket {
-        /// Supplies a different safe view on each call to catch repeated packet resolution.
-        fn as_ref(&self) -> &[u8] {
-            let reads = self.reads.replace(self.reads.get() + 1);
-            if reads == 0 { b"first" } else { b"" }
-        }
-    }
-    for algorithm in [
-        CompressionAlgorithm::None,
-        CompressionAlgorithm::Deflate,
-        CompressionAlgorithm::Snappy,
-    ] {
-        let codec = negotiated(algorithm, BatchLimits::default());
-        let input = [ChangingPacket {
-            reads: std::cell::Cell::new(0),
-        }];
-        let wire = codec.encode(&input).unwrap().pop().unwrap();
-        assert_eq!(input[0].reads.get(), 1);
-        assert_eq!(packets(&codec, wire), [Bytes::from_static(b"first")]);
-    }
-}
-
-#[test]
-fn encoding_reuses_only_consumed_unique_buffers_and_clears_failed_output() {
-    let codec = BatchCodec::new(
-        BatchHeader::RakNet,
-        BatchLimits {
-            max_packets: 1,
-            ..BatchLimits::default()
-        },
-    );
-    let input = [vec![0x42; 1 << 20], vec![0x43; 1 << 20]];
-    let mut output = codec.encode(&input).unwrap();
-    let pointers: Vec<_> = output.iter().map(|batch| batch.as_ptr()).collect();
-    codec.encode_into(&input, &mut output).unwrap();
-    assert_eq!(
-        output
-            .iter()
-            .map(|batch| batch.as_ptr())
-            .collect::<Vec<_>>(),
-        pointers
-    );
-    let retained = output[0].clone();
-    let original = retained.to_vec();
-    codec.encode_into(&[vec![7; 1024]], &mut output).unwrap();
-    assert_eq!(retained, original);
-    assert_ne!(output[0].as_ptr(), retained.as_ptr());
-    assert!(
-        codec
-            .encode_into(&[b"valid".as_slice(), b""], &mut output)
-            .is_err()
-    );
-    assert!(output.is_empty());
-}
-
-#[test]
-fn snappy_large_offsets_and_long_matches_decode_with_the_reference() {
-    let mut state = 7_u32;
-    let source: Vec<_> = (0..100000)
-        .map(|_| {
-            state ^= state << 13;
-            state ^= state >> 17;
-            state ^= state << 5;
-            state as u8
-        })
-        .collect();
-    let input = [source.repeat(4)];
-    let codec = negotiated(CompressionAlgorithm::Snappy, BatchLimits::default());
-    let wire = codec.encode(&input).unwrap().pop().unwrap();
-    let decoded = snap::raw::Decoder::new()
-        .decompress_vec(&wire[2..])
-        .unwrap();
-    let plain = BatchCodec::new(BatchHeader::NetherNet, BatchLimits::default());
-    assert_eq!(packets(&plain, decoded.into()), input);
-}
-
-#[test]
-fn small_compressed_output_does_not_retain_a_large_input_allocation() {
-    for algorithm in [CompressionAlgorithm::Deflate, CompressionAlgorithm::Snappy] {
-        let codec = negotiated(algorithm, BatchLimits::default());
-        let wire = codec.encode(&[vec![0x42; 4 << 20]]).unwrap().pop().unwrap();
-        let maximum = (wire.len() + 8).saturating_mul(2).max(4096);
-        let storage = wire.try_into_mut().unwrap();
-        assert!(storage.capacity() <= maximum);
-        assert!(storage.capacity() >= storage.len() + 8);
-    }
-}
-
 /// Builds a codec after compression negotiation, using the supplied safety policy.
 fn negotiated(algorithm: CompressionAlgorithm, limits: BatchLimits) -> BatchCodec<Negotiated> {
     BatchCodec::new(BatchHeader::RakNet, limits).negotiate(CompressionSettings {
@@ -489,323 +368,6 @@ fn directional_encryption_matches_consecutive_go_batches_byte_for_byte() {
 }
 
 #[test]
-fn complete_batch_encryption_keeps_owned_storage_and_matches_go() {
-    let key = std::array::from_fn(|index| u8::try_from(index).unwrap());
-    for header in [BatchHeader::RakNet, BatchHeader::NetherNet] {
-        let offset = usize::from(header == BatchHeader::NetherNet);
-        let mut encryptor = BatchEncryptor::new(key);
-        let mut decryptor = BatchDecryptor::new(key);
-        for expected in [go::GO_ENCRYPTED_0, go::GO_ENCRYPTED_1, go::GO_ENCRYPTED_2] {
-            let mut storage = Vec::with_capacity(go::GO_BATCH_65535.len() + 8);
-            storage.extend_from_slice(&go::GO_BATCH_65535[offset..]);
-            let original = storage.as_ptr();
-            let encrypted = encryptor.encrypt_batch(header, storage.into()).unwrap();
-            assert_eq!(encrypted.as_ptr(), original);
-            assert_eq!(encrypted, &expected[offset..]);
-            let decrypted = decryptor.decrypt_batch(header, encrypted).unwrap();
-            assert_eq!(decrypted.as_ptr(), original);
-            assert_eq!(decrypted, &go::GO_BATCH_65535[offset..]);
-        }
-    }
-}
-
-#[test]
-fn encoded_batch_reserves_checksum_space_and_shared_encryption_preserves_input() {
-    for header in [BatchHeader::RakNet, BatchHeader::NetherNet] {
-        for algorithm in [
-            CompressionAlgorithm::None,
-            CompressionAlgorithm::Deflate,
-            CompressionAlgorithm::Snappy,
-        ] {
-            let codec =
-                BatchCodec::new(header, BatchLimits::default()).negotiate(CompressionSettings {
-                    algorithm,
-                    threshold: 0,
-                });
-            let input = [vec![0x42; 32768]];
-            let message = codec.encode(&input).unwrap().pop().unwrap();
-            let original = message.as_ptr();
-            let mut encryptor = BatchEncryptor::new([9; 32]);
-            let encrypted = encryptor.encrypt_batch(header, message).unwrap();
-            assert_eq!(encrypted.as_ptr(), original, "{header:?} {algorithm:?}");
-            let shared = encrypted.clone();
-            let mut decryptor = BatchDecryptor::new([9; 32]);
-            let decrypted = decryptor.decrypt_batch(header, encrypted).unwrap();
-            assert_ne!(decrypted.as_ptr(), shared.as_ptr());
-            assert_eq!(packets(&codec, decrypted), input);
-            let mut another = BatchDecryptor::new([9; 32]);
-            assert_eq!(
-                packets(&codec, another.decrypt_batch(header, shared).unwrap()),
-                input
-            );
-        }
-    }
-}
-
-#[test]
-fn complete_batch_crypto_checks_marker_and_invalidates_on_failure() {
-    for message in [Bytes::new(), Bytes::from_static(&[0xfd, 0xff])] {
-        let mut encryptor = BatchEncryptor::new([9; 32]);
-        let mut decryptor = BatchDecryptor::new([9; 32]);
-        assert_eq!(
-            encryptor.encrypt_batch(BatchHeader::RakNet, message.clone()),
-            Err(EncryptionError::InvalidBatchHeader)
-        );
-        assert_eq!(
-            decryptor.decrypt_batch(BatchHeader::RakNet, message),
-            Err(EncryptionError::InvalidBatchHeader)
-        );
-        assert_eq!(
-            encryptor.encrypt(Bytes::new()),
-            Err(EncryptionError::Invalidated)
-        );
-        assert_eq!(
-            decryptor.decrypt(Bytes::new()),
-            Err(EncryptionError::Invalidated)
-        );
-    }
-    let mut decryptor = BatchDecryptor::new([9; 32]);
-    assert_eq!(
-        decryptor.decrypt_batch(BatchHeader::RakNet, Bytes::from_static(&[0xfe])),
-        Err(EncryptionError::Truncated { actual: 0 })
-    );
-}
-
-#[test]
-fn borrowed_visitation_matches_owned_cursor_after_empty_entries_and_partial_consumption() {
-    let codec = BatchCodec::new(BatchHeader::RakNet, BatchLimits::default());
-    let wire = Bytes::from_static(&[0xfe, 0, 0x81, 0, 7, 0, 2, 8, 9, 0, 1, 10, 0]);
-    let expected = packets(&codec, wire.clone());
-    for consumed in 0..=expected.len() {
-        let DecodeOutcome::Packets {
-            mut packets,
-            skipped_empty_packets,
-            ..
-        } = codec.decode(wire.clone()).unwrap()
-        else {
-            panic!("valid frame dropped")
-        };
-        assert_eq!(skipped_empty_packets, 4);
-        for packet in &expected[..consumed] {
-            assert_eq!(packets.next().as_ref(), Some(packet));
-        }
-        let mut visited = Vec::new();
-        packets.for_each_slice(|packet| visited.push(packet.to_vec()));
-        assert_eq!(visited, expected[consumed..]);
-    }
-}
-
-#[test]
-fn reused_compressors_emit_independent_batches_and_retained_output_stays_unchanged() {
-    for algorithm in [CompressionAlgorithm::Deflate, CompressionAlgorithm::Snappy] {
-        let sender = negotiated(algorithm, BatchLimits::default());
-        let mut retained = Vec::new();
-        for length in [50000, 3, 200000, 100, 50000] {
-            let input = vec![
-                (0..length)
-                    .map(|index| (index % 251) as u8)
-                    .collect::<Vec<_>>(),
-            ];
-            let wire = sender.encode(&input).unwrap().pop().unwrap();
-            retained.push((wire, input));
-        }
-        for (wire, input) in retained.into_iter().rev() {
-            let fresh = negotiated(algorithm, BatchLimits::default());
-            assert_eq!(packets(&fresh, wire.clone()), input);
-            assert_eq!(fresh.encode(&input).unwrap(), [wire]);
-        }
-    }
-}
-
-#[test]
-fn synchronous_snappy_decode_reuses_scratch_and_validates_before_visiting() {
-    let mut codec = negotiated(CompressionAlgorithm::Snappy, BatchLimits::default());
-    let wire = codec.encode(&[vec![0x42; 4096]]).unwrap().pop().unwrap();
-    let mut pointers = Vec::new();
-    for _ in 0..2 {
-        let outcome = codec
-            .decode_with(wire.clone(), |packet| {
-                assert_eq!(packet, vec![0x42; 4096]);
-                pointers.push(packet.as_ptr());
-            })
-            .unwrap();
-        assert!(matches!(
-            outcome,
-            VisitOutcome::Packets {
-                count: 1,
-                skipped_empty_packets: 0
-            }
-        ));
-    }
-    assert_eq!(pointers[0], pointers[1]);
-    assert!(!format!("{codec:?}").contains("66, 66, 66"));
-    for maximum in [None, Some(1)] {
-        let mut codec = negotiated(
-            CompressionAlgorithm::Snappy,
-            BatchLimits {
-                max_incoming_packets: maximum,
-                ..BatchLimits::default()
-            },
-        );
-        let mut visits = 0;
-        let mut wire = vec![0xfe, 1];
-        wire.extend(
-            snap::raw::Encoder::new()
-                .compress_vec(&[0, 1, 7, 0])
-                .unwrap(),
-        );
-        match codec.decode_with(wire.into(), |_| visits += 1) {
-            Ok(VisitOutcome::Packets {
-                count: 1,
-                skipped_empty_packets: 2,
-            }) => assert!(maximum.is_none()),
-            Err(BatchError::EmptyPacket) => assert!(maximum.is_some()),
-            result => panic!("unexpected result: {result:?}"),
-        }
-        visits = 0;
-        let mut wire = vec![0xfe, 1];
-        wire.extend(
-            snap::raw::Encoder::new()
-                .compress_vec(&[1, 7, 10, 8])
-                .unwrap(),
-        );
-        assert!(codec.decode_with(wire.into(), |_| visits += 1).is_err());
-        assert_eq!(visits, 0);
-    }
-}
-
-#[test]
-fn small_snappy_encoder_matches_the_reference_decoder_across_boundaries() {
-    let codec = negotiated(CompressionAlgorithm::Snappy, BatchLimits::default());
-    let plain = BatchCodec::new(BatchHeader::RakNet, BatchLimits::default());
-    let mut state = 0x12345678_u32;
-    for length in [1, 31, 1024, 8192, 50000, 65536, 65537] {
-        for pattern in 0..3 {
-            let input: Vec<_> = (0..length)
-                .map(|index| {
-                    state ^= state << 13;
-                    state ^= state >> 17;
-                    state ^= state << 5;
-                    match pattern {
-                        0 => state as u8,
-                        1 => (index % 251) as u8,
-                        _ => 0x42,
-                    }
-                })
-                .collect();
-            let wire = codec
-                .encode(std::slice::from_ref(&input))
-                .unwrap()
-                .pop()
-                .unwrap();
-            let expected = plain.encode(&[input]).unwrap().pop().unwrap();
-            assert_eq!(
-                snap::raw::Decoder::new()
-                    .decompress_vec(&wire[2..])
-                    .unwrap(),
-                expected[1..]
-            );
-        }
-    }
-}
-
-#[test]
-fn snappy_backend_preserves_valid_and_malformed_block_decisions() {
-    let plain = BatchCodec::new(BatchHeader::NetherNet, BatchLimits::default());
-    let mut compressed = BatchCodec::new(BatchHeader::NetherNet, BatchLimits::default()).negotiate(
-        CompressionSettings {
-            algorithm: CompressionAlgorithm::Snappy,
-            threshold: 0,
-        },
-    );
-    let summarize = |result: Result<DecodeOutcome, BatchError>| match result {
-        Ok(DecodeOutcome::Packets { packets, .. }) => Ok(packets.collect::<Vec<_>>()),
-        Ok(DecodeOutcome::Dropped(_)) => Err("drop".to_owned()),
-        Err(error) => Err(format!("{error:?}")),
-    };
-    let mut state = 0x1234_5678_u32;
-    let mut random_byte = || {
-        state ^= state << 13;
-        state ^= state >> 17;
-        state ^= state << 5;
-        state as u8
-    };
-    let mut corpus = Vec::new();
-    for length in [0, 1, 17, 256, 65536, 131072] {
-        let payload: Vec<_> = (0..length).map(|_| random_byte()).collect();
-        let mut input = Vec::new();
-        let mut size = length as u32;
-        while size >= 128 {
-            input.push((size as u8) | 128);
-            size >>= 7;
-        }
-        input.push(size as u8);
-        input.extend_from_slice(&payload);
-        let block = snap::raw::Encoder::new().compress_vec(&input).unwrap();
-        corpus.push(block.clone());
-        for end in 0..block.len().min(128) {
-            corpus.push(block[..end].to_vec());
-        }
-        for index in 0..block.len().min(128) {
-            let mut mutated = block.clone();
-            mutated[index] ^= 0x80;
-            // Keep malformed length declarations bounded before either backend allocates.
-            if snap::raw::decompress_len(&mutated).is_ok_and(|size| size <= 131072) {
-                corpus.push(mutated);
-            }
-        }
-    }
-    for _ in 0..4096 {
-        let mut block = vec![random_byte() & 0x7f];
-        block.extend((0..32).map(|_| random_byte()));
-        corpus.push(block);
-    }
-    for block in corpus {
-        let expected = match snap::raw::Decoder::new().decompress_vec(&block) {
-            Ok(body) => summarize(plain.decode(body.into())),
-            Err(_) => Err("drop".to_owned()),
-        };
-        let mut wire = vec![1];
-        wire.extend_from_slice(&block);
-        assert_eq!(summarize(compressed.decode(wire.clone().into())), expected);
-        let mut visited = Vec::new();
-        let actual = match compressed.decode_with(wire.into(), |packet| {
-            visited.push(Bytes::copy_from_slice(packet))
-        }) {
-            Ok(VisitOutcome::Packets { count, .. }) => {
-                assert_eq!(count, visited.len());
-                Ok(visited)
-            }
-            Ok(VisitOutcome::Dropped(_)) => {
-                assert!(visited.is_empty());
-                Err("drop".to_owned())
-            }
-            Err(error) => {
-                assert!(visited.is_empty());
-                Err(format!("{error:?}"))
-            }
-        };
-        assert_eq!(actual, expected);
-    }
-}
-
-#[test]
-fn snappy_extended_literals_preserve_packet_bytes() {
-    let mut block = vec![0x3d, 0xf0, 0x38, 0x3c];
-    block.extend_from_slice(&[0x41; 55]);
-    block.extend_from_slice(&[3, 14, 1, 0]);
-    let decoded = snap::raw::Decoder::new().decompress_vec(&block).unwrap();
-    assert_eq!(decoded[0], 60);
-    let mut wire = vec![0xfe, 1];
-    wire.extend_from_slice(&block);
-    let codec = negotiated(CompressionAlgorithm::Snappy, BatchLimits::default());
-    assert_eq!(
-        packets(&codec, wire.into()),
-        [Bytes::copy_from_slice(&decoded[1..])]
-    );
-}
-
-#[test]
 fn discarded_compression_still_advances_the_encrypted_stream() {
     let mut encryptor = BatchEncryptor::new([7; 32]);
     let mut decryptor = BatchDecryptor::new([7; 32]);
@@ -1119,4 +681,232 @@ fn framing_regression_matches_directional_empty_and_overflow_lengths() {
         client.decode(Bytes::from_static(&[0xfe, 0x81, 0x80, 0x80, 0x80, 0x80])),
         Err(BatchError::InvalidPacketLength { .. })
     ));
+}
+
+#[test]
+fn negotiated_codec_keeps_const_construction_and_thread_safety() {
+    /// Requires the public codec to keep its original thread-safety bounds.
+    fn assert_send_sync<T: Send + Sync>(_: &T) {}
+    let codec = const {
+        BatchCodec::new(
+            BatchHeader::RakNet,
+            BatchLimits {
+                max_encoded_bytes: 1024,
+                max_decoded_bytes: 1024,
+                max_packets: 10,
+                max_incoming_packets: None,
+            },
+        )
+        .negotiate(CompressionSettings {
+            algorithm: CompressionAlgorithm::Deflate,
+            threshold: 0,
+        })
+        .with_incoming_decoded_limit(2048)
+    };
+    assert_send_sync(&codec);
+    let input = [Bytes::from_static(b"constant codec")];
+    assert_eq!(
+        packets(&codec, codec.encode(&input).unwrap().pop().unwrap()),
+        input
+    );
+}
+
+#[test]
+fn encoder_writes_the_same_packet_view_it_validated() {
+    struct ChangingPacket {
+        reads: std::cell::Cell<usize>,
+    }
+    impl AsRef<[u8]> for ChangingPacket {
+        /// Supplies a different safe view on each call to catch repeated packet resolution.
+        fn as_ref(&self) -> &[u8] {
+            let reads = self.reads.replace(self.reads.get() + 1);
+            if reads == 0 { b"first" } else { b"" }
+        }
+    }
+    for algorithm in [
+        CompressionAlgorithm::None,
+        CompressionAlgorithm::Deflate,
+        CompressionAlgorithm::Snappy,
+    ] {
+        let codec = negotiated(algorithm, BatchLimits::default());
+        let input = [ChangingPacket {
+            reads: std::cell::Cell::new(0),
+        }];
+        let wire = codec.encode(&input).unwrap().pop().unwrap();
+        assert_eq!(input[0].reads.get(), 1);
+        assert_eq!(packets(&codec, wire), [Bytes::from_static(b"first")]);
+    }
+}
+
+#[test]
+fn encoding_reuses_only_consumed_unique_buffers_and_clears_failed_output() {
+    let codec = BatchCodec::new(
+        BatchHeader::RakNet,
+        BatchLimits {
+            max_packets: 1,
+            ..BatchLimits::default()
+        },
+    );
+    let input = [vec![0x42; 1 << 20], vec![0x43; 1 << 20]];
+    let mut output = codec.encode(&input).unwrap();
+    let pointers: Vec<_> = output.iter().map(|batch| batch.as_ptr()).collect();
+    codec.encode_into(&input, &mut output).unwrap();
+    assert_eq!(
+        output
+            .iter()
+            .map(|batch| batch.as_ptr())
+            .collect::<Vec<_>>(),
+        pointers
+    );
+    let retained = output[0].clone();
+    let original = retained.to_vec();
+    codec.encode_into(&[vec![7; 1024]], &mut output).unwrap();
+    assert_eq!(retained, original);
+    assert_ne!(output[0].as_ptr(), retained.as_ptr());
+    assert!(
+        codec
+            .encode_into(&[b"valid".as_slice(), b""], &mut output)
+            .is_err()
+    );
+    assert!(output.is_empty());
+}
+
+#[test]
+fn complete_batch_encryption_keeps_owned_storage_and_matches_go() {
+    let key = std::array::from_fn(|index| u8::try_from(index).unwrap());
+    for header in [BatchHeader::RakNet, BatchHeader::NetherNet] {
+        let offset = usize::from(header == BatchHeader::NetherNet);
+        let mut encryptor = BatchEncryptor::new(key);
+        let mut decryptor = BatchDecryptor::new(key);
+        for expected in [go::GO_ENCRYPTED_0, go::GO_ENCRYPTED_1, go::GO_ENCRYPTED_2] {
+            let mut storage = Vec::with_capacity(go::GO_BATCH_65535.len() + 8);
+            storage.extend_from_slice(&go::GO_BATCH_65535[offset..]);
+            let original = storage.as_ptr();
+            let encrypted = encryptor.encrypt_batch(header, storage.into()).unwrap();
+            assert_eq!(encrypted.as_ptr(), original);
+            assert_eq!(encrypted, &expected[offset..]);
+            let decrypted = decryptor.decrypt_batch(header, encrypted).unwrap();
+            assert_eq!(decrypted.as_ptr(), original);
+            assert_eq!(decrypted, &go::GO_BATCH_65535[offset..]);
+        }
+    }
+}
+
+#[test]
+fn encoded_batch_reserves_checksum_space_and_shared_encryption_preserves_input() {
+    for header in [BatchHeader::RakNet, BatchHeader::NetherNet] {
+        for algorithm in [
+            CompressionAlgorithm::None,
+            CompressionAlgorithm::Deflate,
+            CompressionAlgorithm::Snappy,
+        ] {
+            let codec =
+                BatchCodec::new(header, BatchLimits::default()).negotiate(CompressionSettings {
+                    algorithm,
+                    threshold: 0,
+                });
+            let input = [vec![0x42; 32768]];
+            let message = codec.encode(&input).unwrap().pop().unwrap();
+            let original = message.as_ptr();
+            let mut encryptor = BatchEncryptor::new([9; 32]);
+            let encrypted = encryptor.encrypt_batch(header, message).unwrap();
+            assert_eq!(encrypted.as_ptr(), original, "{header:?} {algorithm:?}");
+            let shared = encrypted.clone();
+            let mut decryptor = BatchDecryptor::new([9; 32]);
+            let decrypted = decryptor.decrypt_batch(header, encrypted).unwrap();
+            assert_ne!(decrypted.as_ptr(), shared.as_ptr());
+            assert_eq!(packets(&codec, decrypted), input);
+            let mut another = BatchDecryptor::new([9; 32]);
+            assert_eq!(
+                packets(&codec, another.decrypt_batch(header, shared).unwrap()),
+                input
+            );
+        }
+    }
+}
+
+#[test]
+fn complete_batch_crypto_checks_marker_and_invalidates_on_failure() {
+    for message in [Bytes::new(), Bytes::from_static(&[0xfd, 0xff])] {
+        let mut encryptor = BatchEncryptor::new([9; 32]);
+        let mut decryptor = BatchDecryptor::new([9; 32]);
+        assert_eq!(
+            encryptor.encrypt_batch(BatchHeader::RakNet, message.clone()),
+            Err(EncryptionError::InvalidBatchHeader)
+        );
+        assert_eq!(
+            decryptor.decrypt_batch(BatchHeader::RakNet, message),
+            Err(EncryptionError::InvalidBatchHeader)
+        );
+        assert_eq!(
+            encryptor.encrypt(Bytes::new()),
+            Err(EncryptionError::Invalidated)
+        );
+        assert_eq!(
+            decryptor.decrypt(Bytes::new()),
+            Err(EncryptionError::Invalidated)
+        );
+    }
+    let mut decryptor = BatchDecryptor::new([9; 32]);
+    assert_eq!(
+        decryptor.decrypt_batch(BatchHeader::RakNet, Bytes::from_static(&[0xfe])),
+        Err(EncryptionError::Truncated { actual: 0 })
+    );
+}
+
+#[test]
+fn synchronous_snappy_decode_reuses_scratch_and_validates_before_visiting() {
+    let mut codec = negotiated(CompressionAlgorithm::Snappy, BatchLimits::default());
+    let wire = codec.encode(&[vec![0x42; 4096]]).unwrap().pop().unwrap();
+    let mut pointers = Vec::new();
+    for _ in 0..2 {
+        let outcome = codec
+            .decode_with(wire.clone(), |packet| {
+                assert_eq!(packet, vec![0x42; 4096]);
+                pointers.push(packet.as_ptr());
+            })
+            .unwrap();
+        assert!(matches!(
+            outcome,
+            VisitOutcome::Packets {
+                count: 1,
+                skipped_empty_packets: 0
+            }
+        ));
+    }
+    assert_eq!(pointers[0], pointers[1]);
+    assert!(!format!("{codec:?}").contains("66, 66, 66"));
+    for maximum in [None, Some(1)] {
+        let mut codec = negotiated(
+            CompressionAlgorithm::Snappy,
+            BatchLimits {
+                max_incoming_packets: maximum,
+                ..BatchLimits::default()
+            },
+        );
+        let mut visits = 0;
+        let mut wire = vec![0xfe, 1];
+        wire.extend(
+            snap::raw::Encoder::new()
+                .compress_vec(&[0, 1, 7, 0])
+                .unwrap(),
+        );
+        match codec.decode_with(wire.into(), |_| visits += 1) {
+            Ok(VisitOutcome::Packets {
+                count: 1,
+                skipped_empty_packets: 2,
+            }) => assert!(maximum.is_none()),
+            Err(BatchError::EmptyPacket) => assert!(maximum.is_some()),
+            result => panic!("unexpected result: {result:?}"),
+        }
+        visits = 0;
+        let mut wire = vec![0xfe, 1];
+        wire.extend(
+            snap::raw::Encoder::new()
+                .compress_vec(&[1, 7, 10, 8])
+                .unwrap(),
+        );
+        assert!(codec.decode_with(wire.into(), |_| visits += 1).is_err());
+        assert_eq!(visits, 0);
+    }
 }

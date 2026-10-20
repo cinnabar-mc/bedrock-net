@@ -26,7 +26,7 @@ fn negotiated(
 
 /// Decodes frames with an unlimited codec of the same phase and requires exactly `want`.
 /// Each benchmark checks its own output this way once, outside the timed loop.
-fn verify<S: BatchPhase>(codec: &BatchCodec<S>, frames: &[Bytes], want: &[Bytes]) {
+fn verify<S: BatchPhase, P: AsRef<[u8]>>(codec: &BatchCodec<S>, frames: &[Bytes], want: &[P]) {
     let mut got = Vec::new();
     for frame in frames {
         match codec.decode(frame.clone()).unwrap() {
@@ -34,7 +34,14 @@ fn verify<S: BatchPhase>(codec: &BatchCodec<S>, frames: &[Bytes], want: &[Bytes]
             DecodeOutcome::Dropped(reason) => panic!("own output dropped: {reason}"),
         }
     }
-    assert!(got == want, "own output does not decode to the input");
+    assert!(
+        got.len() == want.len()
+            && got
+                .iter()
+                .zip(want)
+                .all(|(got, want)| got.as_ref() == want.as_ref()),
+        "own output does not decode to the input"
+    );
 }
 
 /// Limits large enough to read back any benchmark output.
@@ -136,10 +143,10 @@ fn snappy(c: &mut Criterion) {
 }
 
 /// Encodes then encrypts complete batches in place, preserving the transport marker.
-fn encrypt_message(
+fn encrypt_message<P: AsRef<[u8]>>(
     codec: &BatchCodec<bedrock_net::Negotiated>,
     encryptor: &mut BatchEncryptor,
-    packets: &[Bytes],
+    packets: &[P],
 ) -> Vec<Bytes> {
     let mut frames = Vec::new();
     encrypt_into(codec, encryptor, packets, &mut frames);
@@ -147,10 +154,10 @@ fn encrypt_message(
 }
 
 /// Recycles consumed envelopes before encoding the next immediate send.
-fn encrypt_into(
+fn encrypt_into<P: AsRef<[u8]>>(
     codec: &BatchCodec<bedrock_net::Negotiated>,
     encryptor: &mut BatchEncryptor,
-    packets: &[Bytes],
+    packets: &[P],
     frames: &mut Vec<Bytes>,
 ) {
     codec.encode_into(packets, frames).unwrap();
@@ -182,7 +189,7 @@ fn encryption(c: &mut Criterion) {
                     .unwrap()
             })
             .collect();
-        let twice: Vec<Bytes> = packets.iter().chain(&packets).cloned().collect();
+        let twice: Vec<_> = packets.iter().chain(&packets).collect();
         verify(&reader(CompressionAlgorithm::None), &frames, &twice);
         match case.op.as_str() {
             "encrypt" => {
@@ -210,15 +217,12 @@ fn encryption(c: &mut Criterion) {
                             let frames: Vec<Bytes> = (0..n)
                                 .flat_map(|_| encrypt_message(&codec, &mut encryptor, &packets))
                                 .collect();
-                            // Go's queue retains every frame until its untimed refill.
-                            let mut decoded = Vec::with_capacity(n as usize);
                             let start = Instant::now();
                             for message in frames {
                                 let plain = decryptor
                                     .decrypt_batch(BatchHeader::RakNet, message)
                                     .unwrap();
-                                drain(&mut codec, plain.clone());
-                                decoded.push(plain);
+                                drain(&mut codec, plain);
                             }
                             elapsed += start.elapsed();
                             remaining -= n;

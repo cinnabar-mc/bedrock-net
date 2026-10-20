@@ -66,12 +66,11 @@ After negotiating compression, `with_incoming_decoded_limit` can set a separate
 incoming decoded-byte ceiling. It preserves the original outgoing, wire and
 packet-count limits; the initial plaintext phase keeps its original byte policy.
 
-Keep one codec per connection to reuse its compression state. For synchronous
+Keep one codec per connection to reuse its decode scratch. For synchronous
 packet handling, `codec.decode_with(message, callback)` visits borrowed packet
 bytes and reuses scratch for small Snappy batches. It validates the complete batch
-before invoking the callback. `packets.for_each_slice` also avoids a shared owner
-per packet after an owning decode. Use the owning iterator when packets must
-outlive the callback.
+before invoking the callback. Use the owning iterator when packets must outlive
+the callback.
 
 After sending a batch group, `encode_into(packets, &mut batches)` can reuse its
 uncompressed buffers for the next group. Retained shared batches keep their

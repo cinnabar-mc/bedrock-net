@@ -5,7 +5,6 @@
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
-use bytes::{Buf, Bytes};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
@@ -67,10 +66,10 @@ impl Cases {
         out
     }
 
-    /// Repeats shared packet views like Go's slice headers and checks the expanded byte digest.
-    pub fn packets(&self, set: &str) -> Vec<Bytes> {
+    /// Expands a named packet set and proves it matches the input the Go benches read.
+    pub fn packets(&self, set: &str) -> Vec<Vec<u8>> {
         let spec = &self.manifest["packet_sets"][set];
-        let base = split(self.read(spec["file"].as_str().unwrap()).into());
+        let base = split(&self.read(spec["file"].as_str().unwrap()));
         let repeat = spec["repeat"].as_u64().unwrap() as usize;
         let mut out = Vec::with_capacity(base.len() * repeat);
         for _ in 0..repeat {
@@ -143,26 +142,28 @@ fn hex(bytes: &[u8]) -> String {
 }
 
 /// Total packet bytes, the throughput unit both sides report.
-pub fn size(packets: &[Bytes]) -> u64 {
+pub fn size(packets: &[Vec<u8>]) -> u64 {
     packets.iter().map(|packet| packet.len() as u64).sum()
 }
 
 /// Parses varuint32-length-prefixed entries.
-fn split(mut data: Bytes) -> Vec<Bytes> {
+fn split(mut data: &[u8]) -> Vec<Vec<u8>> {
     let mut out = Vec::new();
     while !data.is_empty() {
         let mut length = 0_u32;
         let mut shift = 0;
         loop {
             let byte = data[0];
-            data.advance(1);
+            data = &data[1..];
             length |= u32::from(byte & 0x7f) << shift;
             shift += 7;
             if byte & 0x80 == 0 {
                 break;
             }
         }
-        out.push(data.split_to(length as usize));
+        let (entry, rest) = data.split_at(length as usize);
+        out.push(entry.to_vec());
+        data = rest;
     }
     out
 }
