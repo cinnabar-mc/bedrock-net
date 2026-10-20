@@ -110,7 +110,7 @@ fn go_utf8(mut bytes: &[u8]) -> Cow<'_, str> {
 
 /// Retains validated JSON, its original signed bytes and interpreted protocol metadata together.
 pub(super) struct Payload {
-    pub(super) client_data: Box<RawValue>,
+    pub(super) client_data: Box<serde_json::value::RawValue>,
     pub(super) original_client_data: Option<Box<[u8]>>,
     pub(super) metadata: Metadata,
 }
