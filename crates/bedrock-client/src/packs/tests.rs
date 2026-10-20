@@ -7,6 +7,8 @@ use bedrock_protocol::{
 use bytes::Bytes;
 use sha2::{Digest, Sha256};
 
+mod optionality;
+
 /// Exercises the generated server wire contract before retaining its original metadata.
 fn server_wire(packet: packets::Packet) -> packets::Packet {
     let mut encoded = Vec::new();
