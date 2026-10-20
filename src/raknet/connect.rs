@@ -13,6 +13,22 @@ use super::{Engine, RakNetConnection, RakNetError, RakNetOptions, SessionSlot, U
 
 const MAX_INITIAL_READ_ERRORS: usize = 10;
 
+#[cfg(test)]
+mod write_tests;
+
+/// Sends one original handshake datagram on its already-owned socket.
+async fn send_handshake(
+    socket: &UdpSocket,
+    datagram: &[u8],
+    #[cfg(test)] phase: write_tests::Phase,
+) -> std::io::Result<usize> {
+    #[cfg(test)]
+    if let Some(error) = write_tests::reject_write(socket, phase)? {
+        return Err(error);
+    }
+    socket.send(datagram).await
+}
+
 /// Shares the endpoint uptime origin across connection attempts in this process.
 fn endpoint_clock() -> RakClock {
     static CLOCK: std::sync::OnceLock<RakClock> = std::sync::OnceLock::new();
@@ -84,7 +100,13 @@ impl RakNetConnection {
                 match output {
                     RakClientOutput::MtuProbe { id, datagram, .. } => {
                         let started = Instant::now();
-                        let result = socket.send(&datagram).await;
+                        let result = send_handshake(
+                            &socket,
+                            &datagram,
+                            #[cfg(test)]
+                            write_tests::Phase::Probe,
+                        )
+                        .await;
                         let elapsed = started.elapsed();
                         let too_large = result.as_ref().is_err_and(is_mtu_probe_size_error);
                         client.handle(RakClientInput::MtuProbeResult {
@@ -106,7 +128,19 @@ impl RakNetConnection {
                         }
                     }
                     RakClientOutput::SocketDatagram(datagram, _) => {
-                        let sent = socket.send(&datagram).await?;
+                        #[cfg(test)]
+                        let phase = if client.is_offline_negotiating() {
+                            write_tests::Phase::OfflineRequest2
+                        } else {
+                            write_tests::Phase::Connected
+                        };
+                        let sent = send_handshake(
+                            &socket,
+                            &datagram,
+                            #[cfg(test)]
+                            phase,
+                        )
+                        .await?;
                         if sent != datagram.len() {
                             return Err(std::io::Error::new(
                                 std::io::ErrorKind::WriteZero,
