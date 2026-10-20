@@ -121,9 +121,13 @@ ordering, pack/startup handoffs and owner-preserving error/close handling. The
 | `messaging` | `PreparedMessaging`/`MessagingConnection` and `messaging::server`, composing a supplied SDK service socket with connecting or accepting NetherNet. |
 
 The optional edges start no runtime or task of their own. RakNet owns one socket;
-keep `recv` polled for protocol progress, use `queue_send` for admission and drive
+keep `recv` or `maintain` polled for protocol progress, use `queue_send` for admission and drive
 `flush` for local emission. `wait_send_capacity` services that same connection
-when its send budget is full. Messaging needs `recv` or `maintain` polled; its
+when its send budget is full. `maintain` retains accepted input and defers new
+reliable input when aggregate capacity is full; drain the FIFO and its terminal
+through `recv`. One original message head may wait outside the FIFO, while a
+message exceeding the whole configured byte allowance still fails. Messaging
+needs `recv` or `maintain` polled; its
 underlying NetherNet Tokio adapter owns its bounded transport workers. Accepting
 `MessagingServer` needs `accept` or `maintain` polled and takes caller-supplied
 ICE configuration. It publishes no world or activity and does not authorize Login.
