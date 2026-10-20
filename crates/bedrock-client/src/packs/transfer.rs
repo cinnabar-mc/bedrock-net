@@ -238,6 +238,8 @@ pub(super) struct Download {
     fragments: Fragments,
     bytes: Vec<u8>,
     request_window: u32,
+    #[cfg(test)]
+    payload_high_water: usize,
 }
 
 impl Download {
@@ -272,6 +274,8 @@ impl Download {
             fragments: Fragments::default(),
             bytes: Vec::new(),
             request_window: limits.request_window,
+            #[cfg(test)]
+            payload_high_water: 0,
         })
     }
 
@@ -328,6 +332,8 @@ impl Download {
         self.received += 1;
         if index == self.next_write {
             self.append(&chunk.chunk_data)?;
+            #[cfg(test)]
+            self.observe_payload();
             self.next_write += 1;
             while self.fragments.take(self.next_write) {
                 let start = u64::from(self.next_write) * u64::from(self.chunk_size);
@@ -351,6 +357,8 @@ impl Download {
                             .extend_from_slice(&bytes[position..position + length]);
                     }
                     offset += length as u64;
+                    #[cfg(test)]
+                    self.observe_payload();
                 }
                 self.next_write += 1;
             }
@@ -365,6 +373,8 @@ impl Download {
         } else {
             self.fragments
                 .insert(index, offset, self.size, &chunk.chunk_data)?;
+            #[cfg(test)]
+            self.observe_payload();
         }
         if self.next_write == self.chunk_count {
             if <[u8; 32]>::from(self.digest.clone().finalize()) != self.hash {
@@ -377,6 +387,13 @@ impl Download {
             });
         }
         Ok(self.requests())
+    }
+
+    /// Observes actual retained payload at copy boundaries; spare capacity and allocator RSS are separate.
+    #[cfg(test)]
+    fn observe_payload(&mut self) {
+        let payload = self.bytes.len() + self.fragments.pages.values().map(Vec::len).sum::<usize>();
+        self.payload_high_water = self.payload_high_water.max(payload);
     }
 
     /// Writes one contiguous range without retaining its decoded batch allocation.
@@ -554,7 +571,7 @@ mod tests {
     fn withheld_first_chunk_uses_lazy_pages_for_tiny_and_cross_page_chunks() {
         let bytes: Vec<u8> = (0..12_291).map(|index| (index % 251) as u8).collect();
         for retain in [false, true] {
-            for chunk_size in [1, 3000, 5000] {
+            for chunk_size in [1, 3000, 5000, FRAGMENT_PAGE_BYTES as usize] {
                 let limits = PackTransferLimits {
                     request_window: 2,
                     max_archive_bytes: Some(if retain { bytes.len() as u64 } else { 1 }),
@@ -620,6 +637,7 @@ mod tests {
                 }
                 assert!(download.fragments.pages.is_empty());
                 assert!(download.fragments.received.is_empty());
+                let payload_high_water = download.payload_high_water;
                 match download.complete.unwrap() {
                     Completion::Archive(archive) => {
                         assert!(retain);
@@ -627,6 +645,11 @@ mod tests {
                     }
                     Completion::Excluded => assert!(!retain),
                 }
+                assert!(
+                    payload_high_water <= bytes.len() + FRAGMENT_PAGE_BYTES as usize,
+                    "contiguous drain retained already copied payload: peak={payload_high_water}, archive={}, chunk_size={chunk_size}, retain={retain}",
+                    bytes.len(),
+                );
             }
         }
     }
