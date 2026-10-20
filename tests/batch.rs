@@ -40,12 +40,12 @@ fn decodes_go_vectors_by_declared_algorithm() {
 }
 
 #[test]
-fn incoming_empty_entries_preserve_packets_and_do_not_consume_packet_capacity() {
+fn client_empty_entries_preserve_packets() {
     let codec = negotiated(
         CompressionAlgorithm::Deflate,
         BatchLimits {
             max_packets: 2,
-            max_incoming_packets: Some(2),
+            max_incoming_packets: None,
             ..BatchLimits::default()
         },
     );
@@ -73,7 +73,7 @@ fn incoming_empty_entries_preserve_packets_and_do_not_consume_packet_capacity() 
         BatchHeader::RakNet,
         BatchLimits {
             max_packets: 0,
-            max_incoming_packets: Some(0),
+            max_incoming_packets: None,
             ..BatchLimits::default()
         },
     );
@@ -652,4 +652,33 @@ fn negotiated_incoming_decoded_limit_keeps_wire_count_and_framing_validation() {
     ));
     // The actual encoded envelope without any body remains a valid empty batch.
     assert!(packets(&zero, wire.slice(..2)).is_empty());
+}
+
+#[test]
+fn framing_regression_matches_directional_empty_and_overflow_lengths() {
+    for maximum in [0, 1, 1600] {
+        let accepting = BatchCodec::new(
+            BatchHeader::RakNet,
+            BatchLimits {
+                max_incoming_packets: Some(maximum),
+                ..BatchLimits::default()
+            },
+        );
+        assert!(matches!(
+            accepting.decode(Bytes::from_static(&[0xfe, 0])),
+            Err(BatchError::EmptyPacket)
+        ));
+    }
+    let client = BatchCodec::new(BatchHeader::RakNet, BatchLimits::default());
+    for fifth in [0x10, 0x20, 0x70] {
+        let batch = Bytes::from(vec![0xfe, 0x81, 0x80, 0x80, 0x80, fifth, 2, 1, 3]);
+        assert_eq!(
+            packets(&client, batch),
+            [Bytes::from_static(&[2]), Bytes::from_static(&[3])]
+        );
+    }
+    assert!(matches!(
+        client.decode(Bytes::from_static(&[0xfe, 0x81, 0x80, 0x80, 0x80, 0x80])),
+        Err(BatchError::InvalidPacketLength { .. })
+    ));
 }
