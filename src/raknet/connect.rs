@@ -130,6 +130,7 @@ impl RakNetConnection {
                                 options,
                                 incoming: Default::default(),
                                 incoming_bytes: 0,
+                                pending_message: None,
                                 pending_datagram: None,
                                 receive_buffer: buffer,
                                 next_tick: Instant::now(),

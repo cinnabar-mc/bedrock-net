@@ -1,13 +1,14 @@
 //! A single-owner Tokio driver for the pinned RakNet protocol engine.
 //!
-//! No background task is spawned. Keep [`RakNetConnection::recv`] polled in the
-//! session's network loop to service acknowledgements, retransmission and pings.
+//! No background task is spawned. Keep [`RakNetConnection::recv`] or
+//! [`RakNetConnection::maintain`] polled to service protocol control and timers.
 //! Cancellation retains queued protocol outputs; dropping the connection closes
 //! its socket immediately.
 
 mod connect;
 mod lifecycle;
 mod observation;
+mod receive;
 
 pub use lifecycle::{
     ClosedRakNetConnection, ClosingRakNetConnection, RakNetCloseError, RakNetConnection,
@@ -46,9 +47,11 @@ pub struct RakNetOptions {
     pub connect_timeout: Duration,
     /// Maximum duration of graceful close before releasing the socket.
     pub close_timeout: Duration,
-    /// Maximum complete message bytes retained while driving other operations.
+    /// Maximum complete message bytes in the receive FIFO.
+    /// One additional original head can wait for aggregate capacity. A single
+    /// message larger than this entire allowance is rejected.
     pub receive_buffer_bytes: usize,
-    /// Maximum complete messages retained while driving other operations.
+    /// Maximum complete messages in the receive FIFO.
     pub receive_buffer_messages: usize,
     /// Maximum unacknowledged outgoing message bytes, bounded by the engine limit.
     pub send_buffer_bytes: usize,
@@ -90,7 +93,7 @@ pub enum RakNetError {
     /// A configured duration or capacity is unsupported.
     #[error("invalid raknet option: {0}")]
     InvalidOption(&'static str),
-    /// A complete received message cannot fit the receive queue.
+    /// One complete received message exceeds the entire receive-byte allowance.
     #[error("raknet receive queue exceeds its configured capacity")]
     ReceiveBufferExceeded,
     /// The caller must service the connection before queuing more messages.
@@ -170,6 +173,30 @@ impl SessionSlot {
         }
     }
 
+    /// Uses the same core parser without committing new application frames.
+    fn handle_backpressured(&mut self, input: RakSessionInput) -> Result<(), RakSessionError> {
+        match self {
+            Self::Established(session) => session.handle_backpressured(input),
+            Self::Closing(session) => session.handle_backpressured(input),
+        }
+    }
+
+    /// Takes only original wire/control output while application output is retained.
+    fn poll_control(&mut self) -> Option<RakSessionOutput> {
+        match self {
+            Self::Established(session) => session.poll_control(),
+            Self::Closing(session) => session.poll_control(),
+        }
+    }
+
+    /// Observes the canonical peer, reliable-input and original-close expiry.
+    fn expiry_deadline(&self, now: std::time::Instant) -> Option<std::time::Instant> {
+        match self {
+            Self::Established(session) => session.expiry_deadline(now),
+            Self::Closing(session) => session.expiry_deadline(now),
+        }
+    }
+
     /// Drains the original core output FIFO without copying it.
     fn poll(&mut self) -> Option<RakSessionOutput> {
         match self {
@@ -188,6 +215,7 @@ struct Engine {
     options: RakNetOptions,
     incoming: VecDeque<Bytes>,
     incoming_bytes: usize,
+    pending_message: Option<Box<[u8]>>,
     pending_datagram: Option<Box<[u8]>>,
     receive_buffer: Vec<u8>,
     next_tick: Instant,
@@ -200,12 +228,6 @@ impl Drop for Engine {
     fn drop(&mut self) {
         self.rtt.retire();
     }
-}
-
-#[derive(Clone, Copy)]
-enum DriveIntent {
-    Flush,
-    Receive,
 }
 
 impl Engine {
@@ -328,17 +350,9 @@ impl Engine {
     /// # Errors
     /// Returns socket, protocol or receive-queue failures. These end the connection.
     pub async fn flush(&mut self) -> Result<(), RakNetError> {
-        self.flush_with(DriveIntent::Flush).await
-    }
-
-    /// Shares socket progress while active receive can drain its bounded message FIFO.
-    async fn flush_with(&mut self, intent: DriveIntent) -> Result<(), RakNetError> {
         self.expire_close();
         if self.socket.is_none() {
-            return match intent {
-                DriveIntent::Flush => Ok(()),
-                DriveIntent::Receive => self.collect_outputs(intent),
-            };
+            return self.collect_outputs();
         }
         let result = self
             .session
@@ -349,7 +363,7 @@ impl Engine {
             return Err(error.into());
         }
         let result = if let Some(deadline) = self.close_deadline {
-            match tokio::time::timeout_at(deadline, self.flush_datagrams(intent)).await {
+            match tokio::time::timeout_at(deadline, self.flush_datagrams()).await {
                 Ok(result) => result,
                 Err(_) => {
                     self.end(RakNetError::Disconnected(DisconnectReason::Requested));
@@ -357,7 +371,7 @@ impl Engine {
                 }
             }
         } else {
-            self.flush_datagrams(intent).await
+            self.flush_datagrams().await
         };
         if result.is_err() {
             self.end(RakNetError::Closed);
@@ -366,10 +380,10 @@ impl Engine {
     }
 
     /// Retains the front datagram until the socket confirms its atomic send.
-    async fn flush_datagrams(&mut self, intent: DriveIntent) -> Result<(), RakNetError> {
+    async fn flush_datagrams(&mut self) -> Result<(), RakNetError> {
         loop {
             if self.pending_datagram.is_none() {
-                self.collect_outputs(intent)?;
+                self.collect_outputs()?;
             }
             let Some(datagram) = self.pending_datagram.as_ref() else {
                 return Ok(());
@@ -388,36 +402,6 @@ impl Engine {
                 .into());
             }
             self.pending_datagram = None;
-        }
-    }
-
-    /// Returns the next complete message, servicing I/O and timers while waiting.
-    ///
-    /// Cancelling this wait loses no message or pending datagram. Messages already
-    /// received precede the terminal error, even if the peer closes immediately.
-    ///
-    /// # Errors
-    /// Returns the terminal failure after draining received messages; later calls
-    /// return [`RakNetError::Closed`].
-    pub async fn recv(&mut self) -> Result<Bytes, RakNetError> {
-        loop {
-            if self.incoming.is_empty() {
-                if let Err(error) = self.flush_with(DriveIntent::Receive).await {
-                    self.failure = Some(error);
-                }
-            } else {
-                self.expire_close();
-            }
-            if let Some(message) = self.incoming.pop_front() {
-                self.incoming_bytes -= message.len();
-                return Ok(message);
-            }
-            if self.session.is_none() {
-                return Err(self.failure.take().unwrap_or(RakNetError::Closed));
-            }
-            if let Err(error) = self.step().await {
-                self.end(error);
-            }
         }
     }
 
@@ -470,10 +454,18 @@ impl Engine {
         if self.expire_close() {
             return Ok(());
         }
+        let backpressured = self.receive_blocked();
         let socket = self.socket.as_ref().ok_or(RakNetError::Closed)?;
-        let next = self
+        let mut next = self
             .close_deadline
             .map_or(self.next_tick, |deadline| deadline.min(self.next_tick));
+        if let Some(deadline) = self
+            .session
+            .as_ref()
+            .and_then(|session| session.expiry_deadline(Instant::now().into_std()))
+        {
+            next = next.min(Instant::from_std(deadline));
+        }
         let input = tokio::select! {
             received = socket.recv(&mut self.receive_buffer) => {
                 let length = received?;
@@ -489,54 +481,16 @@ impl Engine {
                 RakSessionInput::Update(Instant::now().into_std())
             }
         };
-        let result = self
-            .session
-            .as_mut()
-            .ok_or(RakNetError::Closed)?
-            .handle(input);
+        let session = self.session.as_mut().ok_or(RakNetError::Closed)?;
+        let result = if backpressured {
+            session.handle_backpressured(input)
+        } else {
+            session.handle(input)
+        };
         if result.is_ok() {
             self.publish_rtt();
         }
         result.map_err(Into::into)
-    }
-
-    /// Processes engine outputs in order, stopping before the next asynchronous socket send.
-    /// Active receive leaves the remaining core output owned until its full FIFO drains.
-    fn collect_outputs(&mut self, intent: DriveIntent) -> Result<(), RakNetError> {
-        loop {
-            if matches!(intent, DriveIntent::Receive)
-                && self.incoming.len() >= self.options.receive_buffer_messages
-            {
-                return Ok(());
-            }
-            let Some(output) = self.session.as_mut().and_then(|session| session.poll()) else {
-                if self.socket.is_none() {
-                    self.session = None;
-                }
-                return Ok(());
-            };
-            match output {
-                RakSessionOutput::Packet(message) => {
-                    self.retain_message(message)?;
-                }
-                RakSessionOutput::Datagram(..) | RakSessionOutput::Wait(..)
-                    if self.socket.is_none() => {}
-                RakSessionOutput::Datagram(datagram, _) => {
-                    self.pending_datagram = Some(datagram);
-                    return Ok(());
-                }
-                RakSessionOutput::Wait(duration) => {
-                    self.next_tick = Instant::now()
-                        .checked_add(duration)
-                        .ok_or(RakNetError::InvalidOption("engine timer is too large"))?;
-                }
-                RakSessionOutput::Disconnected(_, reason) => {
-                    self.session = None;
-                    self.end(RakNetError::Disconnected(reason));
-                    return Ok(());
-                }
-            }
-        }
     }
 
     /// Releases I/O and retains the original bounded core output for subsequent receive calls.
@@ -545,23 +499,6 @@ impl Engine {
         self.failure.get_or_insert(error);
         self.socket = None;
         self.pending_datagram = None;
-    }
-
-    /// Admits one message; rejection discards the engine's remainder to preserve a FIFO prefix.
-    fn retain_message(&mut self, message: Box<[u8]>) -> Result<(), RakNetError> {
-        if self.incoming.len() >= self.options.receive_buffer_messages
-            || message.len()
-                > self
-                    .options
-                    .receive_buffer_bytes
-                    .saturating_sub(self.incoming_bytes)
-        {
-            self.session = None;
-            return Err(RakNetError::ReceiveBufferExceeded);
-        }
-        self.incoming_bytes += message.len();
-        self.incoming.push_back(Bytes::from(message));
-        Ok(())
     }
 
     /// Applies a retained close deadline to every operation that drives protocol I/O.

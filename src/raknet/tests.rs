@@ -120,6 +120,7 @@ async fn connected_pair() -> (RakNetConnection, UdpSocket, RakSession<Establishe
                                 options: RakNetOptions::default(),
                                 incoming: VecDeque::new(),
                                 incoming_bytes: 0,
+                                pending_message: None,
                                 pending_datagram: None,
                                 receive_buffer: vec![0; UDP_BUFFER_BYTES],
                                 next_tick: Instant::now(),
@@ -325,11 +326,46 @@ async fn expired_close_retains_the_completed_burst_before_its_original_terminal(
 }
 
 #[tokio::test]
-async fn receive_overflow_returns_only_the_prefix_before_the_rejected_message() {
+async fn receive_aggregate_pressure_returns_every_original_message() {
     let (mut connection, peer, mut sender) = connected_pair().await;
     connection.engine.options.receive_buffer_bytes = 64;
     let now = Instant::now().into_std();
     for message in [vec![0xfe, 1], vec![0xfe; 63], vec![0xfe, 3]] {
+        sender
+            .send(
+                message.into_boxed_slice(),
+                RakReliability::ReliableOrdered,
+                RakPriority::Normal,
+                now,
+            )
+            .unwrap();
+    }
+    sender.tick(now).unwrap();
+    let mut sent = 0;
+    while let Some(output) = sender.poll() {
+        if let RakSessionOutput::Datagram(datagram, _) = output {
+            peer.send(&datagram).await.unwrap();
+            sent += 1;
+        }
+    }
+    assert_eq!(sent, 1);
+    assert_eq!(
+        connection.recv().await.unwrap(),
+        Bytes::from_static(&[0xfe, 1])
+    );
+    assert_eq!(connection.recv().await.unwrap().as_ref(), vec![0xfe; 63]);
+    assert_eq!(connection.recv().await.unwrap().as_ref(), [0xfe, 3]);
+    let mut closing = connection.begin_close().unwrap();
+    closing.finish_close().await.unwrap();
+    drop((closing, peer, sender));
+}
+
+#[tokio::test]
+async fn individually_oversized_message_rejects_only_after_its_accepted_prefix() {
+    let (mut connection, peer, mut sender) = connected_pair().await;
+    connection.engine.options.receive_buffer_bytes = 64;
+    let now = Instant::now().into_std();
+    for message in [vec![0xfe, 1], vec![0xfe; 65], vec![0xfe, 3]] {
         sender
             .send(
                 message.into_boxed_slice(),
@@ -357,6 +393,9 @@ async fn receive_overflow_returns_only_the_prefix_before_the_rejected_message() 
         Err(RakNetError::ReceiveBufferExceeded)
     ));
     assert!(matches!(connection.recv().await, Err(RakNetError::Closed)));
+    let local = connection.local_addr();
+    drop((connection, peer, sender));
+    UdpSocket::bind(local).await.unwrap();
 }
 
 #[tokio::test]
@@ -557,3 +596,5 @@ async fn rtt_observation_does_not_block_synchronous_retirement() {
         "RTT observation blocked synchronous retirement"
     );
 }
+
+mod backpressure;
