@@ -419,3 +419,13 @@ fn disconnect_before_login_success_reaches_the_caller() {
     assert_eq!(observed.unhandled, ["Disconnect"]);
     assert!(observed.disconnect.unwrap().contains("interop refused"));
 }
+
+/// A stack received during the original late-Login wait must complete without another stack.
+#[test]
+fn pack_stack_before_login_success_is_replayed_once() {
+    let Some((observed, _, verdict)) = scenario("pack-stack-before-login-success") else {
+        return;
+    };
+    assert_eq!(verdict["result"], "ok", "{verdict}; {observed:?}");
+    assert!(observed.login_success && observed.unhandled.is_empty());
+}
