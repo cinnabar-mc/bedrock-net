@@ -115,38 +115,41 @@ impl RakNetConnection {
                             elapsed,
                             too_large,
                         })?;
-                        match result {
-                            Ok(sent) if sent != datagram.len() => {
-                                return Err(std::io::Error::new(
-                                    std::io::ErrorKind::WriteZero,
-                                    "partial UDP MTU probe send",
-                                )
-                                .into());
-                            }
-                            Err(error) if !too_large => return Err(error.into()),
-                            _ => {}
+                        // The probe schedule owns retry timing, including non-size write errors.
+                        if result.is_ok_and(|sent| sent != datagram.len()) {
+                            return Err(std::io::Error::new(
+                                std::io::ErrorKind::WriteZero,
+                                "partial UDP MTU probe send",
+                            )
+                            .into());
                         }
                     }
                     RakClientOutput::SocketDatagram(datagram, _) => {
+                        let offline = client.is_offline_negotiating();
                         #[cfg(test)]
-                        let phase = if client.is_offline_negotiating() {
+                        let phase = if offline {
                             write_tests::Phase::OfflineRequest2
                         } else {
                             write_tests::Phase::Connected
                         };
-                        let sent = send_handshake(
+                        let result = send_handshake(
                             &socket,
                             &datagram,
                             #[cfg(test)]
                             phase,
                         )
-                        .await?;
-                        if sent != datagram.len() {
-                            return Err(std::io::Error::new(
-                                std::io::ErrorKind::WriteZero,
-                                "partial UDP handshake send",
-                            )
-                            .into());
+                        .await;
+                        match result {
+                            Ok(sent) if sent != datagram.len() => {
+                                return Err(std::io::Error::new(
+                                    std::io::ErrorKind::WriteZero,
+                                    "partial UDP handshake send",
+                                )
+                                .into());
+                            }
+                            // Reply 2 ends offline retries; connected sends remain fatal.
+                            Err(error) if !offline => return Err(error.into()),
+                            _ => {}
                         }
                     }
                     RakClientOutput::Wait(duration) => {
