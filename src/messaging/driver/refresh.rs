@@ -60,7 +60,7 @@ impl Driver {
         &mut self,
         deadline: Instant,
     ) -> Result<TurnRefresh, Error> {
-        if let Some(error) = self.terminal {
+        if let Some(error) = self.terminal.clone() {
             return Err(error);
         }
         if self.refresh.is_some() || self.socket.legacy_network_id().is_some() {
@@ -92,7 +92,7 @@ impl Driver {
         }
         let mut steps = 0;
         loop {
-            if let Some(error) = self.terminal {
+            if let Some(error) = self.terminal.clone() {
                 self.refresh = None;
                 return Err(error);
             }

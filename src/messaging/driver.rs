@@ -132,8 +132,8 @@ impl Driver {
                 Err(error) => break Err(Error::Messaging(error)),
             }
         };
-        match self.terminal {
-            Some(error) if !matches!(error, Error::Closed) => Err(error),
+        match &self.terminal {
+            Some(error) if !matches!(error, Error::Closed) => Err(error.clone()),
             _ => result,
         }
     }
@@ -145,12 +145,12 @@ impl Driver {
 
     /// Returns the first service failure without replacing it with local cleanup closure.
     pub(super) fn failure(&self) -> Option<Error> {
-        self.terminal
+        self.terminal.clone()
     }
 
     /// Polls service I/O beside a transport operation without spawning another task.
     pub(super) async fn run<F: Future>(&mut self, operation: F) -> Result<F::Output, Error> {
-        if let Some(error) = self.terminal {
+        if let Some(error) = self.terminal.clone() {
             return Err(error);
         }
         tokio::pin!(operation);
@@ -193,7 +193,7 @@ impl Driver {
                     return Ok(value);
                 }
                 Step::Error(error) => {
-                    self.terminal = Some(error);
+                    self.terminal = Some(error.clone());
                     self.close();
                     return Err(error);
                 }

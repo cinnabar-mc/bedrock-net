@@ -29,14 +29,18 @@ use nethernet_tokio::{
 };
 use retirement::SessionRetirement;
 use std::{
+    fmt,
     net::{Ipv4Addr, SocketAddr},
+    sync::Arc,
     time::Instant,
 };
 use uuid::Uuid;
 use zeroize::Zeroize;
 
-/// Redacted composition failures; no token, SDP, URL, identity or TURN credential is retained.
-#[derive(Clone, Copy, Debug, thiserror::Error)]
+/// Composition failures with redacted Display and Debug output.
+/// Connection failures retain their original cause for explicit source inspection;
+/// callers must not log that source's potentially sensitive text without review.
+#[derive(Clone, thiserror::Error)]
 #[non_exhaustive]
 pub enum Error {
     /// The target, bounds or signed transport policy was incomplete.
@@ -63,9 +67,60 @@ pub enum Error {
     /// The existing NetherNet transport failed.
     #[error("messaging transport failed")]
     Transport,
+    /// The connection attempt's original cause, shared without copying its diagnostics.
+    #[error("messaging transport connection failed: {}", ConnectionContext(.0))]
+    Connection(#[source] Arc<NetherError>),
     /// The service or transport owner closed.
     #[error("messaging transport closed")]
     Closed,
+}
+
+impl fmt::Debug for Error {
+    /// Keeps automatic diagnostic formatting as redacted as Display.
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Display::fmt(self, formatter)
+    }
+}
+
+/// Formats only typed transport categories and non-sensitive numeric I/O or signal facts.
+struct ConnectionContext<'a>(&'a NetherError);
+
+impl fmt::Display for ConnectionContext<'_> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let category = match self.0 {
+            NetherError::CallerSignaling(_) => "caller signaling",
+            NetherError::Ice(_) => "ICE",
+            NetherError::Dtls(_) => "DTLS",
+            NetherError::Sctp(_) => "SCTP",
+            NetherError::Protocol(_) => "protocol",
+            NetherError::Identity(_) => "identity",
+            NetherError::IdentityRequired => "identity required",
+            NetherError::Admission(_) => "admission",
+            NetherError::Signaling(_) => "signaling",
+            NetherError::Status(_) => "status",
+            NetherError::Io(error) => {
+                return write!(
+                    formatter,
+                    "I/O ({:?}, os={:?})",
+                    error.kind(),
+                    error.raw_os_error()
+                );
+            }
+            NetherError::ConnectionClosed => "connection closed",
+            NetherError::ReceiveCapacity => "receive capacity",
+            NetherError::PendingCountExceeded(_) => "pending offer capacity",
+            NetherError::DataChannel(_) => "data channel",
+            NetherError::MessageParse(_) => "message parsing",
+            NetherError::MessageSizeExceeded(_) => "message size",
+            NetherError::Timeout => "timeout",
+            NetherError::InvalidState(_) => "invalid state",
+            NetherError::Signaled(code) => {
+                return write!(formatter, "signaled ({code:?}, {})", u32::from(*code));
+            }
+            NetherError::Other(_) => "other",
+        };
+        formatter.write_str(category)
+    }
 }
 
 /// One signed NetherNet connection and the authenticated messaging socket that carries its signals.
@@ -222,7 +277,7 @@ impl Engine {
             let client = driver
                 .run(NetherClient::connect_with(caller, remote, config))
                 .await?
-                .map_err(|_| Error::Transport)?;
+                .map_err(|error| Error::Connection(Arc::new(error)))?;
             let retirement = SessionRetirement::new(&client);
             if let Some(error) = driver.failure() {
                 let _retired = client.close();
@@ -279,7 +334,7 @@ impl Engine {
         }
         let result = self.driver.run(self.client.recv()).await;
         let failure = match &result {
-            Err(error) => Some(*error),
+            Err(error) => Some(error.clone()),
             Ok(_) => self.driver.failure(),
         };
         if let Some(failure) = failure {
