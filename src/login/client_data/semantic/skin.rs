@@ -1,15 +1,15 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 //! Only the image and decoded skin JSON fields consumed by the pinned Go validator.
 
-use super::super::{Entries, RawClientData, invalid, same_field, schema_generated::Record, types};
+use super::super::{
+    Entries, RawClientData, invalid, json, same_field, schema_generated::Record, types,
+};
 use base64::{
     Engine as _, alphabet,
     engine::{GeneralPurpose, GeneralPurposeConfig},
 };
 use serde_json::value::RawValue;
 use std::{borrow::Cow, io};
-
-mod json;
 
 const STANDARD: GeneralPurpose = GeneralPurpose::new(
     &alphabet::STANDARD,

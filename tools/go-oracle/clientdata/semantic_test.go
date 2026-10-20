@@ -32,7 +32,7 @@ func TestNativeClientDataSemanticData(t *testing.T) {
 	}{
 		{"unicode_generated.rs", nativeClientDataUnicode(client, locale)},
 		{"locale_generated.rs", nativeClientDataLocale(t, client, locale)},
-		{"json_generated.rs", nativeClientDataJSON(t)},
+		{"../json_generated.rs", nativeClientDataJSON(t)},
 	}
 	for _, output := range outputs {
 		path := filepath.Join("../../../src/login/client_data/semantic", output.name)

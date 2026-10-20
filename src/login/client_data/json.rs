@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
-//! Bounded decoded-skin JSON admission without constructing a recursive Value tree.
+//! Bounded raw metadata and decoded-skin JSON without constructing a recursive Value tree.
 
-use super::super::json_generated::MAX_NESTING_DEPTH;
+use super::json_generated::MAX_NESTING_DEPTH;
 use serde_json::value::RawValue;
 
 /// Keeps serde's iterative raw parser as the sole JSON grammar owner after bounding its scratch.
@@ -9,16 +9,21 @@ pub(super) fn object_or_null(decoded: &[u8]) -> bool {
     let Ok(input) = std::str::from_utf8(decoded) else {
         return false;
     };
-    if !within_limits(input) {
+    if !within_limits(input, true) {
         return false;
     }
     serde_json::from_str::<&RawValue>(input)
         .is_ok_and(|raw| raw.get() == "null" || raw.get().starts_with('{'))
 }
 
-/// Counts only unquoted containers and checks float representability; serde still checks all syntax.
-/// This bounds RawValue's iterative bracket scratch before it can grow, without recursive allocation.
-fn within_limits(input: &str) -> bool {
+/// Bounds every container, including opaque claims, without interpreting their scalar values.
+/// The raw parser remains responsible for JSON grammar and exact value lexemes.
+pub(super) fn within_nesting_limit(input: &str) -> bool {
+    within_limits(input, false)
+}
+
+/// Counts unquoted containers and optionally checks consumed float values before raw parsing.
+fn within_limits(input: &str, finite_numbers: bool) -> bool {
     let bytes = input.as_bytes();
     let mut index = 0;
     let mut depth = 0usize;
@@ -50,7 +55,7 @@ fn within_limits(input: &str) -> bool {
                 };
                 depth = parent;
             }
-            b'-' | b'0'..=b'9' => {
+            b'-' | b'0'..=b'9' if finite_numbers => {
                 let start = index - 1;
                 while bytes.get(index).is_some_and(|byte| {
                     matches!(byte, b'0'..=b'9' | b'.' | b'e' | b'E' | b'+' | b'-')

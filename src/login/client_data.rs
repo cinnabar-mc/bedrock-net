@@ -9,6 +9,8 @@ use serde::{
 use serde_json::{Value, value::RawValue};
 use std::{fmt, io};
 
+mod json;
+mod json_generated;
 mod schema_generated;
 mod semantic;
 mod types;
@@ -53,7 +55,9 @@ impl RawClientData {
     /// # Errors
     /// Rejects oversized or malformed objects and any known-field JSON type mismatch.
     pub fn from_raw(raw: &RawValue) -> io::Result<Self> {
-        if raw.get().len() > crate::BatchLimits::default().max_decoded_bytes {
+        if raw.get().len() > crate::BatchLimits::default().max_decoded_bytes
+            || !json::within_nesting_limit(raw.get())
+        {
             return Err(invalid());
         }
         let entries = serde_json::from_str::<Entries>(raw.get()).map_err(|_| invalid())?;
