@@ -155,7 +155,8 @@ async fn join(address: SocketAddr, observed: &mut Observed) -> Result<(), Box<dy
         SystemTime::now(),
     )?;
     session.send(request.into()).await?;
-    login_phase(&mut session, login, observed).await
+    login_phase(&mut session, login, observed).await?;
+    session.transport.close().await
 }
 
 async fn login_phase(

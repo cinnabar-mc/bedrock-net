@@ -156,7 +156,15 @@ func listen(scenario string) error {
 	if err := conn.WritePacket(&packet.Disconnect{Message: "interop complete"}); err != nil {
 		return err
 	}
-	return conn.Flush()
+	if err := conn.Flush(); err != nil {
+		return err
+	}
+	// Stay connected until the client closes, so the final batch is delivered.
+	for {
+		if _, err := conn.ReadPacket(); err != nil {
+			return nil
+		}
+	}
 }
 
 // scriptedConn frames generated Go packets over one go-raknet connection without encryption.
@@ -265,7 +273,10 @@ func scripted(scenario string) error {
 		if response.Response != packet.PackResponseCompleted {
 			return errors.New("client did not complete the pack stack")
 		}
-		return nil
+		if err := s.write(&packet.Disconnect{Message: "interop complete"}); err != nil {
+			return err
+		}
+		return s.drain()
 	case "transfer-before-login-success":
 		if err := s.write(&packet.Transfer{Address: "127.0.0.1", Port: 19133}); err != nil {
 			return err
