@@ -16,7 +16,7 @@ pub use packs::{ServerPackContent, ServerPackDelivery, ServerPackSnapshot};
 pub use relay::{PendingServerRelay, ServerRelayInitialized, ServerRelayProgress, ServerRelaying};
 pub use spawn::ServerWorld;
 
-use super::{AuthenticatedLogin, LoginError, LoginPolicy, ServerHandshakeError};
+use super::{AuthenticatedLogin, LoginError, LoginPolicy, LoginVerifier, ServerHandshakeError};
 use bedrock_protocol::{enums::PlayStatusType, packets, wire};
 use std::time::{Instant, SystemTime};
 
