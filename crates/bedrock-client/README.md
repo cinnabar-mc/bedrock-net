@@ -57,6 +57,8 @@ network selections do not inherit local import limits. Callers can select explic
 identity, SHA-256 and the bounded chunk-request window. Preloads require caller
 archive/manifest validation against the offer; the offer contains no archive
 hash, and `supply_preloaded` checks byte bounds rather than authenticating content.
+The final stack's required bit controls rejection of unavailable selected entries;
+the archive handoff retains the offer-or-stack required policy.
 
 Actual final-stack processing creates `PackComplete`, which has no public
 constructor. Send its original stack acknowledgment before entering startup.

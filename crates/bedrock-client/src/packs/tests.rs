@@ -376,7 +376,12 @@ fn final_stack_selects_order_subpack_and_offer_key_without_applying_unselected_a
                 texture_pack_list: selected.clone(),
                 ..Default::default()
             };
-            assert!(finish([(id, download)].into(), stack, offer_required).is_err());
+            let result = finish([(id, download)].into(), stack, offer_required);
+            if stack_required {
+                assert!(result.is_err());
+            } else {
+                assert!(result.unwrap().required());
+            }
         }
     }
 }
@@ -468,10 +473,12 @@ fn optional_content_admission_and_transfer_budget_are_separate() {
             ..stack.clone()
         };
         let result = finish([(id, download)].into(), stack, offer_required);
-        if offer_required || stack_required {
+        if stack_required {
             assert!(result.is_err());
         } else {
-            assert!(result.unwrap().is_empty());
+            let handoff = result.unwrap();
+            assert!(handoff.is_empty());
+            assert_eq!(handoff.required(), offer_required);
         }
     }
 
