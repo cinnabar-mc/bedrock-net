@@ -9,10 +9,10 @@ pub(super) const SOURCE_IMPORT_MODULE: &str = "github.com/sandertv/gophertunnel"
 pub(super) const SOURCE_MODULE: &str = "github.com/hashimthearab/gophertunnel";
 
 #[cfg(test)]
-pub(super) const SOURCE_VERSION: &str = "v1.25.3-0.20261017173210-81e65c54fb21";
+pub(super) const SOURCE_VERSION: &str = "v1.25.3-0.20261019151115-85d4022854e1";
 
 #[cfg(test)]
-pub(super) const SOURCE_SUM: &str = "h1:CQEPcmXoXBEg46MVab50LPqyaLglxXLy7H10dRwvY9Q=";
+pub(super) const SOURCE_SUM: &str = "h1:o0uCvBBvuSDpG75KbSFPkGLtDR3G0j5R+G9dUwtxrxA=";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum Record {

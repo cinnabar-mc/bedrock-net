@@ -5,19 +5,19 @@
 pub(super) const CLIENT_MODULE: &str = "github.com/hashimthearab/gophertunnel";
 
 #[cfg(test)]
-pub(super) const CLIENT_VERSION: &str = "v1.25.3-0.20261017173210-81e65c54fb21";
+pub(super) const CLIENT_VERSION: &str = "v1.25.3-0.20261019151115-85d4022854e1";
 
 #[cfg(test)]
-pub(super) const CLIENT_SUM: &str = "h1:CQEPcmXoXBEg46MVab50LPqyaLglxXLy7H10dRwvY9Q=";
+pub(super) const CLIENT_SUM: &str = "h1:o0uCvBBvuSDpG75KbSFPkGLtDR3G0j5R+G9dUwtxrxA=";
 
 #[cfg(test)]
 pub(super) const LOCALE_MODULE: &str = "golang.org/x/text";
 
 #[cfg(test)]
-pub(super) const LOCALE_VERSION: &str = "v0.40.0";
+pub(super) const LOCALE_VERSION: &str = "v0.35.0";
 
 #[cfg(test)]
-pub(super) const LOCALE_SUM: &str = "h1:Ub2Z6/xjgF1WrYQz2nuITOEegKFtiIy+rieRJ5lHZKs=";
+pub(super) const LOCALE_SUM: &str = "h1:JOVx6vVDFokkpaq1AEptVzLTpDe9KGpj5tR4/X+ybL8=";
 
 #[cfg(test)]
 pub(super) const UNICODE_VERSION: &str = "15.0.0";
