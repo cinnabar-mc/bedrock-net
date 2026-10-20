@@ -1,6 +1,27 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 use super::{MAX_NESTING_DEPTH, object_or_null};
 
+/// Opaque claims retain their lexemes but still obey the complete document's generated bound.
+#[test]
+fn raw_client_data_preserves_the_go_nesting_boundary() {
+    use crate::login::client_data::RawClientData;
+    use serde_json::value::RawValue;
+
+    let object = |arrays| {
+        format!(
+            "{{\"Unknown\":{}0{},\"Quoted\":\"[{{\\\"}}]\"}}",
+            "[".repeat(arrays),
+            "]".repeat(arrays),
+        )
+    };
+    let maximum = RawValue::from_string(object(MAX_NESTING_DEPTH - 1)).unwrap();
+    let accepted = RawClientData::from_raw(&maximum).unwrap();
+    assert_eq!(serde_json::to_string(&accepted).unwrap(), maximum.get());
+
+    let too_deep = RawValue::from_string(object(MAX_NESTING_DEPTH)).unwrap();
+    assert!(RawClientData::from_raw(&too_deep).is_err());
+}
+
 /// The actual generated Go bound includes the root object and never enters a recursive Value tree.
 #[test]
 fn decoded_skin_json_preserves_the_go_nesting_boundary() {
