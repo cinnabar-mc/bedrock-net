@@ -12,7 +12,7 @@ use bedrock_protocol::{
     packets,
     wire::{PacketHeader, Writer},
 };
-use bytes::{Bytes, BytesMut};
+use bytes::Bytes;
 
 use crate::transport::Transport;
 
@@ -21,6 +21,7 @@ pub(super) struct Session<S = Plain> {
     codec: BatchCodec<S>,
     limits: BatchLimits,
     pending: Option<BatchPackets>,
+    outgoing: Vec<Bytes>,
     ciphers: Option<(BatchEncryptor, BatchDecryptor)>,
 }
 
@@ -33,6 +34,7 @@ impl Session<Plain> {
             transport,
             limits,
             pending: None,
+            outgoing: Vec::new(),
             ciphers: None,
         }
     }
@@ -44,6 +46,7 @@ impl Session<Plain> {
             codec: self.codec.negotiate(settings),
             limits: self.limits,
             pending: self.pending,
+            outgoing: self.outgoing,
             ciphers: self.ciphers,
         }
     }
@@ -71,18 +74,14 @@ impl<S: BatchPhase> Session<S> {
         let mut writer = Writer::with_limit(&mut bytes, self.limits.max_decoded_bytes);
         writer.write_var_u32(PacketHeader::new(packet.id() as u32).to_raw())?;
         packet.encode(&mut writer)?;
-        for mut message in self.codec.encode(&[bytes])? {
+        self.codec.encode_into(&[bytes], &mut self.outgoing)?;
+        for message in &mut self.outgoing {
             if let Some((encryptor, _)) = &mut self.ciphers {
-                let marker = self.transport.header().marker();
-                let body = if marker.is_some() {
-                    message.slice(1..)
-                } else {
-                    message
-                };
-                message = envelope(marker, encryptor.encrypt(body)?);
+                *message =
+                    encryptor.encrypt_batch(self.transport.header(), std::mem::take(message))?;
                 check_wire_size(&message, self.limits)?;
             }
-            self.transport.send(message).await?;
+            self.transport.send(message.clone()).await?;
         }
         Ok(())
     }
@@ -97,17 +96,14 @@ impl<S: BatchPhase> Session<S> {
             let mut message = self.transport.recv().await?;
             check_wire_size(&message, self.limits)?;
             if let Some((_, decryptor)) = &mut self.ciphers {
-                let marker = self.transport.header().marker();
-                let body = if let Some(marker) = marker {
+                let header = self.transport.header();
+                if let Some(marker) = header.marker() {
                     let actual = *message.first().ok_or(BatchError::MissingBatchHeader)?;
                     if actual != marker {
                         return Err(BatchError::InvalidBatchHeader(actual).into());
                     }
-                    message.slice(1..)
-                } else {
-                    message
-                };
-                message = envelope(marker, decryptor.decrypt(body)?);
+                }
+                message = decryptor.decrypt_batch(header, message)?;
             }
             match self.codec.decode(message)? {
                 DecodeOutcome::Packets {
@@ -123,18 +119,6 @@ impl<S: BatchPhase> Session<S> {
                 DecodeOutcome::Dropped(reason) => eprintln!("dropped batch: {reason:?}"),
             }
         }
-    }
-}
-
-/// Restores the cleartext transport marker around a cipher body, when one is required.
-fn envelope(marker: Option<u8>, body: Bytes) -> Bytes {
-    if let Some(marker) = marker {
-        let mut message = BytesMut::new();
-        message.extend_from_slice(&[marker]);
-        message.extend_from_slice(&body);
-        message.freeze()
-    } else {
-        body
     }
 }
 

@@ -9,7 +9,97 @@ use ::raknet::prelude::{
     RakServerInput, RakServerOutput,
 };
 
+use ::raknet::test_support::send_bundle;
+
 use super::*;
+
+std::thread_local! {
+    static MAINTENANCE_PASSES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// Counts full maintenance passes independently of burst size and elapsed time.
+pub(super) fn record_maintenance_pass() {
+    MAINTENANCE_PASSES.with(|passes| passes.set(passes.get() + 1));
+}
+
+#[tokio::test(start_paused = true)]
+async fn congested_send_burst_does_not_repeat_full_maintenance() {
+    for count in [256, 512, 1024, 2048] {
+        let (mut connection, _peer, _sender) = connected_pair().await;
+        // Fill the initial congestion window without processing any acknowledgements.
+        for _ in 0..64 {
+            connection
+                .queue_send(Bytes::from(vec![0xfe; 1024]))
+                .unwrap();
+        }
+        let retained = connection.engine.session.as_ref().unwrap().outbound_bytes();
+        let now = Instant::now();
+        MAINTENANCE_PASSES.set(0);
+        for _ in 0..count {
+            connection
+                .queue_send(Bytes::from_static(&[0xfe; 64]))
+                .unwrap();
+        }
+        assert!(
+            connection.engine.session.as_ref().unwrap().outbound_bytes() >= retained + count * 64,
+            "the unacknowledged burst must remain retained under congestion"
+        );
+        assert_eq!(Instant::now(), now);
+        assert_eq!(
+            MAINTENANCE_PASSES.get(),
+            0,
+            "send admission must not revisit retained traffic through full maintenance"
+        );
+        connection.flush().await.unwrap();
+        assert_eq!(
+            MAINTENANCE_PASSES.get(),
+            1,
+            "explicit maintenance still runs"
+        );
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn queued_send_reaches_the_socket_with_an_unread_receive_backlog() {
+    let (mut connection, peer, mut sender) = connected_pair().await;
+    let backlog = Bytes::from_static(b"unread input");
+    connection.engine.incoming.push_back(backlog.clone());
+    connection.engine.incoming_bytes = backlog.len();
+    let start = Instant::now();
+    let message = Bytes::from_static(&[0xfe, 42]);
+    connection.queue_send(message.clone()).unwrap();
+    let mut buffer = [0; UDP_BUFFER_BYTES];
+    let mut received = None;
+    // Poll only the peer and reactor; the sending connection is never driven again.
+    for _ in 0..128 {
+        match peer.try_recv(&mut buffer) {
+            Ok(length) => {
+                sender
+                    .handle(RakSessionInput::Datagram(
+                        buffer[..length].into(),
+                        start.into_std(),
+                    ))
+                    .unwrap();
+                while let Some(output) = sender.poll() {
+                    if let RakSessionOutput::Packet(bytes) = output {
+                        received = Some(bytes);
+                    }
+                }
+                if received.is_some() {
+                    break;
+                }
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                tokio::task::yield_now().await;
+            }
+            Err(error) => panic!("peer receive failed: {error}"),
+        }
+    }
+    assert_eq!(received.as_deref(), Some(message.as_ref()));
+    assert_eq!(Instant::now(), start);
+    assert_eq!(connection.engine.incoming.front(), Some(&backlog));
+    assert_eq!(connection.recv().await.unwrap(), backlog);
+}
 
 /// Establishes both core owners through public negotiation before attaching real UDP sockets.
 async fn connected_pair() -> (RakNetConnection, UdpSocket, RakSession<Established>) {
@@ -19,6 +109,7 @@ async fn connected_pair() -> (RakNetConnection, UdpSocket, RakSession<Establishe
     let address = peer.local_addr().unwrap();
     socket.connect(address).await.unwrap();
     peer.connect(local).await.unwrap();
+    socket.writable().await.unwrap();
     let now = Instant::now().into_std();
     let mut client = RakClient::new(RakClientConfig::default(), RakClock::new(now))
         .unwrap()
@@ -148,19 +239,15 @@ async fn active_receive_drains_a_legal_datagram_larger_than_its_staging_count() 
     let (mut connection, peer, mut sender) = connected_pair().await;
     let count = connection.engine.options.receive_buffer_messages + 1;
     let now = Instant::now().into_std();
-    for index in 0..count {
-        let mut message = vec![0xfe];
-        message.extend_from_slice(&u32::try_from(index).unwrap().to_le_bytes());
-        sender
-            .send(
-                message.into_boxed_slice(),
-                RakReliability::ReliableOrdered,
-                RakPriority::Normal,
-                now,
-            )
-            .unwrap();
-    }
-    sender.tick(now).unwrap();
+    send_bundle(
+        &mut sender,
+        (0..count).map(|index| {
+            let mut message = vec![0xfe];
+            message.extend_from_slice(&u32::try_from(index).unwrap().to_le_bytes());
+            message.into_boxed_slice()
+        }),
+        now,
+    );
     let mut sent = 0;
     while let Some(output) = sender.poll() {
         if let RakSessionOutput::Datagram(datagram, _) = output {
@@ -184,19 +271,15 @@ async fn completed_burst_precedes_the_peers_graceful_close() {
     let (mut connection, peer, mut sender) = connected_pair().await;
     let count = connection.engine.options.receive_buffer_messages + 1;
     let now = Instant::now().into_std();
-    for index in 0..count {
-        let mut message = vec![0xfe];
-        message.extend_from_slice(&u32::try_from(index).unwrap().to_le_bytes());
-        sender
-            .send(
-                message.into_boxed_slice(),
-                RakReliability::ReliableOrdered,
-                RakPriority::Normal,
-                now,
-            )
-            .unwrap();
-    }
-    sender.tick(now).unwrap();
+    send_bundle(
+        &mut sender,
+        (0..count).map(|index| {
+            let mut message = vec![0xfe];
+            message.extend_from_slice(&u32::try_from(index).unwrap().to_le_bytes());
+            message.into_boxed_slice()
+        }),
+        now,
+    );
     let mut sent = 0;
     while let Some(output) = sender.poll() {
         if let RakSessionOutput::Datagram(datagram, _) = output {
@@ -258,19 +341,15 @@ async fn expired_close_retains_the_completed_burst_before_its_original_terminal(
     let deadline = connection.engine.close_deadline.unwrap();
     connection.flush().await.unwrap();
     let now = Instant::now().into_std();
-    for index in 0..count {
-        let mut message = vec![0xfe];
-        message.extend_from_slice(&u32::try_from(index).unwrap().to_le_bytes());
-        sender
-            .send(
-                message.into_boxed_slice(),
-                RakReliability::ReliableOrdered,
-                RakPriority::Normal,
-                now,
-            )
-            .unwrap();
-    }
-    sender.tick(now).unwrap();
+    send_bundle(
+        &mut sender,
+        (0..count).map(|index| {
+            let mut message = vec![0xfe];
+            message.extend_from_slice(&u32::try_from(index).unwrap().to_le_bytes());
+            message.into_boxed_slice()
+        }),
+        now,
+    );
     let mut sent = 0;
     let mut buffer = [0; UDP_BUFFER_BYTES];
     while let Some(output) = sender.poll() {
@@ -330,17 +409,13 @@ async fn receive_aggregate_pressure_returns_every_original_message() {
     let (mut connection, peer, mut sender) = connected_pair().await;
     connection.engine.options.receive_buffer_bytes = 64;
     let now = Instant::now().into_std();
-    for message in [vec![0xfe, 1], vec![0xfe; 63], vec![0xfe, 3]] {
-        sender
-            .send(
-                message.into_boxed_slice(),
-                RakReliability::ReliableOrdered,
-                RakPriority::Normal,
-                now,
-            )
-            .unwrap();
-    }
-    sender.tick(now).unwrap();
+    send_bundle(
+        &mut sender,
+        [vec![0xfe, 1], vec![0xfe; 63], vec![0xfe, 3]]
+            .into_iter()
+            .map(Vec::into_boxed_slice),
+        now,
+    );
     let mut sent = 0;
     while let Some(output) = sender.poll() {
         if let RakSessionOutput::Datagram(datagram, _) = output {
@@ -365,17 +440,13 @@ async fn individually_oversized_message_rejects_only_after_its_accepted_prefix()
     let (mut connection, peer, mut sender) = connected_pair().await;
     connection.engine.options.receive_buffer_bytes = 64;
     let now = Instant::now().into_std();
-    for message in [vec![0xfe, 1], vec![0xfe; 65], vec![0xfe, 3]] {
-        sender
-            .send(
-                message.into_boxed_slice(),
-                RakReliability::ReliableOrdered,
-                RakPriority::Normal,
-                now,
-            )
-            .unwrap();
-    }
-    sender.tick(now).unwrap();
+    send_bundle(
+        &mut sender,
+        [vec![0xfe, 1], vec![0xfe; 65], vec![0xfe, 3]]
+            .into_iter()
+            .map(Vec::into_boxed_slice),
+        now,
+    );
     let mut sent = 0;
     while let Some(output) = sender.poll() {
         if let RakSessionOutput::Datagram(datagram, _) = output {
@@ -402,17 +473,11 @@ async fn individually_oversized_message_rejects_only_after_its_accepted_prefix()
 async fn completed_message_precedes_a_later_frame_error_in_the_same_datagram() {
     let (mut connection, peer, mut sender) = connected_pair().await;
     let now = Instant::now().into_std();
-    for message in [Box::from([0xfe, 42].as_slice()), Box::from([0].as_slice())] {
-        sender
-            .send(
-                message,
-                RakReliability::ReliableOrdered,
-                RakPriority::Normal,
-                now,
-            )
-            .unwrap();
-    }
-    sender.tick(now).unwrap();
+    send_bundle(
+        &mut sender,
+        [Box::from([0xfe, 42].as_slice()), Box::from([0].as_slice())],
+        now,
+    );
     let mut sent = 0;
     while let Some(output) = sender.poll() {
         if let RakSessionOutput::Datagram(datagram, _) = output {
@@ -537,6 +602,7 @@ async fn rtt_observation_uses_original_ack_estimate_and_retires_with_owner() {
     sender
         .handle(RakSessionInput::Datagram(buffer[..length].into(), now))
         .unwrap();
+    sender.tick(now).unwrap();
     sender
         .send(
             b"acknowledged marker".as_slice().into(),
@@ -545,7 +611,6 @@ async fn rtt_observation_uses_original_ack_estimate_and_retires_with_owner() {
             now,
         )
         .unwrap();
-    sender.tick(now).unwrap();
     while let Some(output) = sender.poll() {
         if let RakSessionOutput::Datagram(datagram, _) = output {
             peer.send(&datagram).await.unwrap();

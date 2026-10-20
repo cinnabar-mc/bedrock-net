@@ -17,6 +17,11 @@ impl Engine {
                 }
             } else {
                 self.expire_close();
+                if self.socket.is_some()
+                    && let Err(error) = self.try_flush_datagrams()
+                {
+                    self.end(error);
+                }
             }
             if let Some(message) = self.incoming.pop_front() {
                 self.incoming_bytes -= message.len();
