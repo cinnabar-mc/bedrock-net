@@ -220,7 +220,7 @@ impl phase_private::Sealed for Negotiated {
             .unwrap_or_else(|error| error.into_inner());
         let encoder = encoder.get_or_insert_with(Box::default);
         encoder.body.clear();
-        encoder.body.reserve(body_len);
+        encoder.body.reserve_exact(body_len);
         write_packets(packets, &mut encoder.body);
         encoder.compress(algorithm, out)
     }
@@ -432,6 +432,10 @@ impl<S: BatchPhase> BatchCodec<S> {
             }
             let maximum = self.limits.max_incoming_packets;
             let scratch = self.phase.snappy_scratch();
+            // Keep near-limit batches from doubling the retained allocation.
+            if length > scratch.capacity() {
+                scratch.reserve_exact(length - scratch.len());
+            }
             scratch.resize(length, 0);
             if let Err(error) = snap::raw::Decoder::new().decompress(&body, scratch) {
                 return Ok(VisitOutcome::Dropped(DropReason::InvalidSnappy(error)));
@@ -667,4 +671,67 @@ pub(crate) fn write_length(mut length: u32, out: &mut Vec<u8>) {
         length >>= 7;
     }
     out.push(length as u8);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Creates a codec whose outgoing scratch limit matches one small Snappy block.
+    fn bounded(algorithm: CompressionAlgorithm) -> BatchCodec<Negotiated> {
+        BatchCodec::new(
+            BatchHeader::RakNet,
+            BatchLimits {
+                max_decoded_bytes: 65536,
+                ..BatchLimits::default()
+            },
+        )
+        .negotiate(CompressionSettings {
+            algorithm,
+            threshold: 0,
+        })
+    }
+
+    #[test]
+    fn retained_snappy_decode_scratch_stays_within_one_block() {
+        let mut codec = bounded(CompressionAlgorithm::Snappy);
+        for length in [65532, 65533, 3] {
+            let input = vec![0x42; length];
+            let wire = codec
+                .encode(std::slice::from_ref(&input))
+                .unwrap()
+                .pop()
+                .unwrap();
+            let DecodeOutcome::Packets { packets, .. } = codec.decode(wire.clone()).unwrap() else {
+                panic!("valid batch dropped");
+            };
+            assert_eq!(
+                packets.collect::<Vec<_>>(),
+                [Bytes::copy_from_slice(&input)]
+            );
+            let mut visits = 0;
+            codec
+                .decode_with(wire, |packet| {
+                    assert_eq!(packet, input);
+                    visits += 1;
+                })
+                .unwrap();
+            assert_eq!(visits, 1);
+            let decoder = codec.phase.decoder.get_mut().unwrap().as_ref().unwrap();
+            assert!(decoder.snappy.capacity() <= 65536);
+        }
+    }
+
+    #[test]
+    fn retained_encoding_scratch_stays_within_decoded_limit() {
+        for algorithm in [CompressionAlgorithm::Deflate, CompressionAlgorithm::Snappy] {
+            let mut codec = bounded(algorithm);
+            for length in [65532, 65533, 3] {
+                let wire = codec.encode(&[vec![0x42; length]]).unwrap();
+                assert_eq!(wire.len(), 1);
+                let encoder = codec.phase.encoder.get_mut().unwrap().as_ref().unwrap();
+                assert!(encoder.body.capacity() <= 65536);
+            }
+        }
+    }
 }
