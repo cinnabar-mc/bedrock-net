@@ -78,6 +78,7 @@ packet-count limits; the initial plaintext phase keeps its original byte policy.
 | Accepting Login | `ServerHandshake` → settings/verification/authorization/exchange owners → `ServerPacksReady<Grant>` or Login-only `AcceptedLogin<Grant>` |
 | Accepting packs | `ServerPacks<Grant>` → owned chunk read/write continuations → `ServerWorldReady<Grant>` |
 | Accepting startup | `ServerSpawning<Grant>` → `ServerInitialized<Grant>` → `AcceptedSession<Grant>` |
+| Packless upstream relay | `ServerPacksReady<Grant>` → pending LoginSuccess flush → `ServerRelaying<Grant>` → actual forwarded initialization |
 
 Methods consume the current phase and return its continuation. Install returned
 compression or ciphers and dispatch effects before advancing that continuation.
@@ -106,6 +107,9 @@ borrows them and revalidation rejects changes. Missing presentation stays absent
 The accepting APIs provide protocol continuations through `AcceptedSession`.
 The application supplies its listener, current authorization and running-world
 attachment. It can also stop at the Login-only handoff.
+An upstream without a pack phase uses `relay_without_packs`; it creates no pack
+metadata or acknowledgment. The caller flushes its LoginSuccess before forwarding
+the real startup. Runtime, registry, radius/spawn and Initialized checks remain.
 
 See the [integration guide](docs/integration.md) for packet routing, cipher
 ordering, pack/startup handoffs and owner-preserving error/close handling. The

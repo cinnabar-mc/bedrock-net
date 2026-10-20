@@ -4,6 +4,8 @@ use super::*;
 use bedrock_protocol::enums::PlayStatusType;
 use std::time::Duration;
 
+mod packless;
+
 /// Uses the original provider/approval/pack fixture to obtain the real public relay boundary.
 fn prepared_relay() -> (ServerRelaying<Grant>, Provider, Instant, SystemTime) {
     let (server, packets, client, provider, now, utc) = accepted(snapshot());

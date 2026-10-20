@@ -4,8 +4,63 @@ use super::{
     AcceptedSession, AuthenticatedLogin, LoginVerifier, Phase, ServerSessionError as Error,
     ServerSessionTransitionError, SessionEngine, bounded_metadata, lifecycle::failure,
 };
+use crate::server::ServerPacksReady;
 use bedrock_protocol::{enums::PlayStatusType, packets};
 use std::time::{Instant, SystemTime};
+
+impl<A> ServerPacksReady<A> {
+    /// Relays a caller-selected upstream with no advertised pack phase.
+    /// Revalidates the original Login and retains its grant/deadline. The returned
+    /// LoginSuccess must be sent and flushed before any upstream startup is forwarded.
+    /// This creates no offer, stack acknowledgment, selected world or initialization.
+    ///
+    /// # Errors
+    /// Rejects an insufficient metadata bound, expiry or changed provider identity.
+    pub fn relay_without_packs(
+        self,
+        max_metadata_bytes: usize,
+        verifier: &impl LoginVerifier,
+        now: Instant,
+        utc: SystemTime,
+    ) -> Result<PendingServerRelay<A>, ServerSessionTransitionError<Self>> {
+        if max_metadata_bytes == 0 {
+            return Err(failure(
+                self,
+                Error::InvalidData("zero relay metadata limit"),
+            ));
+        }
+        let success = packets::PlayStatus {
+            status: PlayStatusType::Loginsuccess,
+        };
+        if let Err(cause) = bounded_metadata(&success, packets::PlayStatus::ID, max_metadata_bytes)
+        {
+            return Err(failure(self, cause));
+        }
+        let accepted = match self.finish(verifier, now, utc) {
+            Ok(accepted) => accepted,
+            Err(failed) => {
+                let (owner, cause) = failed.into_parts();
+                return Err(failure(owner, cause.into()));
+            }
+        };
+        let deadline = accepted.deadline();
+        let (login, grant) = accepted.into_parts();
+        Ok(PendingServerRelay {
+            session: ServerRelaying::new(Box::new(SessionEngine {
+                login,
+                grant,
+                packs: None,
+                metadata_limit: max_metadata_bytes,
+                world: None,
+                deadline,
+                phase: Phase::World,
+                cache_enabled: false,
+            })),
+            packet: success.into(),
+            effect: Effect::None,
+        })
+    }
+}
 
 /// The original accepting Login and grant observing a real upstream world's startup.
 /// This owner generates no world, radius, item, creative or spawn response.
@@ -19,7 +74,7 @@ pub struct ServerRelaying<A> {
     spawned: bool,
 }
 
-/// One original control and its sole continuation, awaiting the adapter's actual forward flush.
+/// One original control or initial LoginSuccess and its sole continuation, awaiting actual flush.
 /// Raw headers/bytes and pipelined siblings remain with the adapter, under its original byte bound.
 ///
 /// ```compile_fail
@@ -61,7 +116,7 @@ enum Effect {
 }
 
 impl<A> ServerRelaying<A> {
-    /// Takes the one consumed original pack-stack acknowledgment, without creating a world.
+    /// Takes original Login/grant after actual packs or explicit absence, without creating a world.
     pub(super) fn new(engine: Box<SessionEngine<A>>) -> Self {
         Self {
             engine,
@@ -178,7 +233,7 @@ impl<A> ServerRelaying<A> {
 
     /// Uses the original accepting metadata ceiling rather than a new relay size policy.
     fn limit(&self) -> usize {
-        self.engine.packs.metadata_limit()
+        self.engine.metadata_limit
     }
 }
 
