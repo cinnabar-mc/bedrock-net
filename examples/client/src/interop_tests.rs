@@ -33,11 +33,6 @@ use crate::{
 const EXPECTED_DIVERGENCES: &[(&str, &str)] = &[
     // Audit C c314b9cb: Go and vanilla open 100 chunk requests; Rust opens up to 1024 in order.
     ("chunk-pack/initial_requests", "pack request window"),
-    // Audit B 6d01c2f6: Go accepts StartGame without a pack phase; Rust returns it unhandled.
-    (
-        "startgame-without-packs/start_game",
-        "StartGame without pack phase",
-    ),
 ];
 
 /// One running helper and the defaults it reported.
@@ -103,6 +98,7 @@ struct Observed {
     unknown_ids: Vec<u32>,
     disconnect: Option<String>,
     unhandled: Vec<String>,
+    packless_startup: bool,
 }
 
 /// Decodes the next known server packet; unknown IDs are recorded, as no generated packet holds them.
@@ -193,6 +189,11 @@ async fn login_phase(
                     session.send(status.into()).await?;
                 }
                 break packs;
+            }
+            // Startup without a pack phase; the scenario sends nothing further.
+            LoginEvent::Startup { .. } => {
+                observed.packless_startup = true;
+                return Ok(());
             }
             // Terminal or out-of-phase input stays with the caller; the scenario ends here.
             LoginEvent::Unhandled { packet, .. } => {
@@ -419,18 +420,11 @@ fn start_game_without_pack_phase() {
     let Some((observed, _, _)) = scenario("startgame-without-packs") else {
         return;
     };
+    // A Go Dialer starts the game from this StartGame; so does the Rust Login owner.
     assert!(
-        observed.unhandled.is_empty() || observed.unhandled == ["StartGame"],
+        observed.packless_startup && observed.unhandled.is_empty(),
         "{observed:?}"
     );
-    let mut ledger = Ledger::default();
-    // A Go Dialer handles StartGame here; the Rust Login owner hands it back unhandled.
-    ledger.compare(
-        "startgame-without-packs/start_game",
-        Vec::<String>::new(),
-        observed.unhandled,
-    );
-    ledger.finish("startgame-without-packs/");
 }
 
 #[test]
