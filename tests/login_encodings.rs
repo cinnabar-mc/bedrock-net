@@ -14,7 +14,7 @@ use std::{
 };
 
 /// Fetches independently anchored cases through one Go oracle and waits for its clean exit.
-fn fixtures() -> Option<Vec<Value>> {
+fn fixtures(op: &str) -> Option<Vec<Value>> {
     let Some(binary) = std::env::var_os("BEDROCK_NET_GO_ORACLE") else {
         assert!(
             std::env::var_os("BEDROCK_NET_REQUIRE_FIXTURES").is_none(),
@@ -28,7 +28,7 @@ fn fixtures() -> Option<Vec<Value>> {
         .stdout(Stdio::piped())
         .spawn()
         .unwrap();
-    let body = serde_json::to_vec(&json!({"op":"offline_encoding_fixtures"})).unwrap();
+    let body = serde_json::to_vec(&json!({"op":op})).unwrap();
     let mut input = child.stdin.take().unwrap();
     input.write_all(&(body.len() as u32).to_le_bytes()).unwrap();
     input.write_all(&body).unwrap();
@@ -57,7 +57,9 @@ impl LoginVerifier for Provider {
 
 #[test]
 fn compact_jwt_encodings_match_go_in_both_directions() {
-    let Some(fixtures) = fixtures() else { return };
+    let Some(fixtures) = fixtures("offline_encoding_fixtures") else {
+        return;
+    };
     assert_eq!(fixtures.len(), 33);
     let mut scalar = [0; 48];
     scalar[47] = 7;
@@ -107,4 +109,41 @@ fn compact_jwt_encodings_match_go_in_both_directions() {
         "JWT encoding mismatches: {mismatches:?}"
     );
     assert_eq!(accepted, 21);
+}
+
+#[test]
+fn protected_x5c_certificate_shapes_match_go() {
+    let Some(cases) = fixtures("jose_admission") else {
+        return;
+    };
+    assert_eq!(cases.len(), 630);
+    let mut scalar = [0; 48];
+    scalar[47] = 7;
+    let key = SigningKey::from_slice(&scalar).unwrap();
+    let provider = Provider(*key.verifying_key());
+    let now = UNIX_EPOCH + Duration::from_secs(1_800_000_000);
+    let mut count = 0;
+    let mut mismatches = Vec::new();
+    for case in cases {
+        if case["kind"] != "certificate" || !case["name"].as_str().unwrap().ends_with("/x5c") {
+            continue;
+        }
+        count += 1;
+        let expected = case["accepted"].as_bool().unwrap();
+        let request = STANDARD.decode(case["request"].as_str().unwrap()).unwrap();
+        let result = verify_authenticated_request(&request, &provider, now, request.len());
+        if result.is_ok() != expected {
+            mismatches.push(format!("{}/metadata: {:?}", case["name"], result.err()));
+        }
+        let token = case["server"].as_str().unwrap();
+        let result = finish_key_exchange(&key, token, token.len());
+        if result.is_ok() != expected {
+            mismatches.push(format!("{}/server: {:?}", case["name"], result.err()));
+        }
+    }
+    assert_eq!(count, 288);
+    assert!(
+        mismatches.is_empty(),
+        "Certificate admission mismatches: {mismatches:?}"
+    );
 }

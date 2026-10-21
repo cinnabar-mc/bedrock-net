@@ -57,3 +57,7 @@ Unicode/locale/JSON data on every oracle test run. These upstream notices are
 retained in LICENSE-MIT-gophertunnel and LICENSE-BSD-Go.
 
 URL-reference parsing follows the Go net/url package under its BSD license; see LICENSE-BSD-Go.
+
+Auxiliary certificate decoding follows Go crypto/x509 and the cryptobyte
+ASN.1 integer, framing and time rules under LICENSE-BSD-Go.
+The protected x5c chain shape follows go-jose (Copyright 2014 Square Inc.) under Apache-2.0.

@@ -5,7 +5,7 @@ use std::{
     io::{self, Write},
 };
 
-use base64::engine::general_purpose::{STANDARD, STANDARD_NO_PAD, URL_SAFE_NO_PAD};
+use base64::engine::general_purpose::{STANDARD_NO_PAD, URL_SAFE_NO_PAD};
 use base64::{
     Engine, alphabet,
     engine::{DecodePaddingMode, GeneralPurpose, GeneralPurposeConfig},
@@ -16,7 +16,9 @@ use p384::ecdsa::{Signature, SigningKey, VerifyingKey};
 use p384::pkcs8::DecodePublicKey;
 use serde::{Deserialize, Deserializer, Serialize};
 
-use super::{LoginError, accepting::client_data};
+use super::{ClientExchangeKey, LoginError, accepting::client_data, url};
+
+mod certificate;
 
 #[derive(Serialize)]
 struct SigningHeader<'a> {
@@ -27,12 +29,21 @@ struct SigningHeader<'a> {
 #[derive(Deserialize)]
 struct TokenHeader {
     alg: String,
+    #[serde(default, rename = "x5c", deserialize_with = "certificates")]
+    _x5c: (),
     #[serde(default)]
     x5u: Option<Box<serde_json::value::RawValue>>,
     #[serde(default)]
     crit: Option<Vec<String>>,
     #[serde(default = "encoded_payload", deserialize_with = "payload_encoding")]
     b64: bool,
+}
+
+/// Checks auxiliary certificate structures without retaining them or granting issuer authority.
+fn certificates<'de, D: Deserializer<'de>>(deserializer: D) -> Result<(), D::Error> {
+    let raw = <&serde_json::value::RawValue>::deserialize(deserializer)?;
+    certificate::chain(raw).ok_or_else(|| serde::de::Error::custom("invalid x5c chain"))?;
+    Ok(())
 }
 
 /// Uses encoded payload authentication when the protected header omits b64.
@@ -127,7 +138,7 @@ pub(super) fn verify_server(token: &str, limit: usize) -> Result<(PublicKey, Vec
             .get(),
     )
     .map_err(|_| LoginError::MalformedJson)?;
-    let der = STANDARD.decode(public_key).map_err(LoginError::Base64)?;
+    let der = decode(&public_key, false)?;
     let public = PublicKey::from_public_key_der(&der).map_err(LoginError::PublicKey)?;
     parsed.verify(&VerifyingKey::from(public))?;
     let claims: SaltClaims =
@@ -230,6 +241,26 @@ impl<'a> Parsed<'a> {
     fn signing_input(&self) -> &[u8] {
         &self.input
     }
+}
+
+/// Decodes Go standard or raw URL base64 with CR/LF and nonzero unused-bit tolerance.
+fn decode(value: &str, url: bool) -> Result<Vec<u8>, LoginError> {
+    if url {
+        return decode_compact(value).map(|(bytes, _)| bytes);
+    }
+    let clean = if value.contains(['\r', '\n']) {
+        Cow::Owned(value.replace(['\r', '\n'], ""))
+    } else {
+        Cow::Borrowed(value)
+    };
+    GeneralPurpose::new(
+        &alphabet::STANDARD,
+        GeneralPurposeConfig::new()
+            .with_decode_allow_trailing_bits(true)
+            .with_decode_padding_mode(DecodePaddingMode::RequireCanonical),
+    )
+    .decode(clean.as_bytes())
+    .map_err(LoginError::Base64)
 }
 
 /// Accepts Go raw URL base64 while identifying canonical input without extra normal-path allocation.
