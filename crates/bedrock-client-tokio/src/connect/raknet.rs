@@ -14,7 +14,7 @@ pub async fn connect_resolved(
     options: RakNetOptions,
     deadline: Instant,
 ) -> io::Result<Transport> {
-    super::resolved(addresses, false, deadline, |address| {
+    super::resolved(addresses, false, true, deadline, |address| {
         let mut options = options.clone();
         async move {
             options.connect_timeout = options
