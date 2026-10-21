@@ -116,13 +116,16 @@ func handle(req *serveRequest) (any, error) {
 		return loginBuild(req)
 	case "login_parse":
 		return loginParse(req)
-
 	case "offline_shapes":
 		return offlineShapes()
 	case "offline_curve_fixtures":
 		return offlineCurveFixtures()
 	case "offline_encoding_fixtures":
 		return offlineEncodingFixtures()
+	case "jose_headers":
+		return joseHeaderFixtures()
+	case "offline_json_contexts":
+		return offlineJSONContexts()
 	case "resolve_udp":
 		_, err := net.ResolveUDPAddr("udp", req.Address)
 		return map[string]bool{"resolved": err == nil}, nil
