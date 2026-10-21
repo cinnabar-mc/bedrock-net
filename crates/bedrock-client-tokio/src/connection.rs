@@ -441,6 +441,35 @@ impl Connection {
         Ok(bytes)
     }
 
+    /// Reads the original FIFO under the accepting caller's absolute runtime cutoff.
+    #[cfg(feature = "nethernet")]
+    pub(crate) async fn next_raw_before(
+        &mut self,
+        deadline: std::time::Instant,
+    ) -> io::Result<Bytes> {
+        if tokio::time::Instant::now().into_std() >= deadline {
+            return Err(expired());
+        }
+        let result = tokio::time::timeout_at(deadline.into(), self.next_raw())
+            .await
+            .map_err(|_| expired())?;
+        self.finish_raw_read(result, deadline, tokio::time::Instant::now().into_std())
+    }
+
+    /// Applies the accepting cutoff to the original completed raw read.
+    #[cfg(feature = "nethernet")]
+    fn finish_raw_read(
+        &mut self,
+        result: io::Result<Bytes>,
+        deadline: std::time::Instant,
+        now: std::time::Instant,
+    ) -> io::Result<Bytes> {
+        if now >= deadline {
+            return Err(expired());
+        }
+        result
+    }
+
     /// Restores actual already-consumed handoff frames ahead of the original unread siblings.
     pub fn prepend_raw(&mut self, packets: Vec<Bytes>) {
         for packet in packets.into_iter().rev() {
@@ -623,3 +652,9 @@ impl PacketIo for Connection {
 
 #[cfg(test)]
 mod tests;
+
+/// Uses one static timeout cause without identity-bearing values.
+#[cfg(feature = "nethernet")]
+pub(super) fn expired() -> io::Error {
+    io::Error::new(io::ErrorKind::TimedOut, "native accepting deadline expired")
+}

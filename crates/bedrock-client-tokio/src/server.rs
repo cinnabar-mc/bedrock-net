@@ -3,7 +3,10 @@
 //! Caller-driven accepting wire ownership over an established NetherNet association.
 
 use crate::connection::send::{PreparedSend, SendRetirement};
-use crate::{connection::Connection, transport::Transport};
+use crate::{
+    connection::{Connection, expired},
+    transport::Transport,
+};
 
 #[cfg(any(test, feature = "test-support"))]
 pub mod test_support;
@@ -139,7 +142,7 @@ impl AcceptingConnection {
 
     /// Takes the original complete packet header/body; no decode/re-encode changes play packets.
     pub async fn receive_raw(&mut self, deadline: Instant) -> io::Result<Bytes> {
-        wait(deadline, self.connection.next_raw()).await?
+        self.connection.next_raw_before(deadline).await
     }
 
     /// Waits for ordinary initialized play without imposing a new idle timeout.
@@ -218,7 +221,7 @@ impl AcceptingConnection {
 impl RetiredAcceptingConnection {
     /// Drains the original prefix without minting another established send capability.
     pub async fn receive_raw(&mut self, deadline: Instant) -> io::Result<Bytes> {
-        wait(deadline, self.connection.next_raw()).await?
+        self.connection.next_raw_before(deadline).await
     }
     /// Completes original transport retirement without starting a replacement association.
     pub async fn finish_close(&mut self, deadline: Instant) -> io::Result<()> {
@@ -253,8 +256,4 @@ fn denied() -> io::Error {
         io::ErrorKind::PermissionDenied,
         "native accepting identity rejected",
     )
-}
-/// Uses one static timeout cause without identity-bearing values.
-fn expired() -> io::Error {
-    io::Error::new(io::ErrorKind::TimedOut, "native accepting deadline expired")
 }

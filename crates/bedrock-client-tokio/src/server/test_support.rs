@@ -25,7 +25,7 @@ use std::{
     time::{Duration, SystemTime},
 };
 
-pub(super) const TIMEOUT: Duration = Duration::from_secs(20);
+pub(crate) const TIMEOUT: Duration = Duration::from_secs(20);
 const SERVER: &str = "synthetic-prepared-send-server";
 
 /// Original signed association and all of its client, listener and signaling cleanup owners.
