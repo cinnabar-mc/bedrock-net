@@ -114,6 +114,12 @@ func handle(req *serveRequest) (any, error) {
 		return loginBuild(req)
 	case "login_parse":
 		return loginParse(req)
+	case "offline_shapes":
+		return offlineShapes()
+	case "offline_curve_fixtures":
+		return offlineCurveFixtures()
+	case "offline_encoding_fixtures":
+		return offlineEncodingFixtures()
 	case "offline_fixtures":
 		return offlineFixtures()
 	default:
