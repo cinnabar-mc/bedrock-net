@@ -1,13 +1,14 @@
 // Command bench-compare joins Go `testing.B` results with criterion estimates
-// and fails when a Rust path is slower than its Go counterpart beyond a margin.
+// and checks both timing and compression wire-size parity.
 //
 // Exit status: 2 unreadable or malformed input, 3 missing or unpaired measurements,
-// 1 Rust slower than Go beyond the margin, 0 otherwise. Inputs are validated before
-// any timing is compared, so a 1 always means a complete, paired measurement.
+// 1 a timing or wire-size regression, 0 otherwise. Inputs are validated before
+// comparison, so a 1 always means a complete, paired measurement.
 package main
 
 import (
 	"bufio"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -37,7 +38,7 @@ func (l *listFlag) Set(v string) error { *l = append(*l, v); return nil }
 func main() {
 	var goFiles, criterionDirs, oneSided listFlag
 	flag.Var(&goFiles, "go", "`go test -bench -benchmem` output file, or - for stdin (repeatable)")
-	flag.Var(&criterionDirs, "criterion", "criterion output directory (repeatable; default target/criterion)")
+	flag.Var(&criterionDirs, "criterion", "criterion output directory (repeatable; default CRITERION_HOME, CARGO_TARGET_DIR/criterion, or target/criterion)")
 	flag.Var(&oneSided, "one-sided", "`path` expected on only one side (repeatable); any other unpaired path fails")
 	procs := flag.Int("go-procs", 0, "the -cpu value the Go benchmarks ran with (required)")
 	margin := flag.Float64("margin", 5, "percent by which Rust may be slower than Go before failing")
@@ -55,7 +56,7 @@ type report struct {
 	problems []string
 }
 
-// run reads and validates every input, then compares timings only if validation passed.
+// run validates every input before comparing timing and compression sizes.
 func run(goFiles, criterionDirs, oneSided []string, procs int, margin float64) (int, report) {
 	if len(goFiles) == 0 {
 		return exitBadInput, report{problems: []string{"at least one --go input is required"}}
@@ -64,7 +65,7 @@ func run(goFiles, criterionDirs, oneSided []string, procs int, margin float64) (
 		return exitBadInput, report{problems: []string{"--go-procs must be the Go benchmarks' -cpu value"}}
 	}
 	if len(criterionDirs) == 0 {
-		criterionDirs = []string{filepath.Join("target", "criterion")}
+		criterionDirs = []string{defaultCriterionDir()}
 	}
 	goResults := map[string]*goResult{}
 	for _, path := range goFiles {
@@ -78,12 +79,16 @@ func run(goFiles, criterionDirs, oneSided []string, procs int, margin float64) (
 			return exitBadInput, report{problems: []string{err.Error()}}
 		}
 	}
+	if err := consistentWireSizes(goResults, rustResults); err != nil {
+		return exitBadInput, report{problems: []string{err.Error()}}
+	}
 	rows := join(goResults, rustResults, margin)
-	table := renderTable(rows, margin)
+	table := renderTable(rows, margin) + renderSizes(rows)
 	if problems := validate(rows, goResults, rustResults, oneSided); len(problems) != 0 {
 		return exitUnmatched, report{table, problems}
 	}
-	if problems := slower(rows); len(problems) != 0 {
+	problems := append(slower(rows), larger(rows)...)
+	if len(problems) != 0 {
 		return exitSlower, report{table, problems}
 	}
 	return 0, report{table: table}
@@ -92,11 +97,61 @@ func run(goFiles, criterionDirs, oneSided []string, procs int, margin float64) (
 // goResult accumulates repeated runs (`-count`) of one benchmark.
 type goResult struct {
 	ns, bytes, allocs, mbps []float64
+	wire                    float64 // identical full-frame bytes across all repeats
 }
 
 type rustResult struct {
 	ns    float64
 	bytes float64 // throughput bytes per iteration; 0 when not declared
+	wire  float64 // full-frame bytes for compression paths
+}
+
+// defaultCriterionDir follows the explicit output root used by the batch benchmark.
+func defaultCriterionDir() string {
+	if dir, ok := os.LookupEnv("CRITERION_HOME"); ok {
+		return filepath.Clean(dir)
+	}
+	if dir, ok := os.LookupEnv("CARGO_TARGET_DIR"); ok {
+		return filepath.Join(dir, "criterion")
+	}
+	return filepath.Join("target", "criterion")
+}
+
+// compressionPath identifies both encoder outputs and decoder inputs requiring size parity.
+func compressionPath(name string) bool {
+	group, _, _ := strings.Cut(key(name), "/")
+	return group == "flate" || group == "snappy"
+}
+
+// validWireSize accepts positive, exactly representable integer byte counts only.
+func validWireSize(size float64) bool {
+	return size > 0 && size <= 1<<53 && math.Trunc(size) == size
+}
+
+// consistentWireSizes requires encoder and decoder rows to describe the same input on each side.
+func consistentWireSizes(goResults map[string]*goResult, rustResults map[string]rustResult) error {
+	for name, g := range goResults {
+		if compressionPath(name) {
+			decode := strings.Replace(name, "/compress_", "/decompress_", 1)
+			if d := goResults[decode]; d != nil && d.wire != g.wire {
+				return fmt.Errorf("%s: Go encoder and decoder wire sizes differ", name)
+			}
+		}
+	}
+	for name, r := range rustResults {
+		if compressionPath(name) {
+			decode := strings.Replace(name, "/compress_", "/decompress_", 1)
+			if d, ok := rustResults[decode]; ok && d.wire != r.wire {
+				return fmt.Errorf("%s: Rust encoder and decoder wire sizes differ", name)
+			}
+		}
+	}
+	return nil
+}
+
+// exceedsWireAllowance compares integer bytes with a fixed 1/200 allowance, including its boundary.
+func exceedsWireAllowance(goWire, rustWire float64) bool {
+	return rustWire-goWire > goWire/200
 }
 
 // benchLine matches one result line; the metric list is parsed separately.
@@ -136,25 +191,45 @@ func parseGo(r io.Reader, procs int, out map[string]*goResult) error {
 		}
 		metrics := map[string]float64{}
 		fields := strings.Fields(m[2])
+		if compressionPath(m[1]) && len(fields)%2 != 0 {
+			return fmt.Errorf("benchmark %q has incomplete metrics", m[1])
+		}
 		for i := 0; i+1 < len(fields); i += 2 {
 			v, err := strconv.ParseFloat(fields[i], 64)
 			if err != nil {
+				if compressionPath(m[1]) {
+					return fmt.Errorf("benchmark %q has invalid metrics: %w", m[1], err)
+				}
 				break
 			}
-			metrics[fields[i+1]] = v
+			unit := fields[i+1]
+			if _, duplicate := metrics[unit]; duplicate && unit == "wire-B/op" {
+				return fmt.Errorf("benchmark %q repeats wire-B/op", m[1])
+			}
+			metrics[unit] = v
 		}
 		ns, ok := metrics["ns/op"]
-		if !ok {
+		if !ok && !compressionPath(m[1]) {
 			continue
+		}
+		if compressionPath(m[1]) && (ns <= 0 || math.IsNaN(ns) || math.IsInf(ns, 0)) {
+			return fmt.Errorf("benchmark %q has missing or invalid ns/op", m[1])
 		}
 		name, ok := strings.CutSuffix(m[1], suffix)
 		if !ok {
 			return fmt.Errorf("benchmark %q lacks the -cpu suffix %q", m[1], suffix)
 		}
-		res := out[key(name)]
+		name = key(name)
+		wire := metrics["wire-B/op"]
+		if compressionPath(name) && !validWireSize(wire) {
+			return fmt.Errorf("%s: missing or invalid Go wire-B/op", name)
+		}
+		res := out[name]
 		if res == nil {
-			res = &goResult{}
-			out[key(name)] = res
+			res = &goResult{wire: wire}
+			out[name] = res
+		} else if compressionPath(name) && res.wire != wire {
+			return fmt.Errorf("%s: Go wire-B/op changed between runs", name)
 		}
 		res.ns = append(res.ns, ns)
 		for unit, list := range map[string]*[]float64{"B/op": &res.bytes, "allocs/op": &res.allocs, "MB/s": &res.mbps} {
@@ -215,7 +290,32 @@ func readCriterion(dir string, out map[string]rustResult) error {
 				res.bytes = *t.BytesDecimal
 			}
 		}
-		out[key(bench.FullID)] = res
+		name := key(bench.FullID)
+		if compressionPath(name) {
+			if res.ns <= 0 || math.IsNaN(res.ns) || math.IsInf(res.ns, 0) {
+				return fmt.Errorf("%s: invalid Criterion timing", name)
+			}
+			if _, duplicate := out[name]; duplicate {
+				return fmt.Errorf("%s: duplicate Criterion compression result", name)
+			}
+			var size struct {
+				FullID          string  `json:"full_id"`
+				Wire            float64 `json:"wire_bytes"`
+				EstimatesSHA256 string  `json:"estimates_sha256"`
+			}
+			if err := readJSON(filepath.Join(filepath.Dir(path), "wire-size.json"), &size); err != nil {
+				return err
+			}
+			estimates, err := os.ReadFile(filepath.Join(filepath.Dir(path), "estimates.json"))
+			if err != nil {
+				return err
+			}
+			if size.FullID != bench.FullID || !validWireSize(size.Wire) || size.EstimatesSHA256 != fmt.Sprintf("%x", sha256.Sum256(estimates)) {
+				return fmt.Errorf("%s: invalid or stale Criterion wire-size.json", name)
+			}
+			res.wire = size.Wire
+		}
+		out[name] = res
 		return nil
 	})
 }
@@ -239,6 +339,7 @@ type row struct {
 	goNs, rustNs      float64 // NaN when absent
 	goBytes, goAllocs float64
 	goMBps, rustMBps  float64
+	goWire, rustWire  float64
 	status            string
 }
 
@@ -265,9 +366,11 @@ func join(goResults map[string]*goResult, rustResults map[string]rustResult, mar
 		rr, hasRust := rustResults[name]
 		if hasGo {
 			r.goNs, r.goBytes, r.goAllocs, r.goMBps = median(g.ns), median(g.bytes), median(g.allocs), median(g.mbps)
+			r.goWire = g.wire
 		}
 		if hasRust {
 			r.rustNs = rr.ns
+			r.rustWire = rr.wire
 			if rr.bytes > 0 && rr.ns > 0 {
 				r.rustMBps = rr.bytes / rr.ns * 1e3 // bytes/ns -> MB/s (10^6 bytes, as Go reports)
 			}
@@ -330,6 +433,40 @@ func slower(rows []row) []string {
 		}
 	}
 	return problems
+}
+
+// larger enforces a fixed bandwidth allowance independently of the timing margin.
+func larger(rows []row) []string {
+	var problems []string
+	for _, r := range rows {
+		if compressionPath(r.path) && r.goWire > 0 && exceedsWireAllowance(r.goWire, r.rustWire) {
+			problems = append(problems, r.path+": Rust wire bytes exceed Go by more than 0.5%")
+		}
+	}
+	return problems
+}
+
+// renderSizes shows complete frame sizes separately from allocation bytes per operation.
+func renderSizes(rows []row) string {
+	var b strings.Builder
+	for _, r := range rows {
+		if !compressionPath(r.path) {
+			continue
+		}
+		if b.Len() == 0 {
+			fmt.Fprintln(&b, "\n| Compression path | Go wire B/op | Rust wire B/op | Rust/Go | Size (≤ +0.5%) |")
+			fmt.Fprintln(&b, "|---|---:|---:|---:|---|")
+		}
+		ratio, status := math.NaN(), "missing"
+		if r.goWire > 0 && r.rustWire > 0 {
+			ratio, status = r.rustWire/r.goWire, "ok"
+			if exceedsWireAllowance(r.goWire, r.rustWire) {
+				status = "**larger**"
+			}
+		}
+		fmt.Fprintf(&b, "| %s | %.0f | %.0f | %s | %s |\n", r.path, r.goWire, r.rustWire, fixed(ratio, 4), status)
+	}
+	return b.String()
 }
 
 func median(v []float64) float64 {
