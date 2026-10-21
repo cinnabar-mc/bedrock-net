@@ -327,7 +327,7 @@ dependencies = [
 [[package]]
 name = "bedrock-services"
 version = "0.1.0"
-source = "git+https://github.com/cinnabar-mc/bedrock-services?rev=e8ca2ec0937ac06d7c8879a3dddd3c230702e71e#e8ca2ec0937ac06d7c8879a3dddd3c230702e71e"
+source = "git+https://github.com/cinnabar-mc/bedrock-services?rev=3c80f8e147477b9cae5f5ba1e3ef066ec265b12d#3c80f8e147477b9cae5f5ba1e3ef066ec265b12d"
 dependencies = [
  "aws-lc-rs",
  "base64 0.22.1",
@@ -349,6 +349,7 @@ dependencies = [
  "tokio",
  "tokio-rustls",
  "tokio-websockets",
+ "tracing",
  "url",
  "uuid",
  "webpki-roots",
