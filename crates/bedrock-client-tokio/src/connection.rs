@@ -277,10 +277,17 @@ impl Connection {
         header: wire::PacketHeader,
         packet: &packets::Packet,
     ) -> io::Result<()> {
-        wire::encode_frame_with(body, header, self.limits.max_decoded_bytes, |writer| {
-            packet.encode(writer)
-        })
-        .map_err(io::Error::other)
+        let start = body.len();
+        let result =
+            wire::encode_frame_with(body, header, self.limits.max_decoded_bytes, |writer| {
+                packet.encode(writer)
+            })
+            .map_err(io::Error::other)
+            .and_then(|()| Self::check_body_size(&body[start..], self.limits.max_decoded_bytes));
+        if result.is_err() {
+            body.truncate(start);
+        }
+        result
     }
 
     /// Reads the existing output count bound without defining another batching policy.
@@ -465,6 +472,9 @@ impl Connection {
         now: std::time::Instant,
     ) -> io::Result<Bytes> {
         if now >= deadline {
+            if result.is_ok() {
+                self.replay_current();
+            }
             return Err(expired());
         }
         result
