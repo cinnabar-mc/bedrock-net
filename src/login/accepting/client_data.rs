@@ -108,8 +108,56 @@ fn go_utf8(mut bytes: &[u8]) -> Cow<'_, str> {
     Cow::Owned(text)
 }
 
+/// Retains validated JSON, its original signed bytes and interpreted protocol metadata together.
+pub(super) struct Payload {
+    client_data: Box<serde_json::value::RawValue>,
+    original_client_data: Option<Box<[u8]>>,
+    metadata: Metadata,
+}
+
+impl Payload {
+    /// Borrows the one validated JSON allocation, preserving valid input spelling.
+    pub(super) fn client_data(&self) -> &serde_json::value::RawValue {
+        &self.client_data
+    }
+
+    /// Borrows original signed bytes, including invalid UTF-8 repaired only for interpretation.
+    pub(super) fn client_data_json_bytes(&self) -> &[u8] {
+        self.original_client_data
+            .as_deref()
+            .unwrap_or_else(|| self.client_data.get().as_bytes())
+    }
+
+    /// Borrows the original signed nonce under the retained metadata lifetime.
+    pub(super) fn nonce(&self) -> &str {
+        &self.metadata.nonce
+    }
+
+    /// Consumes the optional signed key update once without copying metadata fields.
+    pub(super) fn take_exchange_key(&mut self) -> Option<ClientExchangeKey> {
+        self.metadata.exchange_key.take()
+    }
+}
+
+/// Validates metadata after its caller has verified the exact signed payload bytes.
+pub(super) fn validate_payload(
+    payload: &[u8],
+    resolve: impl FnOnce(&str) -> Result<(), LoginError>,
+) -> Result<Payload, LoginError> {
+    let original_client_data = std::str::from_utf8(payload)
+        .err()
+        .map(|_| payload.trim_ascii().to_vec().into_boxed_slice());
+    let client_data = parse_json(payload)?;
+    let metadata = validate(&client_data, resolve)?;
+    Ok(Payload {
+        client_data,
+        original_client_data,
+        metadata,
+    })
+}
+
 pub(super) struct Metadata {
-    pub(super) nonce: String,
+    pub(super) nonce: zeroize::Zeroizing<String>,
     pub(super) exchange_key: Option<ClientExchangeKey>,
 }
 
@@ -165,7 +213,7 @@ pub(super) fn validate(
         resolve(&address).map_err(LoginError::redact_peer)?;
     }
     Ok(Metadata {
-        nonce: data.text("Nonce").to_owned(),
+        nonce: zeroize::Zeroizing::new(data.text("Nonce").to_owned()),
         exchange_key,
     })
 }

@@ -9,7 +9,9 @@ use zeroize::Zeroizing;
 mod client_data;
 mod exchange_key;
 mod fields;
+mod offline;
 pub use exchange_key::ClientExchangeKey;
+pub use offline::OfflineLogin;
 
 /// Pure authority for the configured multiplayer provider, never a client-selected issuer/key.
 ///
@@ -108,9 +110,7 @@ pub struct AuthenticatedLogin {
     identity: TrustedIdentity,
     exchange_key: ClientExchangeKey,
     credential: Zeroizing<String>,
-    client_data: Box<RawValue>,
-    original_client_data: Option<Box<[u8]>>,
-    nonce: Zeroizing<String>,
+    metadata: client_data::Payload,
 }
 
 impl AuthenticatedLogin {
@@ -144,20 +144,18 @@ impl AuthenticatedLogin {
     /// Valid UTF-8 retains its original spelling, including escaped surrogates.
     /// Application policy remains caller-owned; required address lookups have a successful cached result.
     pub fn client_data(&self) -> &RawValue {
-        &self.client_data
+        self.metadata.client_data()
     }
 
     /// Borrows the original signed JSON value bytes before UTF-8 replacement.
     /// Insignificant whitespace surrounding the JSON value is omitted.
     pub fn client_data_json_bytes(&self) -> &[u8] {
-        self.original_client_data
-            .as_deref()
-            .unwrap_or_else(|| self.client_data.get().as_bytes())
+        self.metadata.client_data_json_bytes()
     }
 
     /// Borrows the original client-signed title nonce; this value alone grants no world access.
     pub fn nonce(&self) -> &str {
-        &self.nonce
+        self.metadata.nonce()
     }
 
     /// Rechecks the exact original credential after any application approval/capacity wait.
@@ -225,24 +223,18 @@ pub fn verify_authenticated_request(
         .map_err(LoginError::redact_peer)?;
     let client = std::str::from_utf8(client).map_err(|_| LoginError::MalformedToken)?;
     let payload = jwt::verify_client(client, &identity.public_key, max_request_bytes)?;
-    let original_client_data = std::str::from_utf8(&payload)
-        .err()
-        .map(|_| payload.trim_ascii().to_vec().into_boxed_slice());
-    let client_data = client_data::parse_json(&payload)?;
-    let metadata = client_data::validate(&client_data, |address| {
+    let mut metadata = client_data::validate_payload(&payload, |address| {
         verifier.resolve_client_address(address)
     })?;
     let exchange_key = metadata
-        .exchange_key
+        .take_exchange_key()
         .map(Ok)
         .unwrap_or_else(|| ClientExchangeKey::from_signer(&identity.public_key))?;
     Ok(AuthenticatedLogin {
         identity,
         exchange_key,
         credential: Zeroizing::new(token),
-        client_data,
-        original_client_data,
-        nonce: Zeroizing::new(metadata.nonce),
+        metadata,
     })
 }
 

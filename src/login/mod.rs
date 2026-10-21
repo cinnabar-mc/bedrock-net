@@ -14,7 +14,7 @@ mod jwt;
 #[cfg(feature = "provider-verification")]
 pub mod provider;
 pub use accepting::{
-    AuthenticatedLogin, ClientExchangeKey, LoginVerifier, TrustedIdentity,
+    AuthenticatedLogin, ClientExchangeKey, LoginVerifier, OfflineLogin, TrustedIdentity,
     verify_authenticated_request,
 };
 
