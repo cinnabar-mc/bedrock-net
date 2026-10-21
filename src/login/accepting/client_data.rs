@@ -70,6 +70,7 @@ const ARRAYS: &[&str] = &["AnimatedImageData", "PersonaPieces", "PieceTintColors
 
 mod claims;
 use claims::{Claims, Schema};
+pub(in crate::login) use claims::{jose_values, normalize};
 const CLIENT: Schema = Schema {
     strings: STRINGS,
     integers: INTEGERS,
@@ -86,7 +87,7 @@ pub(super) fn parse_json(bytes: &[u8]) -> Result<Box<serde_json::value::RawValue
 }
 
 /// Replaces each invalid UTF-8 byte, including each byte of an incomplete sequence.
-fn go_utf8(mut bytes: &[u8]) -> Cow<'_, str> {
+pub(in crate::login) fn go_utf8(mut bytes: &[u8]) -> Cow<'_, str> {
     if let Ok(text) = std::str::from_utf8(bytes) {
         return Cow::Borrowed(text);
     }

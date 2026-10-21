@@ -6,7 +6,7 @@ use serde_json::value::RawValue;
 use std::time::SystemTime;
 use zeroize::Zeroizing;
 
-mod client_data;
+pub(super) mod client_data;
 mod exchange_key;
 mod fields;
 mod offline;
