@@ -161,6 +161,7 @@ impl AcceptingConnection {
     /// Rejects another retained effect or a locally retired send direction.
     /// Empty input completes locally; failed entries are logged and skipped.
     /// Nonempty input with no encoded entries is rejected.
+    /// Larger groups split under the original codec's per-batch limits as one retained effect.
     pub fn prepare_packets(
         &mut self,
         packets: Vec<packets::Packet>,
@@ -182,8 +183,8 @@ impl AcceptingConnection {
         if !packets.is_empty() && body.is_empty() {
             return Err(invalid());
         }
-        let body = Bytes::from(body);
-        self.connection.prepare_body(body, deadline)
+        let frames = wire::Frames::new(Bytes::from(body), packets.len());
+        self.connection.prepare_frames(frames, deadline)
     }
 
     /// Encodes one original complete raw packet without changing its bytes or cipher.

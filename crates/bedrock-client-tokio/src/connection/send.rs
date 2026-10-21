@@ -3,6 +3,7 @@
 //! One prepared accepted-Nether effect, retained on the original codec/cipher owner.
 
 use super::Connection;
+use bedrock_protocol::wire;
 use bytes::Bytes;
 use futures::future::BoxFuture;
 use nethernet_tokio::{SendPermit, session::Channel};
@@ -44,10 +45,19 @@ pub(super) struct RetirementState {
 impl Connection {
     /// Moves the original encoded messages into the sole retained send slot.
     pub fn prepare_send(&mut self, body: Bytes, deadline: Instant) -> io::Result<()> {
+        self.prepare_encoded(deadline, |connection| connection.encode_body(body))
+    }
+
+    /// Shares admission and one retained operation across bounded bodies and typed packet groups.
+    fn prepare_encoded(
+        &mut self,
+        deadline: Instant,
+        encode: impl FnOnce(&Self) -> io::Result<Vec<Bytes>>,
+    ) -> io::Result<()> {
         self.ensure_send_idle()?;
         check_deadline(deadline)?;
         drop(self.transport.accepted_sender()?);
-        let messages = self.encode_body(body)?.into_iter();
+        let messages = encode(self)?.into_iter();
         let phase = if messages.as_slice().is_empty() {
             Phase::Complete
         } else {
@@ -408,6 +418,15 @@ impl Connection {
     /// Encodes once without cipher progress, then borrows the same retained operation.
     pub fn prepare_body(&mut self, body: Bytes, deadline: Instant) -> io::Result<PreparedSend<'_>> {
         self.prepare_send(body, deadline)?;
+        Ok(PreparedSend { connection: self })
+    }
+    /// Splits one already framed typed effect on the current codec without advancing its cipher.
+    pub(crate) fn prepare_frames(
+        &mut self,
+        frames: wire::Frames,
+        deadline: Instant,
+    ) -> io::Result<PreparedSend<'_>> {
+        self.prepare_encoded(deadline, |connection| connection.encode_frames(frames))?;
         Ok(PreparedSend { connection: self })
     }
     /// Reborrows the original effect without reserving capacity or changing cipher state.

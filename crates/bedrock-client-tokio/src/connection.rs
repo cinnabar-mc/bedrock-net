@@ -286,7 +286,12 @@ impl Connection {
     /// Encodes the original bounded packet entries once on the current codec.
     fn encode_body(&self, body: Bytes) -> io::Result<Vec<Bytes>> {
         Self::check_body_size(&body, self.limits.max_decoded_bytes)?;
-        let entries = wire::Frames::new(body, self.limits.max_packets)
+        self.encode_frames(wire::Frames::new(body, self.limits.max_packets))
+    }
+
+    /// Applies original wire metadata before the current codec splits an ordered packet group.
+    fn encode_frames(&self, frames: wire::Frames) -> io::Result<Vec<Bytes>> {
+        let entries = frames
             .map(|frame| {
                 let frame = frame.map_err(io::Error::other)?;
                 identity::entry(frame, self.identity.as_ref(), self.limits.max_decoded_bytes)
