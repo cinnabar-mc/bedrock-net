@@ -79,7 +79,7 @@ impl<S: BatchPhase> Session<S> {
             if let Some((encryptor, _)) = &mut self.ciphers {
                 *message =
                     encryptor.encrypt_batch(self.transport.header(), std::mem::take(message))?;
-                check_wire_size(&message, self.limits)?;
+                check_wire_size(message, self.limits)?;
             }
             self.transport.send(message.clone()).await?;
         }
