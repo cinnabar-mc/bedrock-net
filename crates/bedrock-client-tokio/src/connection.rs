@@ -599,6 +599,11 @@ impl PacketIo for Connection {
     async fn close(&mut self) -> io::Result<()> {
         self.transport.close().await
     }
+
+    /// Drains the original transport once no further game input is required.
+    async fn finish_close(&mut self) -> io::Result<()> {
+        self.transport.finish_close().await
+    }
 }
 
 #[cfg(test)]
