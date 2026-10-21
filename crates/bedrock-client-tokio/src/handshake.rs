@@ -222,14 +222,29 @@ pub(crate) async fn send_packets(
             "zero packet count limit",
         )));
     }
-    for batch in packets.chunks(connection.max_packets()) {
-        let mut body = Vec::new();
-        for packet in batch {
-            let entry = connection
-                .packet_body(packet, wire::Peer::Client, 0, 0)
-                .map_err(NegotiationError::Io)?;
-            body.extend_from_slice(&entry);
+    let mut body = Vec::new();
+    let mut count = 0;
+    for packet in packets {
+        let entry = connection
+            .packet_body(packet, wire::Peer::Client, 0, 0)
+            .map_err(NegotiationError::Io)?;
+        if !body.is_empty()
+            && (count == connection.max_packets()
+                || body
+                    .len()
+                    .checked_add(entry.len())
+                    .is_none_or(|bytes| bytes > connection.max_decoded_bytes()))
+        {
+            connection
+                .send_body_until(Bytes::from(std::mem::take(&mut body)), deadline)
+                .await
+                .map_err(NegotiationError::Write)?;
+            count = 0;
         }
+        body.extend_from_slice(&entry);
+        count += 1;
+    }
+    if !body.is_empty() {
         connection
             .send_body_until(Bytes::from(body), deadline)
             .await
