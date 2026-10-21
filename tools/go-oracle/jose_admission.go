@@ -357,5 +357,8 @@ func joseAdmissionFixtures() ([]joseAdmissionFixture, error) {
 			return nil, err
 		}
 	}
+	if err := admissionThumbprints(add); err != nil {
+		return nil, err
+	}
 	return fixtures, nil
 }
