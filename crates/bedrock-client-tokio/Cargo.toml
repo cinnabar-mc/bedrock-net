@@ -12,8 +12,8 @@ publish = false
 [features]
 default = []
 raknet = ["bedrock-net/raknet", "tokio/net", "dep:bedrock-client", "dep:bedrock-packs", "dep:serde_json"]
-nethernet = ["bedrock-net/messaging", "dep:nethernet-tokio", "dep:rand", "tokio/net", "dep:bedrock-client", "dep:bedrock-packs", "dep:serde_json"]
-# Read-only observations used by integration fixtures.
+nethernet = ["dep:p384", "dep:nethernet", "bedrock-net/messaging", "dep:nethernet-tokio", "dep:rand", "tokio/net", "dep:bedrock-client", "dep:bedrock-packs", "dep:serde_json"]
+# Observations and real signed associations used by integration fixtures.
 test-support = []
 
 [dependencies]
@@ -24,7 +24,9 @@ bedrock-net = { path = "../.." }
 bedrock-protocol.workspace = true
 bytes = "1"
 futures = "0.3"
+nethernet = { workspace = true, optional = true }
 nethernet-tokio = { workspace = true, optional = true }
+p384 = { workspace = true, optional = true }
 rand = { version = "0.10", optional = true }
 tokio = { version = "1", features = ["rt", "time", "macros", "sync"] }
 thiserror = "2"

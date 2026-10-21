@@ -49,6 +49,41 @@ original transfer is ready, with store references released before exclusive
 archive handoff. A synchronous borrowed observer can record original reads and
 successful effect vectors, but cannot replace packets or admit state.
 
+With `nethernet`, `server::AcceptingConnection` consumes an actual accepted
+association and creates an SDP-key-bound `bedrock_client::server::ServerHandshake`.
+The caller configures signaling trust and supplies the matching proof key, deferred
+byte bound and absolute deadline:
+
+```rust,no_run
+# #[cfg(feature = "nethernet")]
+# async fn accepted_wire(
+# accepted: nethernet_tokio::AcceptedSession,
+# key: std::sync::Arc<p384::ecdsa::SigningKey>,
+# options: bedrock_client::server::ServerHandshakeOptions,
+# max_deferred_bytes: usize,
+# deadline: std::time::Instant,
+# ) -> std::io::Result<()> {
+use bedrock_client_tokio::server::AcceptingConnection;
+
+let (mut wire, handshake) = AcceptingConnection::from_nether(
+    accepted, key, options, max_deferred_bytes, deadline,
+).await?;
+// Drive `handshake` with `wire.receive(deadline)` and the caller's Login policy.
+# let _ = (&mut wire, handshake);
+# Ok(())
+# }
+```
+
+`prepare_packets` accepts generated primary-player effects. Keep each pending core
+continuation until its matching prepared send completes, install compression or
+ciphers only after that plaintext response flushes, and recheck current application
+authority immediately before each capacity permit's synchronous commit. The mutable
+connection borrow exposes wire mechanics, not Login or membership authority.
+`begin_close` consumes the send-capable wrapper and returns a receive/finish-only
+`RetiredAcceptingConnection`; settle retained output first. Both types preserve the
+same connection and FIFO. The `test-support` feature exposes one real signed
+association fixture for downstream integration tests.
+
 Keep the same connection through settings, encryption and play. A canceled
 receive, maintenance or close wait retains its original FIFO and lifecycle
 owner. `prepare_body` retains one encoded accepted-NetherNet send; canceling a
