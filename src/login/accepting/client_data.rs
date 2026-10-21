@@ -1,7 +1,7 @@
 //! Validates standard client-signed claims without changing their original representation.
 // Validation rules follow gophertunnel's MIT-licensed ClientData.Validate; see LICENSE-GOPHERTUNNEL.
 
-use super::super::LoginError;
+use super::super::{LoginError, client_data::schema_generated::Record};
 use base64::Engine as _;
 use std::borrow::Cow;
 mod address;
@@ -11,74 +11,9 @@ use super::ClientExchangeKey;
 use address::resolution;
 use language::valid_language;
 
-const STRINGS: &[&str] = &[
-    "CapeData",
-    "CapeId",
-    "DeviceModel",
-    "DeviceId",
-    "GameVersion",
-    "LanguageCode",
-    "PlatformOfflineId",
-    "PlatformOnlineId",
-    "PlatformUserId",
-    "SelfSignedId",
-    "ServerAddress",
-    "SkinAnimationData",
-    "SkinData",
-    "SkinGeometryData",
-    "SkinGeometryDataEngineVersion",
-    "SkinId",
-    "PlayFabId",
-    "SkinResourcePatch",
-    "SkinColor",
-    "ArmSize",
-    "ThirdPartyName",
-    "PartyId",
-    "ProfileHash",
-    "Nonce",
-];
-const INTEGERS: &[&str] = &[
-    "ClientRandomId",
-    "CurrentInputMode",
-    "DefaultInputMode",
-    "DeviceOS",
-    "GuiScale",
-    "ClientEditorConnectionIntent",
-    "SkinImageHeight",
-    "SkinImageWidth",
-    "CapeImageHeight",
-    "CapeImageWidth",
-    "UIProfile",
-    "MaxViewDistance",
-    "MemoryTier",
-    "PlatformType",
-    "GraphicsMode",
-];
-const BOOLEANS: &[&str] = &[
-    "CapeOnClassicSkin",
-    "FilterProfanity",
-    "ClientIsEditorCapable",
-    "PersonaSkin",
-    "PremiumSkin",
-    "ThirdPartyNameOnly",
-    "TrustedSkin",
-    "OverrideSkin",
-    "CompatibleWithClientSideChunkGen",
-    "IsPartyLeader",
-];
-const ARRAYS: &[&str] = &["AnimatedImageData", "PersonaPieces", "PieceTintColors"];
-
 mod claims;
-use claims::{Claims, Schema};
+use claims::Claims;
 pub(in crate::login) use claims::{jose_values, normalize};
-const CLIENT: Schema = Schema {
-    strings: STRINGS,
-    integers: INTEGERS,
-    booleans: BOOLEANS,
-    arrays: ARRAYS,
-    floats: &[],
-    key_update: true,
-};
 
 /// Decodes signed JSON without imposing UTF-8 rules stricter than Go's JSON decoder.
 pub(super) fn parse_json(bytes: &[u8]) -> Result<Box<serde_json::value::RawValue>, LoginError> {
@@ -174,7 +109,7 @@ pub(super) fn validate(
         return Err(LoginError::InvalidClientData);
     }
     let mut data = Claims::default();
-    data.merge(&normalized, CLIENT)
+    data.merge(&normalized, Record::Client)
         .ok_or(LoginError::InvalidClientData)?;
     let exchange_key = data
         .key_update()
@@ -267,37 +202,6 @@ fn json_base64(value: &str) -> bool {
                     (text.starts_with('{') || text == "null") && claims::json_values(&value, false)
                 })
     })
-}
-
-/// Supplies each modeled nested Go struct's scalar and fixed-array types.
-fn array_schema(name: &str) -> Schema {
-    match name {
-        "AnimatedImageData" => Schema {
-            strings: &["Image"],
-            integers: &["ImageWidth", "ImageHeight", "Type", "AnimationExpression"],
-            booleans: &[],
-            arrays: &[],
-            floats: &["Frames"],
-            key_update: false,
-        },
-        "PersonaPieces" => Schema {
-            strings: &["PackId", "PieceId", "PieceType", "ProductId"],
-            integers: &[],
-            booleans: &["IsDefault"],
-            arrays: &[],
-            floats: &[],
-            key_update: false,
-        },
-        "PieceTintColors" => Schema {
-            strings: &["PieceType"],
-            integers: &[],
-            booleans: &[],
-            arrays: &["Colors"],
-            floats: &[],
-            key_update: false,
-        },
-        _ => unreachable!("only modeled slice fields have element schemas"),
-    }
 }
 
 #[cfg(test)]

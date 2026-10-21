@@ -11,7 +11,7 @@ use std::{fmt, io};
 
 mod json;
 mod json_generated;
-mod schema_generated;
+pub(in crate::login) mod schema_generated;
 mod semantic;
 mod types;
 pub use semantic::{ValidatedClientData, ValidationError};

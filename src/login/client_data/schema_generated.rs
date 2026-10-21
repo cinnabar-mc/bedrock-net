@@ -15,7 +15,7 @@ pub(super) const SOURCE_VERSION: &str = "v1.25.3-0.20261019151115-85d4022854e1";
 pub(super) const SOURCE_SUM: &str = "h1:o0uCvBBvuSDpG75KbSFPkGLtDR3G0j5R+G9dUwtxrxA=";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(super) enum Record {
+pub(in crate::login) enum Record {
     Client,
     Animation,
     PersonaPiece,
@@ -23,7 +23,7 @@ pub(super) enum Record {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(super) enum Kind {
+pub(in crate::login) enum Kind {
     String,
     Integer(u8),
     Bool,
@@ -34,13 +34,13 @@ pub(super) enum Kind {
 }
 
 #[derive(Clone, Copy, Debug)]
-pub(super) struct Field {
-    pub(super) name: &'static str,
-    pub(super) kind: Kind,
+pub(in crate::login) struct Field {
+    pub(in crate::login) name: &'static str,
+    pub(in crate::login) kind: Kind,
 }
 
 impl Record {
-    pub(super) fn fields(self) -> &'static [Field] {
+    pub(in crate::login) fn fields(self) -> &'static [Field] {
         match self {
             Self::Client => CLIENT_FIELDS,
             Self::Animation => ANIMATION_FIELDS,
