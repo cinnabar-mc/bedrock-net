@@ -65,7 +65,8 @@ func run(scenario string) error {
 	switch scenario {
 	case "flate", "snappy", "threshold", "chunk-pack", "url-pack":
 		return listen(scenario)
-	case "startgame-without-packs", "packs-info-before-login-success", "pack-stack-before-login-success", "transfer-before-login-success", "disconnect-before-login-success":
+	case "startgame-without-packs", "packs-info-before-login-success", "pack-stack-before-login-success",
+		"transfer-before-login-success", "disconnect-before-login-success":
 		return scripted(scenario)
 	}
 	return fmt.Errorf("unknown scenario %q", scenario)

@@ -75,6 +75,7 @@ pub async fn acquire(
     let (mut negotiation, response) = offer.start()?;
     completed(&mut waiting, &negotiation, io);
     handshake::send_packets(connection, &[response.into()], None, observe).await?;
+    connection.replay_deferred();
     let mut deferred_stack = false;
     loop {
         if deferred_stack && negotiation.ready_for_stack() {
