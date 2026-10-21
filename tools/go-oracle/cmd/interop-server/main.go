@@ -65,7 +65,8 @@ func run(scenario string) error {
 	switch scenario {
 	case "flate", "snappy", "threshold", "chunk-pack", "url-pack":
 		return listen(scenario)
-	case "startgame-without-packs", "packs-info-before-login-success", "transfer-before-login-success", "disconnect-before-login-success":
+	case "startgame-without-packs", "packs-info-before-login-success", "pack-stack-before-login-success",
+		"transfer-before-login-success", "disconnect-before-login-success":
 		return scripted(scenario)
 	}
 	return fmt.Errorf("unknown scenario %q", scenario)
@@ -256,16 +257,25 @@ func scripted(scenario string) error {
 			return err
 		}
 		return s.drain()
-	case "packs-info-before-login-success":
-		if err := s.write(&packet.ResourcePacksInfo{}, success); err != nil {
+	case "packs-info-before-login-success", "pack-stack-before-login-success":
+		stack := &packet.ResourcePackStack{BaseGameVersion: protocol.CurrentVersion}
+		initial := []packet.Packet{&packet.ResourcePacksInfo{}}
+		earlyStack := scenario == "pack-stack-before-login-success"
+		if earlyStack {
+			initial = append(initial, stack)
+		}
+		initial = append(initial, success)
+		if err := s.write(initial...); err != nil {
 			return err
 		}
 		var response packet.ResourcePackClientResponse
 		if err := s.read(packet.IDResourcePackClientResponse, &response); err != nil {
 			return err
 		}
-		if err := s.write(&packet.ResourcePackStack{BaseGameVersion: protocol.CurrentVersion}); err != nil {
-			return err
+		if !earlyStack {
+			if err := s.write(stack); err != nil {
+				return err
+			}
 		}
 		if err := s.read(packet.IDResourcePackClientResponse, &response); err != nil {
 			return err

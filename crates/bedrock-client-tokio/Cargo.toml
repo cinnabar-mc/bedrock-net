@@ -1,0 +1,39 @@
+[package]
+name = "bedrock-client-tokio"
+version = "0.1.0"
+edition = "2024"
+rust-version.workspace = true
+license-file = "../../LICENSE-CINNABAR"
+description = "Caller-owned Tokio connection and transport adapters for Bedrock"
+repository = "https://github.com/cinnabar-mc/bedrock-net"
+readme = "README.md"
+publish = false
+
+[features]
+default = []
+raknet = ["bedrock-net/raknet", "tokio/net", "dep:bedrock-client", "dep:bedrock-packs", "dep:serde_json"]
+nethernet = ["bedrock-net/messaging", "dep:nethernet-tokio", "dep:rand", "tokio/net", "dep:bedrock-client", "dep:bedrock-packs", "dep:serde_json"]
+# Read-only observations used by integration fixtures.
+test-support = []
+
+[dependencies]
+bedrock-client = { path = "../bedrock-client", optional = true }
+bedrock-packs = { path = "../bedrock-packs", optional = true }
+serde_json = { version = "1", features = ["raw_value"], optional = true }
+bedrock-net = { path = "../.." }
+bedrock-protocol.workspace = true
+bytes = "1"
+futures = "0.3"
+nethernet-tokio = { workspace = true, optional = true }
+rand = { version = "0.10", optional = true }
+tokio = { version = "1", features = ["rt", "time", "macros", "sync"] }
+thiserror = "2"
+tracing = "0.1"
+uuid = "1"
+zeroize = "1"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["rt", "macros", "net", "time", "test-util", "process", "io-util"] }
+
+[lints]
+workspace = true

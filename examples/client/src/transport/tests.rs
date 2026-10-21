@@ -1,11 +1,12 @@
 use super::*;
-use crate::session::Session;
 use bedrock_client::handshake::{ClientHandshake, HandshakeOptions};
-use bedrock_net::{BatchCodec, BatchLimits, DecodeOutcome};
+use bedrock_client_tokio::connection::Connection;
+use bedrock_net::{BatchCodec, BatchHeader, BatchLimits, DecodeOutcome};
 use bedrock_protocol::{
     packets,
     wire::{PacketHeader, Peer, Reader},
 };
+use bytes::Bytes;
 use raknet::prelude::{
     Established, RakClock, RakServer, RakServerConfig, RakServerInput, RakServerOutput, RakSession,
     RakSessionInput, RakSessionOutput, Sans,
@@ -120,17 +121,25 @@ impl ProbePeer {
 /// A completed probe send must emit its generated packet before returning a typed continuation.
 #[tokio::test]
 async fn generated_probe_send_emits_without_a_later_receive_or_close() {
-    tokio::time::timeout(HANDSHAKE_TIMEOUT, async {
+    let deadline = tokio::time::Instant::now() + HANDSHAKE_TIMEOUT;
+    tokio::time::timeout_at(deadline, async {
         let mut peer = ProbePeer::new().await;
         let address = peer.socket.local_addr().unwrap();
-        let (transport, ()) = tokio::join!(Transport::connect("raknet", address), peer.establish());
-        let transport = transport.unwrap();
-        let configured =
-            ClientHandshake::new(transport.key(), HandshakeOptions::default()).unwrap();
+        let (transport, ()) = tokio::join!(connect("raknet", address, deadline), peer.establish());
+        let (transport, key) = transport.unwrap();
+        let configured = ClientHandshake::new(key, HandshakeOptions::default()).unwrap();
         let (_settings, request) = configured.start().unwrap();
         let expected = request.client_network_version.0;
-        let mut session = Session::new(transport);
-        session.send(request.into()).await.unwrap();
+        let mut session = Connection::new(
+            transport,
+            BatchLimits::default(),
+            bedrock_protocol::wire::Limits::receiving_from(Peer::Server),
+            BatchLimits::default().max_decoded_bytes,
+        );
+        session
+            .send_packet(&request.into(), Peer::Client, 0, 0)
+            .await
+            .unwrap();
         // The probe is deliberately not polled again: this tests its actual completed-send boundary.
         let message = tokio::time::timeout(std::time::Duration::from_secs(1), peer.next_packet())
             .await

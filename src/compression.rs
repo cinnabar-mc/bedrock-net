@@ -5,6 +5,8 @@ use flate2::{Decompress, FlushDecompress, Status, write::DeflateEncoder};
 
 use crate::{BatchError, DropReason};
 
+mod snappy;
+
 const DEFLATE_ID: u8 = 0;
 const SNAPPY_ID: u8 = 1;
 const UNCOMPRESSED_ID: u8 = u8::MAX;
@@ -78,9 +80,18 @@ pub(crate) fn compress(
             encoder.write_all(body).map_err(BatchError::Deflate)?;
             encoder.finish().map_err(BatchError::Deflate)
         }
-        CompressionAlgorithm::Snappy => snap::raw::Encoder::new()
-            .compress_vec(body)
-            .map_err(BatchError::Snappy),
+        CompressionAlgorithm::Snappy => {
+            let maximum = snap::raw::max_compress_len(body.len());
+            if maximum == 0 {
+                return snap::raw::Encoder::new()
+                    .compress_vec(body)
+                    .map_err(BatchError::Snappy);
+            }
+            let mut out = Vec::with_capacity(maximum);
+            // Matching state belongs to this one call, never to the connection's codec.
+            snappy::Encoder::default().compress(body, &mut out);
+            Ok(out)
+        }
         CompressionAlgorithm::None => Ok(body.to_vec()),
     }
 }
@@ -100,6 +111,9 @@ pub(crate) fn decompress(
             };
             if length > maximum {
                 return Err(BatchError::DecodedTooLarge { maximum });
+            }
+            if let Some(decoded) = snappy::decompress(&body, length) {
+                return Ok(Ok(decoded));
             }
             Ok(snap::raw::Decoder::new()
                 .decompress_vec(&body)

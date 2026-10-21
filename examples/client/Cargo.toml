@@ -8,6 +8,7 @@ publish = false
 
 [dependencies]
 bedrock-client = { path = "../../crates/bedrock-client" }
+bedrock-client-tokio = { path = "../../crates/bedrock-client-tokio", features = ["raknet", "nethernet"] }
 bedrock-net = { path = "../..", features = ["raknet", "login"] }
 bedrock-protocol.workspace = true
 bedrock_auth = { git = "https://github.com/bedrock-crustaceans/bedrock-rs", rev = "ab7bb9521af078d4094c86da8b127d5f53cf0d31" }
