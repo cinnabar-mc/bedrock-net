@@ -2,6 +2,7 @@
 // Copyright (c) 2012 The Go Authors. All rights reserved.
 // Copyright (c) 2019 Klaus Post. All rights reserved.
 // Copyright 2016 The Snappy-Go Authors. All rights reserved.
+// Copyright (c) 2011 The Snappy-Go Authors. All rights reserved.
 // Rust implementation adapted from HashimTheArab's bedrock-net Snappy implementation.
 // Adapted from minlz and S2's Snappy encoders. See THIRD_PARTY_NOTICES.md for its BSD license.
 
