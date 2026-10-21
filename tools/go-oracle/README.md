@@ -66,3 +66,13 @@ The generator requires Go 1.26.1, Unicode 15.0.0 and the checksum-pinned
 through `go list -m -json`, so it needs no fixed module-cache path. CI regenerates
 both files and fails if their committed bytes differ. Review any baseline change
 and preserve the generated files' Go license notices.
+
+`go run . offline-fixtures` emits 55 deterministic synthetic offline Login
+requests and the selected Go parser's actual results. `go test -run
+TestOfflineFixtures .` checks the decisions, key selection and repeatable bytes.
+All fixed keys and signatures belong only to these test fixtures.
+
+The RPC operations `offline_shapes`, `offline_curve_fixtures` and
+`offline_encoding_fixtures` provide synthetic header, signing-key and compact
+encoding controls. Each helper checks its expected results with the pinned Go
+parser before returning the cases. Run `go test ./...` to check the inventories.

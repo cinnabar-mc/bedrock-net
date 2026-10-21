@@ -1,8 +1,9 @@
 //! Caller-owned upstream startup; generated controls advance only after their real forward flush.
 
 use super::{
-    AcceptedSession, AuthenticatedLogin, LoginVerifier, Phase, ServerSessionError as Error,
-    ServerSessionTransitionError, SessionEngine, bounded_metadata, lifecycle::failure,
+    AcceptedSession, AuthenticatedLogin, LoginPolicy, LoginVerifier, Phase,
+    ServerSessionError as Error, ServerSessionTransitionError, SessionEngine, bounded_metadata,
+    lifecycle::failure,
 };
 use crate::server::ServerPacksReady;
 use bedrock_protocol::{enums::PlayStatusType, packets};
@@ -65,8 +66,8 @@ impl<A> ServerPacksReady<A> {
 /// The original accepting Login and grant observing a real upstream world's startup.
 /// This owner generates no world, radius, item, creative or spawn response.
 #[must_use]
-pub struct ServerRelaying<A> {
-    engine: Box<SessionEngine<A>>,
+pub struct ServerRelaying<A, L = AuthenticatedLogin> {
+    engine: Box<SessionEngine<A, L>>,
     runtime_id: Option<u64>,
     radius: Option<i32>,
     requested: bool,
@@ -84,24 +85,24 @@ pub struct ServerRelaying<A> {
 /// }
 /// ```
 #[must_use = "forward the original control and flush before advancing its continuation"]
-pub struct PendingServerRelay<A> {
-    session: ServerRelaying<A>,
+pub struct PendingServerRelay<A, L = AuthenticatedLogin> {
+    session: ServerRelaying<A, L>,
     packet: packets::Packet,
     effect: Effect,
 }
 
 /// Only completed original forwards can continue startup or expose actual initialization.
-pub enum ServerRelayProgress<A> {
+pub enum ServerRelayProgress<A, L = AuthenticatedLogin> {
     /// Continue observing the same real upstream and client under the unchanged deadline.
-    Continue(ServerRelaying<A>),
+    Continue(ServerRelaying<A, L>),
     /// The client's exact initialization reached the original upstream; revalidate before attaching.
-    Initialized(ServerRelayInitialized<A>),
+    Initialized(ServerRelayInitialized<A, L>),
 }
 
 /// Actual forwarded initialization, retaining its original provider/grant for the final check.
 #[must_use]
-pub struct ServerRelayInitialized<A> {
-    session: ServerRelaying<A>,
+pub struct ServerRelayInitialized<A, L = AuthenticatedLogin> {
+    session: ServerRelaying<A, L>,
 }
 
 enum Effect {
@@ -115,9 +116,9 @@ enum Effect {
     Initialized,
 }
 
-impl<A> ServerRelaying<A> {
+impl<A, L> ServerRelaying<A, L> {
     /// Takes original Login/grant after actual packs or explicit absence, without creating a world.
-    pub(super) fn new(engine: Box<SessionEngine<A>>) -> Self {
+    pub(super) fn new(engine: Box<SessionEngine<A, L>>) -> Self {
         Self {
             engine,
             runtime_id: None,
@@ -128,8 +129,8 @@ impl<A> ServerRelaying<A> {
         }
     }
 
-    /// Borrows the original provider-authenticated player and signed client data.
-    pub fn login(&self) -> &AuthenticatedLogin {
+    /// Borrows the original Login capability and signed client data.
+    pub fn login(&self) -> &L {
         &self.engine.login
     }
 
@@ -150,7 +151,7 @@ impl<A> ServerRelaying<A> {
         mut self,
         packet: packets::Packet,
         now: Instant,
-    ) -> Result<PendingServerRelay<A>, ServerSessionTransitionError<Self>> {
+    ) -> Result<PendingServerRelay<A, L>, ServerSessionTransitionError<Self>> {
         let effect = (|| {
             self.engine.require(Phase::World, now)?;
             Ok(match &packet {
@@ -185,7 +186,7 @@ impl<A> ServerRelaying<A> {
         mut self,
         packet: packets::Packet,
         now: Instant,
-    ) -> Result<PendingServerRelay<A>, ServerSessionTransitionError<Self>> {
+    ) -> Result<PendingServerRelay<A, L>, ServerSessionTransitionError<Self>> {
         let effect = (|| {
             self.engine.require(Phase::World, now)?;
             Ok(match &packet {
@@ -220,7 +221,7 @@ impl<A> ServerRelaying<A> {
         mut self,
         packet: packets::Packet,
         effect: Result<Effect, Error>,
-    ) -> Result<PendingServerRelay<A>, ServerSessionTransitionError<Self>> {
+    ) -> Result<PendingServerRelay<A, L>, ServerSessionTransitionError<Self>> {
         match self.engine.terminal(effect) {
             Ok(effect) => Ok(PendingServerRelay {
                 session: self,
@@ -237,14 +238,14 @@ impl<A> ServerRelaying<A> {
     }
 }
 
-impl<A> PendingServerRelay<A> {
+impl<A, L> PendingServerRelay<A, L> {
     /// Borrows the exact decoded control; the adapter may forward its matching original raw bytes.
     pub fn packet(&self) -> &packets::Packet {
         &self.packet
     }
 
     /// Borrows original identity for application/provider checks after actual IO waits.
-    pub fn login(&self) -> &AuthenticatedLogin {
+    pub fn login(&self) -> &L {
         self.session.login()
     }
 
@@ -263,7 +264,7 @@ impl<A> PendingServerRelay<A> {
     pub fn flushed(
         mut self,
         now: Instant,
-    ) -> Result<ServerRelayProgress<A>, ServerSessionTransitionError<Self>> {
+    ) -> Result<ServerRelayProgress<A, L>, ServerSessionTransitionError<Self>> {
         let result = self.session.engine.require(Phase::World, now);
         if let Err(cause) = self.session.engine.terminal(result) {
             return Err(failure(self, cause));
@@ -287,9 +288,9 @@ impl<A> PendingServerRelay<A> {
     }
 }
 
-impl<A> ServerRelayInitialized<A> {
-    /// Borrows the same actual provider-authenticated Login before final attachment.
-    pub fn login(&self) -> &AuthenticatedLogin {
+impl<A, L> ServerRelayInitialized<A, L> {
+    /// Borrows the same original Login capability before final attachment.
+    pub fn login(&self) -> &L {
         self.session.login()
     }
 
@@ -307,10 +308,10 @@ impl<A> ServerRelayInitialized<A> {
     /// This proves protocol progress, not hosted membership or permission to publish occupancy.
     pub fn finish(
         mut self,
-        verifier: &impl LoginVerifier,
+        verifier: &impl LoginPolicy<L>,
         now: Instant,
         utc: SystemTime,
-    ) -> Result<AcceptedSession<A>, ServerSessionTransitionError<Self>> {
+    ) -> Result<AcceptedSession<A, L>, ServerSessionTransitionError<Self>> {
         if let Err(cause) = self.session.engine.check_finish(verifier, now, utc) {
             return Err(failure(self, cause));
         }

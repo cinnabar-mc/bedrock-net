@@ -16,9 +16,12 @@ pub use packs::{ServerPackContent, ServerPackDelivery, ServerPackSnapshot};
 pub use relay::{PendingServerRelay, ServerRelayInitialized, ServerRelayProgress, ServerRelaying};
 pub use spawn::ServerWorld;
 
-use super::{AuthenticatedLogin, LoginError, LoginVerifier, ServerHandshakeError};
+use super::{AuthenticatedLogin, LoginError, LoginPolicy, LoginVerifier, ServerHandshakeError};
 use bedrock_protocol::{enums::PlayStatusType, packets, wire};
 use std::time::{Instant, SystemTime};
+
+/// One consumed accepting continuation and its ordered generated packet output.
+pub type ServerSessionOutput<C> = (C, Vec<packets::Packet>);
 
 /// A terminal accepting transition failure without peer metadata or content keys.
 #[derive(Debug, thiserror::Error)]
@@ -69,8 +72,8 @@ enum Phase {
 }
 
 /// Same original Login/grant/deadline retained across all owned pack/world continuations.
-struct SessionEngine<A> {
-    login: AuthenticatedLogin,
+struct SessionEngine<A, L = AuthenticatedLogin> {
+    login: L,
     grant: A,
     packs: Option<packs::Delivery>,
     metadata_limit: usize,
@@ -80,10 +83,10 @@ struct SessionEngine<A> {
     cache_enabled: bool,
 }
 
-impl<A> SessionEngine<A> {
+impl<A, L> SessionEngine<A, L> {
     /// Wraps validated delivery and the actual consumed Login without renewing its deadline.
     fn new(
-        login: AuthenticatedLogin,
+        login: L,
         grant: A,
         mut packs: packs::Delivery,
         deadline: Instant,
@@ -171,13 +174,13 @@ impl<A> SessionEngine<A> {
     fn start_world(
         &mut self,
         world: ServerWorld,
-        verifier: &impl LoginVerifier,
+        verifier: &impl LoginPolicy<L>,
         now: Instant,
         utc: SystemTime,
     ) -> Result<ServerSessionEvent, ServerSessionError> {
         let result = (|| {
             self.require(Phase::World, now)?;
-            self.login.revalidate(verifier, utc)?;
+            verifier.revalidate(&self.login, utc)?;
             let (startup, packets) = spawn::Startup::new(world, self.metadata_limit)?;
             self.world = Some(startup);
             self.phase = Phase::Spawning;
@@ -189,14 +192,14 @@ impl<A> SessionEngine<A> {
     /// Revalidates the actual initialized owner before final application attachment.
     fn check_finish(
         &mut self,
-        verifier: &impl LoginVerifier,
+        verifier: &impl LoginPolicy<L>,
         now: Instant,
         utc: SystemTime,
     ) -> Result<(), ServerSessionError> {
         let result = (|| {
             self.require(Phase::Ready, now)?;
-            self.login
-                .revalidate(verifier, utc)
+            verifier
+                .revalidate(&self.login, utc)
                 .map_err(ServerSessionError::from)
         })();
         self.terminal(result)

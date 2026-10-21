@@ -119,6 +119,15 @@ func handle(req *serveRequest) (any, error) {
 	case "resolve_udp":
 		_, err := net.ResolveUDPAddr("udp", req.Address)
 		return map[string]bool{"resolved": err == nil}, nil
+
+	case "offline_shapes":
+		return offlineShapes()
+	case "offline_curve_fixtures":
+		return offlineCurveFixtures()
+	case "offline_encoding_fixtures":
+		return offlineEncodingFixtures()
+	case "offline_fixtures":
+		return offlineFixtures()
 	default:
 		return nil, fmt.Errorf("unknown op %q", req.Op)
 	}

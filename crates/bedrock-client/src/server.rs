@@ -13,6 +13,8 @@ use std::{
 };
 
 mod lifecycle;
+mod policy;
+pub use policy::LoginPolicy;
 
 /// Owned accepting pack delivery and selected-world startup after the actual Login handoff.
 pub mod session;
