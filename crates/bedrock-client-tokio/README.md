@@ -60,11 +60,14 @@ accepted input for ordinary reads. Local send completion does not prove remote
 processing.
 
 `PacketIo::close` retires sending while retaining accepted input. A caller that
-has finished consuming game data can explicitly drain `Transport::finish_close`
-under its existing deadline; this consumes remaining reliable/unreliable input
-without creating a replacement Ready owner. Dropping the connection drops the
-same underlying transport owners. Read-only RTT observations withdraw when
-their original transport retires.
+has finished consuming game data can use `PacketIo::finish_close` on `Connection`
+under its existing deadline. This delegates to `Transport::finish_close`, consuming
+remaining reliable/unreliable transport input without clearing already decoded
+`Connection` packets or creating a replacement Ready owner. Canceling this wait
+retains the same closing transport. Other `PacketIo` implementations inherit a
+final hook that delegates to their existing `close` unless they override it.
+Dropping the connection drops the same underlying transport owners. Read-only
+RTT observations withdraw when their original transport retires.
 
 `WireIdentity` and the retained challenge are wire metadata, never authentication
 or membership capabilities. The extracted implementation retains its

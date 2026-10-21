@@ -7,9 +7,18 @@ use nethernet_tokio::{ConnectionConfig, LanConfig, LanSignaling, NetherServer, S
 use std::{sync::Arc, time::Duration};
 use tokio::net::UdpSocket;
 
+mod physical_close;
+
 /// Uses real generated pack requests and the established association's original codec.
 #[tokio::test]
 async fn pack_effects_split_at_both_byte_and_packet_limits() {
+    let _ = pack_effects_with_retirement(false).await;
+}
+
+/// Reuses the original pair and pack effects, optionally observing its final socket lifetime.
+async fn pack_effects_with_retirement(
+    observe_retirement: bool,
+) -> Option<physical_close::Observation> {
     tokio::time::timeout(Duration::from_secs(20), async {
         let reservation = UdpSocket::bind("127.0.0.1:0").await.unwrap();
         let address = reservation.local_addr().unwrap();
@@ -114,6 +123,12 @@ async fn pack_effects_split_at_both_byte_and_packet_limits() {
                 batch_counts.push(received.len() - before);
             }
         }
+        let retirement = if observe_retirement {
+            let address = peer.session.remote_addr().await.socket_addr.unwrap();
+            Some(physical_close::observe(&mut connection, address).await)
+        } else {
+            None
+        };
         let close = connection.close().await;
         let mut retired = peer.close();
         while retired.reliable.recv().await.unwrap().is_some() {}
@@ -128,7 +143,8 @@ async fn pack_effects_split_at_both_byte_and_packet_limits() {
         assert_eq!(batch_counts, [1, 2, 2]);
         assert_eq!(received, packets);
         assert_eq!(observed, packets);
+        retirement
     })
     .await
-    .expect("finite pack effect fixture stalled");
+    .expect("finite pack effect fixture stalled")
 }
