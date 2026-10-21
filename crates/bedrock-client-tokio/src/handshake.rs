@@ -19,6 +19,9 @@ use std::{
     time::{Instant, SystemTime},
 };
 
+#[cfg(all(test, feature = "nethernet"))]
+mod tests;
+
 /// Borrowed observations of original I/O; callbacks cannot replace a packet or grant authority.
 pub enum Observation<'a> {
     /// An unknown numeric ID on an otherwise valid original header.
