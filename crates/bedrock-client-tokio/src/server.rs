@@ -1,0 +1,259 @@
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+
+//! Caller-driven accepting wire ownership over an established NetherNet association.
+
+use crate::connection::send::{PreparedSend, SendRetirement};
+use crate::{
+    connection::{Connection, expired},
+    transport::Transport,
+};
+
+#[cfg(any(test, feature = "test-support"))]
+pub mod test_support;
+#[cfg(test)]
+mod tests;
+use bedrock_client::server::{ServerHandshake, ServerHandshakeOptions};
+use bedrock_net::encryption::{BatchDecryptor, BatchEncryptor};
+use bedrock_net::{BatchLimits, CompressionSettings};
+use bedrock_protocol::{packets, wire};
+use bytes::Bytes;
+use p384::ecdsa::SigningKey;
+use std::{io, sync::Arc, time::Instant};
+
+/// The sole codec/cipher and receive FIFO for one actual established server association.
+/// Construction grants no Login, hosted membership or selected-world authority.
+#[must_use]
+pub struct AcceptingConnection {
+    connection: Connection,
+    skipped: u64,
+}
+
+/// Local send admission ended; the same already accepted receive prefix can still drain.
+#[must_use]
+pub struct RetiredAcceptingConnection {
+    connection: Connection,
+}
+
+impl AcceptingConnection {
+    /// Takes an actual Ready association and binds Login to its original authenticated SDP key.
+    /// The caller must have configured its server's real transport identity/signaling policy and
+    /// supply that same server proof key. The deferred-byte bound belongs to the caller.
+    /// This performs no dial or provider/account acquisition.
+    pub async fn from_nether(
+        accepted: nethernet_tokio::AcceptedSession,
+        key: Arc<SigningKey>,
+        mut options: ServerHandshakeOptions,
+        max_deferred_bytes: usize,
+        deadline: Instant,
+    ) -> io::Result<(Self, ServerHandshake)> {
+        let player = wait(deadline, accepted.session.player())
+            .await?
+            .ok_or_else(denied)?;
+        let transport_key = player.client_public_key().map_err(|_| denied())?;
+        // The actual reliable association is already DTLS protected.
+        options.batch_encryption = false;
+        let handshake = ServerHandshake::new(
+            key,
+            Some(transport_key),
+            options,
+            deadline,
+            tokio::time::Instant::now().into_std(),
+        )
+        .map_err(|_| denied())?;
+        let defaults = BatchLimits::default();
+        // Accepted sessions retain their incoming packet-count limit.
+        let limits = BatchLimits {
+            max_incoming_packets: Some(defaults.max_packets),
+            ..defaults
+        };
+        Ok((
+            Self {
+                connection: Connection::new(
+                    Transport::from_accepted(accepted),
+                    limits,
+                    wire::Limits::receiving_from(wire::Peer::Client),
+                    max_deferred_bytes,
+                ),
+                skipped: 0,
+            },
+            handshake,
+        ))
+    }
+
+    /// Reads one primary generated packet while retaining every original batch sibling.
+    /// Unknown or secondary packets the accepting owner does not use are counted and skipped.
+    pub async fn receive(&mut self, deadline: Instant) -> io::Result<packets::Packet> {
+        loop {
+            let raw = self.receive_raw(deadline).await?;
+            let mut reader = wire::Reader::from_shared(&raw);
+            let header =
+                wire::PacketHeader::from_raw(reader.read_var_u32().map_err(|_| invalid())?);
+            let id = packets::PacketId::from_raw(header.id);
+            if header.sender_subclient != 0 || header.target_subclient != 0 || id.is_none() {
+                self.skipped = self.skipped.saturating_add(1);
+                tracing::debug!(skipped = self.skipped, "skipped unused accepting packet");
+                continue;
+            }
+            let body = raw.slice(reader.position()..);
+            return self
+                .connection
+                .decode_body(id.expect("classified packet"), &body)
+                .map_err(|_| invalid());
+        }
+    }
+
+    /// Borrows the original Login request for bounded application-owned admission work.
+    /// Other packets have no Login request; this grants no authenticated identity or world access.
+    pub fn login_request(packet: &packets::Packet) -> Option<&[u8]> {
+        match packet {
+            packets::Packet::Login(login) => Some(&login.connection_request),
+            _ => None,
+        }
+    }
+
+    /// Ends decoded peer terminals and counts known input unused by the accepting continuation.
+    pub fn handle_unhandled(&mut self, packet: &packets::Packet) -> io::Result<()> {
+        if matches!(
+            packet,
+            packets::Packet::Disconnect(_) | packets::Packet::Transfer(_)
+        ) {
+            return Err(io::Error::new(
+                io::ErrorKind::ConnectionAborted,
+                "native hosted peer ended",
+            ));
+        }
+        self.skipped = self.skipped.saturating_add(1);
+        tracing::debug!(id = ?packet.id(), skipped = self.skipped, "skipped unused native hosted packet");
+        Ok(())
+    }
+
+    /// Installs only the settings whose exact plaintext response has actually flushed.
+    pub fn compression_flushed(&mut self, settings: CompressionSettings) -> io::Result<()> {
+        self.connection.enable_compression(settings)
+    }
+
+    /// Installs original streams only after their exact plaintext token has actually flushed.
+    pub fn encryption_flushed(
+        &mut self,
+        ciphers: (BatchEncryptor, BatchDecryptor),
+    ) -> io::Result<()> {
+        self.connection.enable_encryption(ciphers)
+    }
+
+    /// Takes the original complete packet header/body; no decode/re-encode changes play packets.
+    pub async fn receive_raw(&mut self, deadline: Instant) -> io::Result<Bytes> {
+        self.connection.next_raw_before(deadline).await
+    }
+
+    /// Waits for ordinary initialized play without imposing a new idle timeout.
+    pub async fn receive_play(&mut self) -> io::Result<Bytes> {
+        self.connection.next_raw().await
+    }
+
+    /// Borrows this same wire owner for protocol adapters that retain their own continuations.
+    /// This grants no authenticated identity, application admission or hosted-world authority.
+    /// Keep the original owner and check current authority before every synchronous send commit.
+    pub fn connection_mut(&mut self) -> &mut Connection {
+        &mut self.connection
+    }
+
+    /// Consumes local send capability and retains the actual accepted receiver and decoded FIFO.
+    pub fn begin_close(mut self) -> RetiredAcceptingConnection {
+        self.connection.transport_mut().retire_accepted();
+        RetiredAcceptingConnection {
+            connection: self.connection,
+        }
+    }
+
+    /// Encodes typed effects once without changing the cipher or admitting a command.
+    /// Rejects another retained effect or a locally retired send direction.
+    /// Empty input completes locally; entries that fail bounded serialization are logged and skipped.
+    /// Nonempty input with no encoded entries is rejected.
+    /// Larger groups split under the original codec's per-batch limits as one retained effect.
+    pub fn prepare_packets(
+        &mut self,
+        packets: Vec<packets::Packet>,
+        deadline: Instant,
+    ) -> io::Result<PreparedSend<'_>> {
+        let mut body = Vec::new();
+        for packet in &packets {
+            let header = wire::PacketHeader {
+                id: packet.id() as u32,
+                sender_subclient: 0,
+                target_subclient: 0,
+            };
+            if let Err(error) = self
+                .connection
+                .append_packet_frame(&mut body, header, packet)
+            {
+                tracing::warn!(id = ?packet.id(), %error, "skipping an outbound packet that failed to encode");
+            }
+        }
+        if !packets.is_empty() && body.is_empty() {
+            return Err(invalid());
+        }
+        let frames = wire::Frames::new(Bytes::from(body), packets.len());
+        self.connection.prepare_frames(frames, deadline)
+    }
+
+    /// Encodes one original complete raw packet without changing its bytes or cipher.
+    pub fn prepare_raw(
+        &mut self,
+        packet: Bytes,
+        deadline: Instant,
+    ) -> io::Result<PreparedSend<'_>> {
+        let body = self.connection.raw_body(packet).map_err(|_| invalid())?;
+        self.connection.prepare_body(body, deadline)
+    }
+
+    /// Resumes the exact cursor, permit or receipt retained by an earlier borrowed operation.
+    pub fn resume_send(&mut self) -> io::Result<PreparedSend<'_>> {
+        self.connection.resume_send()
+    }
+
+    /// Seals new local commits and caps settlement by the first cleanup and original send cutoffs.
+    /// This does not close the association. Settle its receipt before calling begin_close.
+    pub fn begin_send_retirement(&mut self, deadline: Instant) -> SendRetirement<'_> {
+        self.connection.begin_send_retirement(deadline)
+    }
+}
+
+impl RetiredAcceptingConnection {
+    /// Drains the original prefix without minting another established send capability.
+    pub async fn receive_raw(&mut self, deadline: Instant) -> io::Result<Bytes> {
+        self.connection.next_raw_before(deadline).await
+    }
+    /// Completes original transport retirement without starting a replacement association.
+    pub async fn finish_close(&mut self, deadline: Instant) -> io::Result<()> {
+        wait(deadline, self.connection.transport_mut().finish_close()).await?
+    }
+}
+
+/// Keeps every wait under its original edge deadline, including a late ready result.
+async fn wait<T>(deadline: Instant, future: impl std::future::Future<Output = T>) -> io::Result<T> {
+    if tokio::time::Instant::now().into_std() >= deadline {
+        return Err(expired());
+    }
+    let result = tokio::time::timeout_at(deadline.into(), future)
+        .await
+        .map_err(|_| expired())?;
+    if tokio::time::Instant::now().into_std() >= deadline {
+        return Err(expired());
+    }
+    Ok(result)
+}
+
+/// Reports malformed accepting input without signed metadata or provider diagnostics.
+fn invalid() -> io::Error {
+    io::Error::new(
+        io::ErrorKind::InvalidData,
+        "invalid native accepting packet",
+    )
+}
+/// Reports only the failed authority class.
+fn denied() -> io::Error {
+    io::Error::new(
+        io::ErrorKind::PermissionDenied,
+        "native accepting identity rejected",
+    )
+}

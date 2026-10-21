@@ -15,6 +15,8 @@ pub mod handshake;
 #[cfg(any(feature = "raknet", feature = "nethernet"))]
 pub mod packs;
 pub mod rtt;
+#[cfg(feature = "nethernet")]
+pub mod server;
 #[cfg(any(feature = "raknet", feature = "nethernet"))]
 pub mod transport;
 use rtt::RoundTripTime;

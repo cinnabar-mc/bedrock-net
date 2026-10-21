@@ -266,11 +266,28 @@ impl Connection {
             sender_subclient,
             target_subclient,
         };
-        wire::encode_frame_with(&mut body, header, self.limits.max_decoded_bytes, |writer| {
-            packet.encode(writer)
-        })
-        .map_err(io::Error::other)?;
+        self.append_packet_frame(&mut body, header, packet)?;
         Ok(Bytes::from(body))
+    }
+
+    /// Appends one bounded generated entry, rolling back only that entry on failure.
+    pub(crate) fn append_packet_frame(
+        &self,
+        body: &mut Vec<u8>,
+        header: wire::PacketHeader,
+        packet: &packets::Packet,
+    ) -> io::Result<()> {
+        let start = body.len();
+        let result =
+            wire::encode_frame_with(body, header, self.limits.max_decoded_bytes, |writer| {
+                packet.encode(writer)
+            })
+            .map_err(io::Error::other)
+            .and_then(|()| Self::check_body_size(&body[start..], self.limits.max_decoded_bytes));
+        if result.is_err() {
+            body.truncate(start);
+        }
+        result
     }
 
     /// Reads the existing output count bound without defining another batching policy.
@@ -286,7 +303,12 @@ impl Connection {
     /// Encodes the original bounded packet entries once on the current codec.
     fn encode_body(&self, body: Bytes) -> io::Result<Vec<Bytes>> {
         Self::check_body_size(&body, self.limits.max_decoded_bytes)?;
-        let entries = wire::Frames::new(body, self.limits.max_packets)
+        self.encode_frames(wire::Frames::new(body, self.limits.max_packets))
+    }
+
+    /// Applies original wire metadata before the current codec splits an ordered packet group.
+    fn encode_frames(&self, frames: wire::Frames) -> io::Result<Vec<Bytes>> {
+        let entries = frames
             .map(|frame| {
                 let frame = frame.map_err(io::Error::other)?;
                 identity::entry(frame, self.identity.as_ref(), self.limits.max_decoded_bytes)
@@ -424,6 +446,38 @@ impl Connection {
         let bytes = self.pending.pop_front().expect("fill supplies packets");
         self.current = Some(bytes.clone());
         Ok(bytes)
+    }
+
+    /// Reads the original FIFO under the accepting caller's absolute runtime cutoff.
+    #[cfg(feature = "nethernet")]
+    pub(crate) async fn next_raw_before(
+        &mut self,
+        deadline: std::time::Instant,
+    ) -> io::Result<Bytes> {
+        if tokio::time::Instant::now().into_std() >= deadline {
+            return Err(expired());
+        }
+        let result = tokio::time::timeout_at(deadline.into(), self.next_raw())
+            .await
+            .map_err(|_| expired())?;
+        self.finish_raw_read(result, deadline, tokio::time::Instant::now().into_std())
+    }
+
+    /// Applies the accepting cutoff to the original completed raw read.
+    #[cfg(feature = "nethernet")]
+    fn finish_raw_read(
+        &mut self,
+        result: io::Result<Bytes>,
+        deadline: std::time::Instant,
+        now: std::time::Instant,
+    ) -> io::Result<Bytes> {
+        if now >= deadline {
+            if result.is_ok() {
+                self.replay_current();
+            }
+            return Err(expired());
+        }
+        result
     }
 
     /// Restores actual already-consumed handoff frames ahead of the original unread siblings.
@@ -608,3 +662,9 @@ impl PacketIo for Connection {
 
 #[cfg(test)]
 mod tests;
+
+/// Uses one static timeout cause without identity-bearing values.
+#[cfg(feature = "nethernet")]
+pub(super) fn expired() -> io::Error {
+    io::Error::new(io::ErrorKind::TimedOut, "native accepting deadline expired")
+}
