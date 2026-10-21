@@ -58,13 +58,13 @@ async fn pack_effects_split_at_both_byte_and_packet_limits() {
             .enumerate()
             .map(|(chunk, length)| {
                 packets::ResourcePackChunkRequest {
-                    resource_name: vec![b'a'; length].into(),
+                    resource_name: Bytes::from(vec![b'a'; length]).into(),
                     chunk: wire::I32LE(chunk as i32),
                 }
                 .into()
             })
             .collect();
-        let size = |index| {
+        let size = |index: usize| {
             let mut framed = Vec::new();
             wire::encode_frame_with(
                 &mut framed,
