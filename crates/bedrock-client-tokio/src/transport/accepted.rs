@@ -7,6 +7,9 @@ use bytes::Bytes;
 use nethernet_tokio::{AcceptedSession, Retired, SessionSender};
 use std::{future::Future, io, sync::Arc, time::Instant};
 
+#[cfg(test)]
+mod tests;
+
 pub(super) struct AcceptedTransport {
     state: Option<State>,
     inbox: Inbox,
