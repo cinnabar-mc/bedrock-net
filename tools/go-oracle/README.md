@@ -63,3 +63,10 @@ The RPC operations `offline_shapes`, `offline_curve_fixtures` and
 `offline_encoding_fixtures` provide synthetic header, signing-key and compact
 encoding controls. Each helper checks its expected results with the pinned Go
 parser before returning the cases. Run `go test ./...` to check the inventories.
+
+`offline_json_contexts` checks duplicate fields, numeric overflow and nesting
+across standard JSON and JOSE decoding. `resolve_udp` checks one supplied UDP
+address with the local Go resolver; resolver-dependent results are not fixtures.
+
+`jose_headers` compares protected-header shapes across unverified identity,
+metadata, legacy chain, authenticated metadata and server-handshake roles.
