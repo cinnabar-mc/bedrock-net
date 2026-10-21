@@ -34,7 +34,7 @@ impl ClientExchangeKey {
     }
 
     /// Validates a signed PKIX ECDSA point and retains its canonical representation.
-    pub(super) fn parse(bytes: &[u8]) -> Option<Self> {
+    pub(in crate::login) fn parse(bytes: &[u8]) -> Option<Self> {
         let mut outer = bytes;
         let mut sequence = take(&mut outer, 0x30)?;
         if !outer.is_empty() {
