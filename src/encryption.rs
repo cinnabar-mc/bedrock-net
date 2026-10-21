@@ -288,10 +288,13 @@ impl CipherStream {
             // Include unused prefetched bytes, which advance the underlying stream too.
             let generated = needed.div_ceil(cache.bytes.len()) as u128 * group;
             let position = cipher.current_pos::<u128>();
-            let low = u64::from_be_bytes(iv[8..].try_into().expect("eight IV bytes"));
+            let low = Zeroizing::new(u64::from_be_bytes(
+                iv[8..].try_into().expect("eight IV bytes"),
+            ));
             // The narrow primitive also excludes its last relative counter block.
-            let limit = ((1_u128 << 64) - u128::from(low)).min(u128::from(u64::MAX)) * 16;
-            if position + generated > limit {
+            let limit =
+                Zeroizing::new(((1_u128 << 64) - u128::from(*low)).min(u128::from(u64::MAX)) * 16);
+            if position + generated > *limit {
                 let mut wide =
                     AesCtr::new_from_slices(key, iv).expect("fixed-size AES-256 key and CTR IV");
                 wide.try_seek(position)?;
