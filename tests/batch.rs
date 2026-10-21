@@ -749,8 +749,10 @@ fn encoding_reuses_only_consumed_unique_buffers_and_clears_failed_output() {
     );
     let input = [vec![0x42; 1 << 20], vec![0x43; 1 << 20]];
     let mut output = codec.encode(&input).unwrap();
+    let slots = output.as_ptr();
     let pointers: Vec<_> = output.iter().map(|batch| batch.as_ptr()).collect();
     codec.encode_into(&input, &mut output).unwrap();
+    assert_eq!(output.as_ptr(), slots);
     assert_eq!(
         output
             .iter()
@@ -763,6 +765,11 @@ fn encoding_reuses_only_consumed_unique_buffers_and_clears_failed_output() {
     codec.encode_into(&[vec![7; 1024]], &mut output).unwrap();
     assert_eq!(retained, original);
     assert_ne!(output[0].as_ptr(), retained.as_ptr());
+    assert_eq!(output.len(), 1);
+    codec.encode_into::<&[u8]>(&[], &mut output).unwrap();
+    assert!(output.is_empty());
+    codec.encode_into(&input, &mut output).unwrap();
+    assert_eq!(output.len(), 2);
     assert!(
         codec
             .encode_into(&[b"valid".as_slice(), b""], &mut output)

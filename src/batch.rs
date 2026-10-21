@@ -314,8 +314,7 @@ impl<S: BatchPhase> BatchCodec<S> {
         packets: &[P],
         batches: &mut Vec<Bytes>,
     ) -> Result<(), BatchError> {
-        let mut recycled = std::mem::take(batches).into_iter();
-        let result = self.encode_reusing(packets, batches, &mut recycled);
+        let result = self.encode_reusing(packets, batches);
         if result.is_err() {
             batches.clear();
         }
@@ -327,15 +326,16 @@ impl<S: BatchPhase> BatchCodec<S> {
         &self,
         packets: &[P],
         batches: &mut Vec<Bytes>,
-        recycled: &mut std::vec::IntoIter<Bytes>,
     ) -> Result<(), BatchError> {
         if packets.is_empty() {
+            batches.clear();
             return Ok(());
         }
         if self.limits.max_packets == 0 {
             return Err(BatchError::TooManyPackets { maximum: 0 });
         }
-        let mut message = self.start_batch(recycled.next());
+        let mut index = 0;
+        let mut message = self.start_batch(batches.get_mut(index).map(std::mem::take));
         let prefix = message.len();
         let mut count = 0;
         for packet in packets {
@@ -360,8 +360,9 @@ impl<S: BatchPhase> BatchCodec<S> {
                 && (count == self.limits.max_packets
                     || entry_len > self.limits.max_decoded_bytes - (message.len() - prefix))
             {
-                batches.push(self.finish_batch(message)?);
-                message = self.start_batch(recycled.next());
+                self.finish_batch(message, batches, index)?;
+                index += 1;
+                message = self.start_batch(batches.get_mut(index).map(std::mem::take));
                 count = 0;
             }
             message.reserve(entry_len.saturating_add(8));
@@ -369,7 +370,8 @@ impl<S: BatchPhase> BatchCodec<S> {
             message.extend_from_slice(packet);
             count += 1;
         }
-        batches.push(self.finish_batch(message)?);
+        self.finish_batch(message, batches, index)?;
+        batches.truncate(index + 1);
         Ok(())
     }
 
@@ -513,8 +515,13 @@ impl<S: BatchPhase> BatchCodec<S> {
         message
     }
 
-    /// Compresses a complete framed group when required and retains checksum space.
-    fn finish_batch(&self, mut message: Vec<u8>) -> Result<Bytes, BatchError> {
+    /// Compresses a complete group, retains checksum space, and replaces its recycled slot.
+    fn finish_batch(
+        &self,
+        mut message: Vec<u8>,
+        batches: &mut Vec<Bytes>,
+        index: usize,
+    ) -> Result<(), BatchError> {
         if let Some(settings) = self.phase.compression() {
             let marker = usize::from(self.header == BatchHeader::RakNet);
             let body = &message[marker + 1..];
@@ -532,7 +539,13 @@ impl<S: BatchPhase> BatchCodec<S> {
         }
         self.check_encoded_size(message.len())?;
         message.reserve(8);
-        Ok(Bytes::from(message))
+        let message = Bytes::from(message);
+        if let Some(slot) = batches.get_mut(index) {
+            *slot = message;
+        } else {
+            batches.push(message);
+        }
+        Ok(())
     }
 
     /// Applies the same wire bound to received and encoded messages.
