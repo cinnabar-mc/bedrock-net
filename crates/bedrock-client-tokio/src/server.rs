@@ -49,9 +49,14 @@ impl AcceptingConnection {
         let transport_key = player.client_public_key().map_err(|_| denied())?;
         // The actual reliable association is already DTLS protected.
         options.batch_encryption = false;
-        let handshake =
-            ServerHandshake::new(key, Some(transport_key), options, deadline, Instant::now())
-                .map_err(|_| denied())?;
+        let handshake = ServerHandshake::new(
+            key,
+            Some(transport_key),
+            options,
+            deadline,
+            tokio::time::Instant::now().into_std(),
+        )
+        .map_err(|_| denied())?;
         let defaults = BatchLimits::default();
         // Accepted sessions retain their incoming packet-count limit.
         let limits = BatchLimits {
@@ -159,7 +164,7 @@ impl AcceptingConnection {
 
     /// Encodes typed effects once without changing the cipher or admitting a command.
     /// Rejects another retained effect or a locally retired send direction.
-    /// Empty input completes locally; failed entries are logged and skipped.
+    /// Empty input completes locally; entries that fail bounded serialization are logged and skipped.
     /// Nonempty input with no encoded entries is rejected.
     /// Larger groups split under the original codec's per-batch limits as one retained effect.
     pub fn prepare_packets(
@@ -174,9 +179,10 @@ impl AcceptingConnection {
                 sender_subclient: 0,
                 target_subclient: 0,
             };
-            if let Err(error) = wire::encode_frame_with(&mut body, header, usize::MAX, |writer| {
-                packet.encode(writer)
-            }) {
+            if let Err(error) = self
+                .connection
+                .append_packet_frame(&mut body, header, packet)
+            {
                 tracing::warn!(id = ?packet.id(), %error, "skipping an outbound packet that failed to encode");
             }
         }
@@ -222,13 +228,13 @@ impl RetiredAcceptingConnection {
 
 /// Keeps every wait under its original edge deadline, including a late ready result.
 async fn wait<T>(deadline: Instant, future: impl std::future::Future<Output = T>) -> io::Result<T> {
-    if Instant::now() >= deadline {
+    if tokio::time::Instant::now().into_std() >= deadline {
         return Err(expired());
     }
     let result = tokio::time::timeout_at(deadline.into(), future)
         .await
         .map_err(|_| expired())?;
-    if Instant::now() >= deadline {
+    if tokio::time::Instant::now().into_std() >= deadline {
         return Err(expired());
     }
     Ok(result)

@@ -266,11 +266,21 @@ impl Connection {
             sender_subclient,
             target_subclient,
         };
-        wire::encode_frame_with(&mut body, header, self.limits.max_decoded_bytes, |writer| {
+        self.append_packet_frame(&mut body, header, packet)?;
+        Ok(Bytes::from(body))
+    }
+
+    /// Appends one bounded generated entry, rolling back only that entry on failure.
+    pub(crate) fn append_packet_frame(
+        &self,
+        body: &mut Vec<u8>,
+        header: wire::PacketHeader,
+        packet: &packets::Packet,
+    ) -> io::Result<()> {
+        wire::encode_frame_with(body, header, self.limits.max_decoded_bytes, |writer| {
             packet.encode(writer)
         })
-        .map_err(io::Error::other)?;
-        Ok(Bytes::from(body))
+        .map_err(io::Error::other)
     }
 
     /// Reads the existing output count bound without defining another batching policy.
