@@ -1,7 +1,11 @@
+use std::borrow::Cow;
+#[cfg(target_family = "wasm")]
 use std::io::Write;
 
 use bytes::Bytes;
-use flate2::{Decompress, FlushDecompress, Status, write::DeflateEncoder};
+#[cfg(target_family = "wasm")]
+use flate2::write::DeflateEncoder;
+use flate2::{Decompress, FlushDecompress, Status};
 
 use crate::{BatchError, DropReason};
 
@@ -75,25 +79,60 @@ pub(crate) fn compress(
     body: &[u8],
 ) -> Result<Vec<u8>, BatchError> {
     match algorithm {
-        CompressionAlgorithm::Deflate => {
-            let mut encoder = DeflateEncoder::new(Vec::new(), flate2::Compression::new(6));
-            encoder.write_all(body).map_err(BatchError::Deflate)?;
-            encoder.finish().map_err(BatchError::Deflate)
-        }
+        CompressionAlgorithm::Deflate => compress_deflate(body),
         CompressionAlgorithm::Snappy => {
-            let maximum = snap::raw::max_compress_len(body.len());
-            if maximum == 0 {
-                return snap::raw::Encoder::new()
-                    .compress_vec(body)
-                    .map_err(BatchError::Snappy);
-            }
-            let mut out = Vec::with_capacity(maximum);
-            // Matching state belongs to this one call, never to the connection's codec.
-            snappy::Encoder::default().compress(body, &mut out);
-            Ok(out)
+            SnappyEncoder::default().compress(body).map(Cow::into_owned)
         }
         CompressionAlgorithm::None => Ok(body.to_vec()),
     }
+}
+
+/// Reusable matching tables and initialized output for independent Snappy batches.
+#[derive(Default)]
+pub(crate) struct SnappyEncoder(snappy::Encoder);
+
+impl SnappyEncoder {
+    /// Compresses one whole input, resetting matching state before emitting its own block.
+    pub(crate) fn compress(&mut self, body: &[u8]) -> Result<Cow<'_, [u8]>, BatchError> {
+        let maximum = snap::raw::max_compress_len(body.len());
+        if maximum == 0 {
+            return snap::raw::Encoder::new()
+                .compress_vec(body)
+                .map(Cow::Owned)
+                .map_err(BatchError::Snappy);
+        }
+        Ok(self.0.compress(body))
+    }
+}
+
+/// Compresses one complete native batch using raw DEFLATE at level six.
+#[cfg(not(target_family = "wasm"))]
+fn compress_deflate(body: &[u8]) -> Result<Vec<u8>, BatchError> {
+    let mut encoder = libdeflater::Compressor::new(libdeflater::CompressionLvl::new(6).unwrap());
+    let mut out = vec![0; encoder.deflate_compress_bound(body.len())];
+    let length = encoder
+        .deflate_compress(body, &mut out)
+        .map_err(|error| BatchError::Deflate(std::io::Error::other(error)))?;
+    out.truncate(length);
+    Ok(out)
+}
+
+/// Keeps level-six compression portable on WebAssembly without a native dependency.
+#[cfg(target_family = "wasm")]
+fn compress_deflate(body: &[u8]) -> Result<Vec<u8>, BatchError> {
+    let mut encoder = DeflateEncoder::new(Vec::new(), flate2::Compression::new(6));
+    encoder.write_all(body).map_err(BatchError::Deflate)?;
+    encoder.finish().map_err(BatchError::Deflate)
+}
+
+/// Uses the checked hot loop before falling back to the reference decoder's diagnostics.
+pub(crate) fn decompress_snappy_into(body: &[u8], output: &mut [u8]) -> Result<(), snap::Error> {
+    if snappy::decompress_into(body, output).is_some() {
+        return Ok(());
+    }
+    snap::raw::Decoder::new()
+        .decompress(body, output)
+        .map(|_| ())
 }
 
 /// Bounds decompression and distinguishes a discarded payload from a fatal limit violation.

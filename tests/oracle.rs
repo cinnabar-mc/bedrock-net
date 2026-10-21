@@ -35,6 +35,12 @@ const EXPECTED_DIVERGENCES: &[(&str, &str, &str)] = &[
     ),
     // Audit stricter-limits list: outgoing batches split at 16 MiB; Go has no outgoing cap.
     ("encode/split_16mib", "2", "outgoing 16 MiB split"),
+    // Incomplete streams are discarded even when the peer inflater returns partial packet bytes.
+    (
+        "decode/flate_truncated_partial",
+        "dropped,packets(3)",
+        "incomplete DEFLATE output",
+    ),
 ];
 
 /// A short description of a result, so a listed divergence cannot silently change shape.
@@ -544,7 +550,19 @@ fn decode_corpus() -> Vec<(&'static str, Settings, Vec<Vec<u8>>)> {
         (
             "flate_truncated",
             n,
-            vec![flate[..flate.len() - 3].to_vec(), none.clone()],
+            vec![vec![0xfe, 0, 0, 5, 0, 0xfa, 0xff, 1], none.clone()],
+        ),
+        (
+            "flate_truncated_partial",
+            n,
+            vec![
+                vec![
+                    0xfe, 0, 0x63, 0x65, 0x62, 0, 0x02, 0x56, 0x4e, 0xe6, 0x8c, 0xd4, 0xca, 0x13,
+                    0x8c, 0x0c, 0x8c, 0x4c, 0xcc, 0x2c, 0xac, 0x6c, 0xec, 0x1c, 0x9c, 0x5c, 0xdc,
+                    0x3c, 0x43,
+                ],
+                none.clone(),
+            ],
         ),
         (
             "flate_trailing_data",
