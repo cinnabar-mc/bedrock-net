@@ -1,15 +1,14 @@
 //! Caller-owned upstream startup; generated controls advance only after their real forward flush.
 
 use super::{
-    AcceptedSession, AuthenticatedLogin, LoginPolicy, LoginVerifier, Phase,
-    ServerSessionError as Error, ServerSessionTransitionError, SessionEngine, bounded_metadata,
-    lifecycle::failure,
+    AcceptedSession, AuthenticatedLogin, LoginPolicy, Phase, ServerSessionError as Error,
+    ServerSessionTransitionError, SessionEngine, bounded_metadata, lifecycle::failure,
 };
 use crate::server::ServerPacksReady;
 use bedrock_protocol::{enums::PlayStatusType, packets};
 use std::time::{Instant, SystemTime};
 
-impl<A> ServerPacksReady<A> {
+impl<A, L> ServerPacksReady<A, L> {
     /// Relays a caller-selected upstream with no advertised pack phase.
     /// Revalidates the original Login and retains its grant/deadline. The returned
     /// LoginSuccess must be sent and flushed before any upstream startup is forwarded.
@@ -20,10 +19,10 @@ impl<A> ServerPacksReady<A> {
     pub fn relay_without_packs(
         self,
         max_metadata_bytes: usize,
-        verifier: &impl LoginVerifier,
+        verifier: &impl LoginPolicy<L>,
         now: Instant,
         utc: SystemTime,
-    ) -> Result<PendingServerRelay<A>, ServerSessionTransitionError<Self>> {
+    ) -> Result<PendingServerRelay<A, L>, ServerSessionTransitionError<Self>> {
         if max_metadata_bytes == 0 {
             return Err(failure(
                 self,
@@ -304,7 +303,7 @@ impl<A, L> ServerRelayInitialized<A, L> {
         self.session.deadline()
     }
 
-    /// Revalidates the original provider after actual initialization was forwarded upstream.
+    /// Rechecks the original Login policy after actual initialization was forwarded upstream.
     /// This proves protocol progress, not hosted membership or permission to publish occupancy.
     pub fn finish(
         mut self,

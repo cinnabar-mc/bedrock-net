@@ -14,7 +14,7 @@ use std::{
 
 mod lifecycle;
 mod policy;
-pub use policy::LoginPolicy;
+pub use policy::{HandshakePolicy, LoginPolicy};
 
 /// Owned accepting pack delivery and selected-world startup after the actual Login handoff.
 pub mod session;
@@ -26,8 +26,8 @@ pub use lifecycle::{
 };
 
 /// The acknowledgment continuation and its exact outgoing/incoming cipher streams after plaintext flush.
-pub type ServerKeyExchangeHandoff<A> = (
-    ServerAcknowledgment<A>,
+pub type ServerKeyExchangeHandoff<A, L = AuthenticatedLogin> = (
+    ServerAcknowledgment<A, L>,
     Box<(BatchEncryptor, BatchDecryptor)>,
 );
 
@@ -68,7 +68,7 @@ pub enum ServerHandshakeError {
     /// The original caller deadline has been reached; it is never renewed by progress.
     #[error("accepting handshake deadline expired")]
     TimedOut,
-    /// Authenticated transport and Minecraft Login proved different keys.
+    /// Supplied transport binding and final signed Login exchange key differ.
     #[error("accepting Login proof does not match its transport")]
     TransportKeyMismatch,
     /// Encryption requires fresh caller-owned sixteen-byte entropy before creating an exchange.
@@ -122,24 +122,24 @@ enum Phase {
 /// One accepting Login and cipher lifetime without I/O, a clock, queues or issuer discovery.
 ///
 /// The caller retains all decoded batch siblings and applies effects in order.
-/// A required provider verifier authenticates Login; it never substitutes for
-/// current application authorization. For hosted worlds, use authenticated
+/// An explicit policy validates Login; it never substitutes for
+/// current application authorization. For provider-authenticated hosted worlds, use
 /// `login().xuid()` and its original signed nonce to obtain/recheck the current
 /// membership/world/account approval. A service card, invite or SDP alone is
 /// insufficient. Recheck that approval at actual pack/world handoff after waits.
 ///
 /// This owner stops before server pack advertisement/delivery and world startup.
 /// No LoginSuccess is emitted before the caller prepares its actual pack offer.
-struct Engine {
+struct Engine<L = AuthenticatedLogin> {
     key: Arc<SigningKey>,
     transport_key: Option<VerifyingKey>,
     options: ServerHandshakeOptions,
     deadline: Instant,
     phase: Phase,
-    login: Option<AuthenticatedLogin>,
+    login: Option<L>,
 }
 
-impl Engine {
+impl<L> Engine<L> {
     /// Retains one caller-generated server key and optional transport-authenticated peer key.
     ///
     /// `deadline` is absolute in the caller's monotonic clock; all later operations
@@ -178,7 +178,7 @@ impl Engine {
 
     /// Borrows the verified joining player's original identity/nonce while authorization is pending.
     #[cfg(test)]
-    fn login(&self) -> Option<&AuthenticatedLogin> {
+    fn login(&self) -> Option<&L> {
         self.login.as_ref()
     }
 
@@ -189,7 +189,7 @@ impl Engine {
     fn receive(
         &mut self,
         packet: packets::Packet,
-        verifier: &impl LoginVerifier,
+        verifier: &impl HandshakePolicy<L>,
         now: Instant,
         utc: SystemTime,
     ) -> Result<EngineEvent, ServerHandshakeError> {
@@ -220,7 +220,7 @@ impl Engine {
     /// Expiry, repeated/out-of-sequence use, provider/key changes or missing salt end this handshake.
     fn accept(
         &mut self,
-        verifier: &impl LoginVerifier,
+        verifier: &impl HandshakePolicy<L>,
         salt: Option<&[u8; 16]>,
         now: Instant,
         utc: SystemTime,
@@ -242,7 +242,7 @@ impl Engine {
         Ok(())
     }
 
-    /// Transfers verified Login once at the pack-preparation boundary, rechecking original credentials.
+    /// Transfers the original Login once at the pack-preparation policy boundary.
     ///
     /// Caller owns later pack/session deadlines and must retain/recheck actual
     /// application approval before publishing LoginSuccess/ResourcePacksInfo.
@@ -252,10 +252,10 @@ impl Engine {
     #[cfg(test)]
     fn finish(
         mut self,
-        verifier: &impl LoginVerifier,
+        verifier: &impl HandshakePolicy<L>,
         now: Instant,
         utc: SystemTime,
-    ) -> Result<AuthenticatedLogin, ServerHandshakeError> {
+    ) -> Result<L, ServerHandshakeError> {
         self.check_packs(verifier, now, utc)?;
         self.login.take().ok_or(ServerHandshakeError::InvalidState)
     }
@@ -263,16 +263,18 @@ impl Engine {
     /// Rechecks original provider identity without consuming the grant/credential on failure.
     fn check_packs(
         &mut self,
-        verifier: &impl LoginVerifier,
+        verifier: &impl LoginPolicy<L>,
         now: Instant,
         utc: SystemTime,
     ) -> Result<(), ServerHandshakeError> {
         let result = (|| {
             self.require(Phase::Packs, now)?;
-            self.login
-                .as_ref()
-                .ok_or(ServerHandshakeError::InvalidState)?
-                .revalidate(verifier, utc)?;
+            verifier.revalidate(
+                self.login
+                    .as_ref()
+                    .ok_or(ServerHandshakeError::InvalidState)?,
+                utc,
+            )?;
             Ok(())
         })();
         if result.is_err() {
@@ -285,7 +287,7 @@ impl Engine {
     fn receive_inner(
         &mut self,
         packet: packets::Packet,
-        verifier: &impl LoginVerifier,
+        verifier: &impl HandshakePolicy<L>,
         now: Instant,
         utc: SystemTime,
     ) -> Result<EngineEvent, ServerHandshakeError> {
@@ -320,16 +322,15 @@ impl Engine {
             packets::Packet::Login(packet) => {
                 self.require(Phase::Login, now)?;
                 // RequestNetworkSettings owns version negotiation; Login's superseded version is ignored.
-                let login = login::verify_authenticated_request(
+                let login = verifier.parse(
                     &packet.connection_request,
-                    verifier,
                     utc,
                     self.options.max_login_bytes,
                 )?;
                 if self
                     .transport_key
                     .as_ref()
-                    .is_some_and(|key| login.exchange_key().as_p384() != Some(key))
+                    .is_some_and(|key| verifier.exchange_key(&login) != Some(key))
                 {
                     return Err(ServerHandshakeError::TransportKeyMismatch);
                 }
@@ -339,10 +340,12 @@ impl Engine {
             }
             packets::Packet::ClientToServerHandshake(_) => {
                 self.require(Phase::Acknowledgment, now)?;
-                self.login
-                    .as_ref()
-                    .ok_or(ServerHandshakeError::InvalidState)?
-                    .revalidate(verifier, utc)?;
+                verifier.revalidate(
+                    self.login
+                        .as_ref()
+                        .ok_or(ServerHandshakeError::InvalidState)?,
+                    utc,
+                )?;
                 self.phase = Phase::Packs;
                 Ok(EngineEvent::ReadyForPacks)
             }
@@ -353,7 +356,7 @@ impl Engine {
     /// Consumes the sole acceptance transition after synchronous caller authorization.
     fn accept_inner(
         &mut self,
-        verifier: &impl LoginVerifier,
+        verifier: &impl HandshakePolicy<L>,
         salt: Option<&[u8; 16]>,
         now: Instant,
         utc: SystemTime,
@@ -363,7 +366,7 @@ impl Engine {
             .login
             .as_ref()
             .ok_or(ServerHandshakeError::InvalidState)?;
-        login.revalidate(verifier, utc)?;
+        verifier.revalidate(login, utc)?;
         if !self.options.batch_encryption {
             self.phase = Phase::Packs;
             return Ok(EngineEvent::ReadyForPacks);
@@ -371,9 +374,8 @@ impl Engine {
         let salt = salt.ok_or(ServerHandshakeError::MissingSalt)?;
         let (token, ciphers) = login::begin_key_exchange(
             &self.key,
-            login
-                .exchange_key()
-                .as_p384()
+            verifier
+                .exchange_key(login)
                 .ok_or(LoginError::UnsupportedExchangeCurve)?,
             salt,
             self.options.max_login_bytes,

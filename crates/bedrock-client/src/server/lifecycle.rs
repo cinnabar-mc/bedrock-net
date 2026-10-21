@@ -2,8 +2,8 @@
 
 use super::{
     AuthenticatedLogin, BatchDecryptor, BatchEncryptor, CompressionSettings, Engine, EngineEvent,
-    LoginVerifier, ServerHandshakeError, ServerHandshakeOptions, ServerKeyExchangeHandoff,
-    SigningKey, VerifyingKey, packets,
+    HandshakePolicy, LoginPolicy, ServerHandshakeError, ServerHandshakeOptions,
+    ServerKeyExchangeHandoff, SigningKey, VerifyingKey, packets,
 };
 use std::{
     fmt,
@@ -19,8 +19,8 @@ use std::{
 /// }
 /// ```
 #[must_use]
-pub struct ServerHandshake {
-    engine: Box<Engine>,
+pub struct ServerHandshake<L = AuthenticatedLogin> {
+    engine: Box<Engine<L>>,
 }
 
 impl ServerHandshake {
@@ -37,7 +37,9 @@ impl ServerHandshake {
             engine: Box::new(Engine::new(key, transport_key, options, deadline, now)?),
         })
     }
+}
 
+impl<L> ServerHandshake<L> {
     /// Borrows the same key allocation for actual signed transport admission.
     pub fn key(&self) -> &SigningKey {
         self.engine.key()
@@ -47,10 +49,10 @@ impl ServerHandshake {
     pub fn receive(
         mut self,
         packet: packets::Packet,
-        verifier: &impl LoginVerifier,
+        verifier: &impl HandshakePolicy<L>,
         now: Instant,
         utc: SystemTime,
-    ) -> Result<ServerSettingsEvent, ServerHandshakeError> {
+    ) -> Result<ServerSettingsEvent<L>, ServerHandshakeError> {
         match self.engine.receive(packet, verifier, now, utc)? {
             EngineEvent::NetworkSettings {
                 packet,
@@ -71,15 +73,15 @@ impl ServerHandshake {
 }
 
 /// Actual settings response or unrelated/terminal input, without a completed Login capability.
-pub enum ServerSettingsEvent {
+pub enum ServerSettingsEvent<L = AuthenticatedLogin> {
     /// The original plaintext send/flush continuation.
-    Settings(PendingServerSettings),
+    Settings(PendingServerSettings<L>),
     /// Send this uncompressed refusal and retire the connection.
     Refused(packets::PlayStatus),
     /// Retain the same awaiting owner and handle the returned input immediately.
     Unhandled {
         /// The original settings observer.
-        handshake: ServerHandshake,
+        handshake: ServerHandshake<L>,
         /// Unrelated or terminal input, without interpretation.
         packet: Box<packets::Packet>,
     },
@@ -87,13 +89,13 @@ pub enum ServerSettingsEvent {
 
 /// Original uncompressed settings response and the sole Login continuation.
 #[must_use = "send and flush the exact settings response before consuming this continuation"]
-pub struct PendingServerSettings {
-    engine: Box<Engine>,
+pub struct PendingServerSettings<L = AuthenticatedLogin> {
+    engine: Box<Engine<L>>,
     packet: packets::NetworkSettings,
     compression: CompressionSettings,
 }
 
-impl PendingServerSettings {
+impl<L> PendingServerSettings<L> {
     /// Borrows the actual response for uncompressed adapter dispatch.
     pub fn packet(&self) -> &packets::NetworkSettings {
         &self.packet
@@ -106,7 +108,7 @@ impl PendingServerSettings {
     /// Consumes the adapter's completed send/flush/codec-installation contract.
     /// A pure core cannot prove an external socket operation; no Flushed marker is constructible.
     /// Failure returns the same original pending response and owner for retirement.
-    pub fn flushed(mut self, now: Instant) -> Result<ServerLogin, ServerTransitionError<Self>> {
+    pub fn flushed(mut self, now: Instant) -> Result<ServerLogin<L>, ServerTransitionError<Self>> {
         if let Err(error) = self.engine.compression_installed(now) {
             return Err(ServerTransitionError {
                 owner: Box::new(self),
@@ -121,32 +123,32 @@ impl PendingServerSettings {
 
 /// Actual settings are complete; this owner can observe Login but cannot authorize an unverified peer.
 #[must_use]
-pub struct ServerLogin {
-    engine: Box<Engine>,
+pub struct ServerLogin<L = AuthenticatedLogin> {
+    engine: Box<Engine<L>>,
 }
 
 /// Verified Login or unrelated input returned with its original observer.
-pub enum ServerLoginEvent {
+pub enum ServerLoginEvent<L = AuthenticatedLogin> {
     /// Successful provider, client-signature and optional transport-key verification.
-    Verified(VerifiedLogin),
+    Verified(VerifiedLogin<L>),
     /// Handle terminal/unrelated input before continuing the same observer.
     Unhandled {
         /// The original Login observer.
-        login: ServerLogin,
+        login: ServerLogin<L>,
         /// Unrelated or terminal input returned intact.
         packet: Box<packets::Packet>,
     },
 }
 
-impl ServerLogin {
-    /// Uses the existing configured verifier, never a default/self-asserted peer policy.
+impl<L> ServerLogin<L> {
+    /// Uses the explicit configured Login policy for this retained capability type.
     pub fn receive(
         mut self,
         packet: packets::Packet,
-        verifier: &impl LoginVerifier,
+        verifier: &impl HandshakePolicy<L>,
         now: Instant,
         utc: SystemTime,
-    ) -> Result<ServerLoginEvent, ServerHandshakeError> {
+    ) -> Result<ServerLoginEvent<L>, ServerHandshakeError> {
         match self.engine.receive(packet, verifier, now, utc)? {
             EngineEvent::LoginVerified => Ok(ServerLoginEvent::Verified(VerifiedLogin {
                 engine: self.engine,
@@ -160,15 +162,15 @@ impl ServerLogin {
     }
 }
 
-/// Actual authenticated Login, before any caller world/member authorization.
+/// Actual signed Login proof, before any caller world/member authorization.
 #[must_use]
-pub struct VerifiedLogin {
-    engine: Box<Engine>,
+pub struct VerifiedLogin<L = AuthenticatedLogin> {
+    engine: Box<Engine<L>>,
 }
 
-impl VerifiedLogin {
-    /// Borrows the original provider identity/key and client-signed nonce for real application policy.
-    pub fn login(&self) -> &AuthenticatedLogin {
+impl<L> VerifiedLogin<L> {
+    /// Borrows the original Login capability and client-signed nonce for real application policy.
+    pub fn login(&self) -> &L {
         verified(&self.engine)
     }
     /// Original absolute deadline; approval waits cannot renew it.
@@ -181,8 +183,8 @@ impl VerifiedLogin {
     /// Denial preserves the original verified owner and caller cause.
     pub fn authorize<A, E>(
         self,
-        authorize: impl FnOnce(&AuthenticatedLogin) -> Result<A, E>,
-    ) -> Result<ApprovedLogin<A>, AuthorizationFailure<E>> {
+        authorize: impl FnOnce(&L) -> Result<A, E>,
+    ) -> Result<ApprovedLogin<A, L>, AuthorizationFailure<E, L>> {
         match authorize(self.login()) {
             Ok(grant) => Ok(ApprovedLogin {
                 engine: self.engine,
@@ -197,27 +199,27 @@ impl VerifiedLogin {
 }
 
 /// Caller authorization denial, with no grant/account/nonce formatted in diagnostics.
-pub struct AuthorizationFailure<E> {
-    login: VerifiedLogin,
+pub struct AuthorizationFailure<E, L = AuthenticatedLogin> {
+    login: VerifiedLogin<L>,
     cause: Box<E>,
 }
-impl<E> AuthorizationFailure<E> {
+impl<E, L> AuthorizationFailure<E, L> {
     /// Recovers the original Login and caller cause; no server exchange or pack was advertised.
-    pub fn into_parts(self) -> (VerifiedLogin, E) {
+    pub fn into_parts(self) -> (VerifiedLogin<L>, E) {
         (self.login, *self.cause)
     }
 }
-impl<E> fmt::Debug for AuthorizationFailure<E> {
+impl<E, L> fmt::Debug for AuthorizationFailure<E, L> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str("AuthorizationFailure")
     }
 }
-impl<E> fmt::Display for AuthorizationFailure<E> {
+impl<E, L> fmt::Display for AuthorizationFailure<E, L> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str("caller refused accepting Login")
     }
 }
-impl<E: std::error::Error + 'static> std::error::Error for AuthorizationFailure<E> {
+impl<E: std::error::Error + 'static, L> std::error::Error for AuthorizationFailure<E, L> {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         Some(self.cause.as_ref())
     }
@@ -225,18 +227,18 @@ impl<E: std::error::Error + 'static> std::error::Error for AuthorizationFailure<
 
 /// Verified Login and the actual caller-trusted grant; no public constructor bypasses authorization.
 #[must_use]
-pub struct ApprovedLogin<A> {
-    engine: Box<Engine>,
+pub struct ApprovedLogin<A, L = AuthenticatedLogin> {
+    engine: Box<Engine<L>>,
     grant: A,
 }
 
-impl<A> ApprovedLogin<A> {
+impl<A, L> ApprovedLogin<A, L> {
     /// Borrows the real caller grant for current policy rechecks after waits.
     pub fn grant(&self) -> &A {
         &self.grant
     }
     /// Borrows the original Login bound to that grant.
-    pub fn login(&self) -> &AuthenticatedLogin {
+    pub fn login(&self) -> &L {
         verified(&self.engine)
     }
 
@@ -244,11 +246,11 @@ impl<A> ApprovedLogin<A> {
     /// The caller rechecks its grant immediately before this transition and later handoffs.
     pub fn accept(
         mut self,
-        verifier: &impl LoginVerifier,
+        verifier: &impl HandshakePolicy<L>,
         salt: Option<&[u8; 16]>,
         now: Instant,
         utc: SystemTime,
-    ) -> Result<ServerApprovalEvent<A>, ServerTransitionError<Self>> {
+    ) -> Result<ServerApprovalEvent<A, L>, ServerTransitionError<Self>> {
         let event = match self.engine.accept(verifier, salt, now, utc) {
             Ok(event) => event,
             Err(error) => {
@@ -280,22 +282,22 @@ impl<A> ApprovedLogin<A> {
 }
 
 /// One actual exchange or the encrypted-transport skip, preserving the original authorization grant.
-pub enum ServerApprovalEvent<A> {
+pub enum ServerApprovalEvent<A, L = AuthenticatedLogin> {
     /// Send/flush plaintext before installing its exact derived cipher streams.
-    KeyExchange(PendingServerKeyExchange<A>),
+    KeyExchange(PendingServerKeyExchange<A, L>),
     /// An explicitly encrypted transport needs no additional batch acknowledgment.
-    Ready(ServerPacksReady<A>),
+    Ready(ServerPacksReady<A, L>),
 }
 
 /// The original plaintext server token, derived streams and acknowledged-Login continuation.
 #[must_use = "flush plaintext before installing the streams and reading the acknowledgment"]
-pub struct PendingServerKeyExchange<A> {
-    engine: Box<Engine>,
+pub struct PendingServerKeyExchange<A, L = AuthenticatedLogin> {
+    engine: Box<Engine<L>>,
     grant: A,
     packet: packets::ServerToClientHandshake,
     ciphers: Box<(BatchEncryptor, BatchDecryptor)>,
 }
-impl<A> PendingServerKeyExchange<A> {
+impl<A, L> PendingServerKeyExchange<A, L> {
     /// Borrows the original signed token for the single plaintext dispatch.
     pub fn packet(&self) -> &packets::ServerToClientHandshake {
         &self.packet
@@ -310,7 +312,7 @@ impl<A> PendingServerKeyExchange<A> {
     pub fn flushed(
         mut self,
         now: Instant,
-    ) -> Result<ServerKeyExchangeHandoff<A>, ServerTransitionError<Self>> {
+    ) -> Result<ServerKeyExchangeHandoff<A, L>, ServerTransitionError<Self>> {
         if let Err(error) = self.engine.encryption_installed(now) {
             return Err(ServerTransitionError {
                 owner: Box::new(self),
@@ -329,24 +331,24 @@ impl<A> PendingServerKeyExchange<A> {
 
 /// Cipher streams belong to the adapter; only the actual encrypted acknowledgment completes Login.
 #[must_use]
-pub struct ServerAcknowledgment<A> {
-    engine: Box<Engine>,
+pub struct ServerAcknowledgment<A, L = AuthenticatedLogin> {
+    engine: Box<Engine<L>>,
     grant: A,
 }
 
 /// Actual acknowledgment completion or an intact unrelated sibling.
-pub enum ServerAcknowledgmentEvent<A> {
+pub enum ServerAcknowledgmentEvent<A, L = AuthenticatedLogin> {
     /// The provider was revalidated at the original acknowledgment boundary.
-    Ready(ServerPacksReady<A>),
+    Ready(ServerPacksReady<A, L>),
     /// Retain the same observer and handle unrelated/terminal input immediately.
     Unhandled {
         /// The original acknowledgment observer and grant.
-        acknowledgment: ServerAcknowledgment<A>,
+        acknowledgment: ServerAcknowledgment<A, L>,
         /// Unrelated or terminal input returned intact.
         packet: Box<packets::Packet>,
     },
 }
-impl<A> ServerAcknowledgment<A> {
+impl<A, L> ServerAcknowledgment<A, L> {
     /// Borrows the caller grant for actual policy rechecks before further input/handoff.
     pub fn grant(&self) -> &A {
         &self.grant
@@ -355,10 +357,10 @@ impl<A> ServerAcknowledgment<A> {
     pub fn receive(
         mut self,
         packet: packets::Packet,
-        verifier: &impl LoginVerifier,
+        verifier: &impl HandshakePolicy<L>,
         now: Instant,
         utc: SystemTime,
-    ) -> Result<ServerAcknowledgmentEvent<A>, ServerTransitionError<Self>> {
+    ) -> Result<ServerAcknowledgmentEvent<A, L>, ServerTransitionError<Self>> {
         let event = match self.engine.receive(packet, verifier, now, utc) {
             Ok(event) => event,
             Err(error) => {
@@ -387,13 +389,13 @@ impl<A> ServerAcknowledgment<A> {
 
 /// Actual Login/cipher completion and the original caller grant, before any pack/world advertisement.
 #[must_use]
-pub struct ServerPacksReady<A> {
-    engine: Box<Engine>,
+pub struct ServerPacksReady<A, L = AuthenticatedLogin> {
+    engine: Box<Engine<L>>,
     grant: A,
 }
-impl<A> ServerPacksReady<A> {
+impl<A, L> ServerPacksReady<A, L> {
     /// Borrows the original authenticated player/nonce, never host-account or client-asserted identity.
-    pub fn login(&self) -> &AuthenticatedLogin {
+    pub fn login(&self) -> &L {
         verified(&self.engine)
     }
     /// Borrows actual caller authority for rechecks at subsequent capacity/preparation waits.
@@ -409,10 +411,10 @@ impl<A> ServerPacksReady<A> {
     /// The caller must still recheck its grant at actual attachment/dispatch after awaits.
     pub fn finish(
         mut self,
-        verifier: &impl LoginVerifier,
+        verifier: &impl LoginPolicy<L>,
         now: Instant,
         utc: SystemTime,
-    ) -> Result<AcceptedLogin<A>, ServerTransitionError<Self>> {
+    ) -> Result<AcceptedLogin<A, L>, ServerTransitionError<Self>> {
         if let Err(error) = self.engine.check_packs(verifier, now, utc) {
             return Err(ServerTransitionError {
                 owner: Box::new(self),
@@ -431,15 +433,15 @@ impl<A> ServerPacksReady<A> {
     }
 }
 
-/// Consumed authenticated Login and caller grant; this is not world attachment/initialization.
-pub struct AcceptedLogin<A> {
-    login: AuthenticatedLogin,
+/// Consumed Login capability and caller grant, before world attachment/initialization.
+pub struct AcceptedLogin<A, L = AuthenticatedLogin> {
+    login: L,
     grant: A,
     deadline: Instant,
 }
-impl<A> AcceptedLogin<A> {
-    /// Borrows the original authenticated Login for an actual adapter consumer.
-    pub fn login(&self) -> &AuthenticatedLogin {
+impl<A, L> AcceptedLogin<A, L> {
+    /// Borrows the original Login capability for an actual adapter consumer.
+    pub fn login(&self) -> &L {
         &self.login
     }
     /// Borrows the caller-trusted grant; its validity still belongs to that authority.
@@ -451,7 +453,7 @@ impl<A> AcceptedLogin<A> {
         self.deadline
     }
     /// Transfers original Login and grant to the real adapter, without inventing world admission.
-    pub fn into_parts(self) -> (AuthenticatedLogin, A) {
+    pub fn into_parts(self) -> (L, A) {
         (self.login, self.grant)
     }
 }
@@ -486,8 +488,8 @@ impl<C> std::error::Error for ServerTransitionError<C> {
     }
 }
 
-/// Public states reach this borrow only through actual provider verification.
-fn verified(engine: &Engine) -> &AuthenticatedLogin {
+/// Public states reach this borrow only after their selected Login policy succeeds.
+fn verified<L>(engine: &Engine<L>) -> &L {
     engine
         .login
         .as_ref()
