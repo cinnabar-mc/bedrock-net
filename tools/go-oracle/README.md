@@ -70,3 +70,7 @@ address with the local Go resolver; resolver-dependent results are not fixtures.
 
 `jose_headers` compares protected-header shapes across unverified identity,
 metadata, legacy chain, authenticated metadata and server-handshake roles.
+
+`offline_time_fixtures` supplies deterministic caller-UTC NumericDate controls.
+Large-date cases also anchor actual Login Parse; exact one-minute boundaries use
+the pinned JWT validator with the returned fixed UTC, without reading a test clock.
