@@ -63,3 +63,5 @@ ASN.1 integer, framing and time rules under LICENSE-BSD-Go.
 The protected x5c chain shape follows go-jose (Copyright 2014 Square Inc.) under Apache-2.0.
 
 JOSE protected-header and public JWK decoding follow go-jose (Copyright 2014 Square Inc.), under Apache-2.0.
+
+Legacy time comparison follows the Go time package under its BSD license; see LICENSE-BSD-Go.
