@@ -4,7 +4,7 @@ use std::fmt;
 
 use aes::cipher::{
     BlockSizeUser, KeyIvInit, StreamCipher, StreamCipherBackend, StreamCipherClosure,
-    StreamCipherCore,
+    StreamCipherCore, StreamCipherSeek,
     typenum::{U16, Unsigned},
 };
 use bytes::{Bytes, BytesMut};
@@ -15,7 +15,7 @@ use zeroize::{Zeroize, Zeroizing};
 use crate::BatchHeader;
 
 type AesCtr = ctr::Ctr128BE<aes::Aes256Enc>;
-type AesCtrCore = ctr::CtrCore<aes::Aes256Enc, ctr::flavors::Ctr128BE>;
+type FastAesCtr = ctr::Ctr64BE<aes::Aes256Enc>;
 
 const CHECKSUM_BYTES: usize = 8;
 
@@ -105,12 +105,7 @@ impl BatchEncryptor {
             owned
         });
         body.extend_from_slice(&checksum);
-        if self
-            .0
-            .cipher
-            .try_apply_keystream(&mut body[offset..])
-            .is_err()
-        {
+        if self.0.apply_keystream(&mut body[offset..]).is_err() {
             body.as_mut().zeroize();
             return self.0.invalidate(EncryptionError::KeystreamExhausted);
         }
@@ -124,14 +119,12 @@ impl BatchEncryptor {
 /// Verification precedes decompression. A dropped compressed batch still consumes
 /// its ciphertext and checksum counter, so use this same instance for the next batch.
 #[derive(Debug)]
-pub struct BatchDecryptor(CipherState, DecryptKeystream);
+pub struct BatchDecryptor(CipherState);
 
 impl BatchDecryptor {
     /// Starts the incoming stream using the key derived by the network handshake.
     pub fn new(key: [u8; 32]) -> Self {
-        let state = CipherState::new(key);
-        let cache = DecryptKeystream::new(state.parallel_bytes);
-        Self(state, cache)
+        Self(CipherState::new(key))
     }
 
     /// Decrypts a body without its transport marker and verifies its checksum.
@@ -174,11 +167,7 @@ impl BatchDecryptor {
         let mut body = body
             .try_into_mut()
             .unwrap_or_else(|shared| shared.as_ref().into());
-        if self
-            .1
-            .apply(&mut self.0.cipher, &mut body[offset..])
-            .is_err()
-        {
+        if self.0.apply_keystream(&mut body[offset..]).is_err() {
             body.as_mut().zeroize();
             return self.0.invalidate(EncryptionError::KeystreamExhausted);
         }
@@ -199,7 +188,7 @@ impl BatchDecryptor {
 }
 
 /// Reads the selected backend's group size without advancing the CTR stream.
-fn parallel_bytes(core: &mut AesCtrCore) -> usize {
+fn parallel_bytes(core: &mut impl StreamCipherCore<BlockSize = U16>) -> usize {
     struct GroupSize<'a>(&'a mut usize);
 
     impl BlockSizeUser for GroupSize<'_> {
@@ -218,13 +207,13 @@ fn parallel_bytes(core: &mut AesCtrCore) -> usize {
 }
 
 /// Retains unused bytes from parallel AES blocks without exposing them in debug output.
-struct DecryptKeystream {
+struct KeystreamCache {
     bytes: Zeroizing<Vec<u8>>,
     start: usize,
     end: usize,
 }
 
-impl DecryptKeystream {
+impl KeystreamCache {
     /// Allocates one group for the stream's selected parallel AES backend.
     fn new(group_bytes: usize) -> Self {
         Self {
@@ -237,7 +226,7 @@ impl DecryptKeystream {
     /// Applies complete parallel groups and saves the unused tail for the next batch.
     fn apply(
         &mut self,
-        cipher: &mut AesCtr,
+        cipher: &mut impl StreamCipher,
         body: &mut [u8],
     ) -> Result<(), aes::cipher::StreamCipherError> {
         let cached = self.end - self.start;
@@ -270,18 +259,64 @@ impl DecryptKeystream {
     }
 }
 
-impl fmt::Debug for DecryptKeystream {
+impl fmt::Debug for KeystreamCache {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
-            .debug_struct("DecryptKeystream")
+            .debug_struct("KeystreamCache")
             .finish_non_exhaustive()
     }
 }
 
+/// Uses the narrower primitive only while its counter blocks match the full stream.
+enum CipherStream {
+    Fast(FastAesCtr),
+    Wide(AesCtr),
+}
+
+impl CipherStream {
+    /// Promotes before generating a different counter block, retaining cached bytes.
+    fn apply(
+        &mut self,
+        key: &[u8; 32],
+        iv: &[u8; 16],
+        cache: &mut KeystreamCache,
+        body: &mut [u8],
+    ) -> Result<(), aes::cipher::StreamCipherError> {
+        if let Self::Fast(cipher) = self {
+            let needed = body.len().saturating_sub(cache.end - cache.start);
+            let group = cache.bytes.len() as u128;
+            // Include unused prefetched bytes, which advance the underlying stream too.
+            let generated = needed.div_ceil(cache.bytes.len()) as u128 * group;
+            let position = cipher.current_pos::<u128>();
+            let low = u64::from_be_bytes(iv[8..].try_into().expect("eight IV bytes"));
+            // The narrow primitive also excludes its last relative counter block.
+            let limit = ((1_u128 << 64) - u128::from(low)).min(u128::from(u64::MAX)) * 16;
+            if position + generated > limit {
+                let mut wide =
+                    AesCtr::new_from_slices(key, iv).expect("fixed-size AES-256 key and CTR IV");
+                wide.try_seek(position)?;
+                *self = Self::Wide(wide);
+            }
+        }
+        match self {
+            Self::Fast(cipher) => cache.apply(cipher, body),
+            Self::Wide(cipher) => cache.apply(cipher, body),
+        }
+    }
+}
+
+/// Derives the original protocol IV without retaining another copy of key bytes.
+fn protocol_iv(key: &[u8; 32]) -> Zeroizing<[u8; 16]> {
+    let mut iv = Zeroizing::new([0; 16]);
+    iv[..12].copy_from_slice(&key[..12]);
+    iv[15] = 2;
+    iv
+}
+
 /// Private state for one stream direction; debug output deliberately excludes secrets.
 struct CipherState {
-    cipher: AesCtr,
-    parallel_bytes: usize,
+    cipher: CipherStream,
+    cache: KeystreamCache,
     key: Zeroizing<[u8; 32]>,
     counter: u64,
     invalidated: bool,
@@ -309,20 +344,27 @@ impl CipherState {
     /// Derives the protocol IV from the session key and starts its continuous stream.
     fn new(key: [u8; 32]) -> Self {
         let key = Zeroizing::new(key);
-        let mut iv = Zeroizing::new([0; 16]);
-        iv[..12].copy_from_slice(&key[..12]);
-        iv[15] = 2;
-        let mut core = AesCtrCore::new_from_slices(key.as_ref(), iv.as_ref())
-            .expect("fixed-size AES-256 key and CTR IV");
+        let iv = protocol_iv(&key);
+        let mut core = ctr::CtrCore::<aes::Aes256Enc, ctr::flavors::Ctr64BE>::new_from_slices(
+            key.as_ref(),
+            iv.as_ref(),
+        )
+        .expect("fixed-size AES-256 key and CTR IV");
         let parallel_bytes = parallel_bytes(&mut core);
-        let cipher = AesCtr::from_core(core);
+        let cipher = CipherStream::Fast(FastAesCtr::from_core(core));
         Self {
             cipher,
-            parallel_bytes,
+            cache: KeystreamCache::new(parallel_bytes),
             key,
             counter: 0,
             invalidated: false,
         }
+    }
+
+    /// Applies the same cached stream to either direction after checking its full length.
+    fn apply_keystream(&mut self, body: &mut [u8]) -> Result<(), aes::cipher::StreamCipherError> {
+        self.cipher
+            .apply(&self.key, &protocol_iv(&self.key), &mut self.cache, body)
     }
 
     /// Checks that the direction can advance before mutating cipher state.
@@ -383,6 +425,8 @@ mod tests {
         for header in [BatchHeader::RakNet, BatchHeader::NetherNet] {
             let mut encryptor = BatchEncryptor::new([9; 32]);
             let mut decryptor = BatchDecryptor::new([9; 32]);
+            let mut reference =
+                AesCtr::new_from_slices(&[9; 32], protocol_iv(&[9; 32]).as_ref()).unwrap();
             let lengths = (0..=16)
                 .chain(55..=65)
                 .chain(128 - 9..=128 + 9)
@@ -397,12 +441,93 @@ mod tests {
                 }
                 message.extend((0..length).map(|index| index.wrapping_mul(37) as u8));
                 let expected = message.to_vec();
+                let offset = usize::from(header.marker().is_some());
+                let mut reference_message = expected.clone();
+                reference_message.extend_from_slice(&encryptor.0.checksum(&expected[offset..]));
+                reference
+                    .try_apply_keystream(&mut reference_message[offset..])
+                    .unwrap();
+                let allocation = message.as_ptr();
                 let ciphertext = encryptor.encrypt_batch(header, message.freeze()).unwrap();
+                assert_eq!(ciphertext, reference_message);
+                assert_eq!(ciphertext.as_ptr(), allocation);
                 let original = ciphertext.as_ptr();
                 let plaintext = decryptor.decrypt_batch(header, ciphertext).unwrap();
                 assert_eq!(plaintext, expected, "{header:?}, length {length}");
                 assert_eq!(plaintext.as_ptr(), original);
             }
+        }
+    }
+
+    #[test]
+    fn narrow_stream_promotes_at_exact_byte_positions_before_either_counter_limit() {
+        let key = [0xff; 32];
+        for (low, blocks) in [
+            (0, u64::MAX),
+            (1, u64::MAX),
+            (2, u64::MAX - 1),
+            (u64::MAX - 2, 3),
+            (u64::MAX, 1),
+        ] {
+            for high in [0, u64::MAX] {
+                let mut iv = [0; 16];
+                iv[..8].copy_from_slice(&high.to_be_bytes());
+                iv[8..].copy_from_slice(&low.to_be_bytes());
+                let limit = u128::from(blocks) * 16;
+                for distance in [1, 15, 16, 17, 1025] {
+                    let Some(position) = limit.checked_sub(distance) else {
+                        continue;
+                    };
+                    for group_bytes in [16, 128, 480, 1024] {
+                        let mut fast = FastAesCtr::new_from_slices(&key, &iv).unwrap();
+                        fast.try_seek(position).unwrap();
+                        let mut stream = CipherStream::Fast(fast);
+                        let mut cache = KeystreamCache::new(group_bytes);
+                        let mut reference = AesCtr::new_from_slices(&key, &iv).unwrap();
+                        reference.try_seek(position).unwrap();
+                        for length in [0, 1, 7, 16, 33, group_bytes - 1, group_bytes + 2049] {
+                            let mut expected = vec![0xa5; length];
+                            let mut actual = expected.clone();
+                            reference.try_apply_keystream(&mut expected).unwrap();
+                            stream.apply(&key, &iv, &mut cache, &mut actual).unwrap();
+                            assert_eq!(
+                                actual, expected,
+                                "high {high}, low {low}, position {position}, group {group_bytes}, length {length}"
+                            );
+                        }
+                        assert!(matches!(stream, CipherStream::Wide(_)));
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn narrow_stream_budgets_prefetch_and_retains_cached_bytes_during_promotion() {
+        let key = [0xff; 32];
+        let iv = protocol_iv(&key);
+        // This protocol IV is ffffffffffffffff_ffffffff00000002.
+        let limit = u128::from(u32::MAX - 1) * 16;
+        for distance in [1024, 1023, 17, 1] {
+            let position = limit - distance;
+            let mut fast = FastAesCtr::new_from_slices(&key, iv.as_ref()).unwrap();
+            fast.try_seek(position).unwrap();
+            let mut stream = CipherStream::Fast(fast);
+            let mut cache = KeystreamCache::new(1024);
+            let mut reference = AesCtr::new_from_slices(&key, iv.as_ref()).unwrap();
+            reference.try_seek(position).unwrap();
+            for length in [1, 7, 16, 1001, 1033, 2] {
+                let mut actual = vec![0xa5; length];
+                let mut expected = actual.clone();
+                reference.try_apply_keystream(&mut expected).unwrap();
+                stream.apply(&key, &iv, &mut cache, &mut actual).unwrap();
+                assert_eq!(actual, expected, "distance {distance}, length {length}");
+                if length == 1 {
+                    assert_eq!(matches!(stream, CipherStream::Fast(_)), distance == 1024);
+                    assert_eq!(cache.end - cache.start, 1023);
+                }
+            }
+            assert!(matches!(stream, CipherStream::Wide(_)));
         }
     }
 
@@ -441,22 +566,17 @@ mod tests {
         )
         .unwrap();
         core.set_block_pos(u128::MAX - 1025);
-        decryptor.0.cipher = AesCtr::from_core(core);
-        decryptor
-            .0
-            .cipher
-            .try_apply_keystream(&mut [0; 15])
-            .unwrap();
-        let position = decryptor.0.cipher.get_core().get_block_pos();
+        let mut cipher = AesCtr::from_core(core);
+        cipher.try_apply_keystream(&mut [0; 15]).unwrap();
+        let position = cipher.get_core().get_block_pos();
+        decryptor.0.cipher = CipherStream::Wide(cipher);
         let mut ciphertext = vec![0xa5; 16 * 1024 + 2];
-        assert!(
-            decryptor
-                .1
-                .apply(&mut decryptor.0.cipher, &mut ciphertext)
-                .is_err()
-        );
+        assert!(decryptor.0.apply_keystream(&mut ciphertext).is_err());
         assert!(ciphertext.iter().all(|byte| *byte == 0xa5));
-        assert_eq!(decryptor.0.cipher.get_core().get_block_pos(), position);
+        let CipherStream::Wide(cipher) = &decryptor.0.cipher else {
+            panic!("wide stream")
+        };
+        assert_eq!(cipher.get_core().get_block_pos(), position);
         assert_eq!(
             decryptor.decrypt(ciphertext.into()),
             Err(EncryptionError::KeystreamExhausted)
@@ -488,7 +608,7 @@ mod tests {
                 reference_core.set_block_pos(u128::MAX - (capacity / 16) as u128);
                 let mut reference = AesCtr::from_core(reference_core);
                 let mut cipher = AesCtr::from_core(core);
-                let mut cache = DecryptKeystream::new(group_bytes);
+                let mut cache = KeystreamCache::new(group_bytes);
                 for length in [1, capacity / 2, capacity - capacity / 2 - 1] {
                     let mut expected = vec![0xa5; length];
                     let mut actual = expected.clone();
@@ -522,13 +642,10 @@ mod tests {
         )
         .unwrap();
         core.set_block_pos(u128::MAX - 1);
-        encryptor.0.cipher = AesCtr::from_core(core);
-        encryptor
-            .0
-            .cipher
-            .try_apply_keystream(&mut [0; 15])
-            .unwrap();
-        encryptor.0.cipher.try_apply_keystream(&mut [0]).unwrap();
+        let mut cipher = AesCtr::from_core(core);
+        cipher.try_apply_keystream(&mut [0; 15]).unwrap();
+        cipher.try_apply_keystream(&mut [0]).unwrap();
+        encryptor.0.cipher = CipherStream::Wide(cipher);
         assert_eq!(
             encryptor.encrypt(Bytes::new()),
             Err(EncryptionError::KeystreamExhausted)
@@ -547,8 +664,10 @@ mod tests {
             encryptor.encrypt(Bytes::new()),
             Err(EncryptionError::CounterExhausted)
         );
-        use aes::cipher::StreamCipherSeekCore;
-        assert_eq!(encryptor.0.cipher.get_core().get_block_pos(), 0);
+        let CipherStream::Fast(cipher) = &encryptor.0.cipher else {
+            panic!("new stream")
+        };
+        assert_eq!(cipher.current_pos::<u128>(), 0);
         assert_eq!(
             encryptor.encrypt(Bytes::new()),
             Err(EncryptionError::Invalidated)
