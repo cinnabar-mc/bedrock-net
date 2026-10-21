@@ -40,9 +40,17 @@ impl Object {
         Self::decode(bytes, false)
     }
 
+    /// Applies the outer envelope's folded field policy without changing JWT claim matching.
+    pub(in crate::login) fn outer(bytes: &[u8]) -> Result<Self, LoginError> {
+        Self::decode(bytes, true)
+    }
+
     /// Separates standard outer JSON decoding from JOSE's exact names and duplicate rejection.
     fn decode(bytes: &[u8], folded: bool) -> Result<Self, LoginError> {
         let raw = client_data::parse_json(bytes)?;
+        if folded && !client_data::standard_json_values(&raw) {
+            return Err(LoginError::MalformedJson);
+        }
         let normalized = client_data::normalize(raw.get()).ok_or(LoginError::MalformedJson)?;
         let mut object = serde_json::from_str::<Option<Self>>(&normalized)
             .map(Option::unwrap_or_default)
@@ -90,6 +98,14 @@ impl Object {
 
     /// Decodes a Go string field without accepting a number or boolean.
     pub(in crate::login) fn text(&self, name: &str) -> Result<Option<String>, LoginError> {
+        self.scalar(name)
+    }
+
+    /// Decodes a bounded Go integer field.
+    pub(in crate::login) fn number<T: serde::de::DeserializeOwned>(
+        &self,
+        name: &str,
+    ) -> Result<Option<T>, LoginError> {
         self.scalar(name)
     }
 

@@ -145,6 +145,112 @@ fn unb64(value: &Value) -> Vec<u8> {
     STANDARD.decode(value.as_str().unwrap()).unwrap()
 }
 
+#[cfg(feature = "login")]
+#[test]
+fn modern_offline_login_matches_go_parse_decisions() {
+    use bedrock_net::login::parse_offline_request;
+    use std::time::{Duration, UNIX_EPOCH};
+
+    let Some(mut oracle) = oracle() else { return };
+    let fixtures = oracle.call(json!({"op":"offline_fixtures"}));
+    let fixtures = fixtures.as_array().unwrap();
+    assert_eq!(fixtures.len(), 55);
+    let mut accepted = 0;
+    let mut mismatches = Vec::new();
+    for fixture in fixtures {
+        let name = fixture["name"].as_str().unwrap();
+        if name.starts_with("legacy_") {
+            continue;
+        }
+        let request = unb64(&fixture["request"]);
+        let result = parse_offline_request(
+            &request,
+            UNIX_EPOCH + Duration::from_secs(1_800_000_000),
+            request.len(),
+            |_| panic!("synthetic numeric addresses require no resolver"),
+        );
+        if result.is_ok() != fixture["accepted"].as_bool().unwrap() {
+            mismatches.push(format!(
+                "{name}: Rust {:?}, Go {}",
+                result.err(),
+                fixture["accepted"]
+            ));
+            continue;
+        }
+        if let Ok(login) = result {
+            accepted += 1;
+            assert_eq!(login.display_name(), fixture["display_name"], "{name}");
+            assert_eq!(login.claimed_xuid(), fixture["xuid"], "{name}");
+            assert_eq!(login.claimed_identity(), fixture["identity"], "{name}");
+            assert_eq!(
+                STANDARD.encode(login.exchange_key().public_key_der()),
+                fixture["exchange_key"],
+                "{name}"
+            );
+            let signer = login.signing_key().public_key_der();
+            if name == "client_final_key_rotation" {
+                assert_ne!(signer, login.exchange_key().public_key_der());
+            } else {
+                assert_eq!(signer, login.exchange_key().public_key_der(), "{name}");
+            }
+        }
+    }
+    assert!(mismatches.is_empty(), "offline mismatches: {mismatches:?}");
+    assert_eq!(accepted, 23);
+}
+
+#[cfg(feature = "login")]
+#[test]
+fn modern_offline_signing_curves_match_go() {
+    use bedrock_net::login::parse_offline_request;
+    use std::time::{Duration, UNIX_EPOCH};
+    let Some(mut oracle) = oracle() else { return };
+    let fixtures = oracle.call(json!({"op":"offline_curve_fixtures"}));
+    assert_eq!(fixtures.as_array().unwrap().len(), 52);
+    let mut accepted = 0;
+    let mut checked = 0;
+    for fixture in fixtures.as_array().unwrap() {
+        let name = fixture["name"].as_str().unwrap();
+        if name.contains("_legacy_") {
+            continue;
+        }
+        checked += 1;
+        let request = unb64(&fixture["request"]);
+        let result = parse_offline_request(
+            &request,
+            UNIX_EPOCH + Duration::from_secs(1_800_000_000),
+            request.len(),
+            |_| panic!("numeric address"),
+        );
+        assert_eq!(
+            result.is_ok(),
+            fixture["accepted"].as_bool().unwrap(),
+            "{name}: {:?}",
+            result.as_ref().err()
+        );
+        if let Ok(login) = result {
+            accepted += 1;
+            assert_eq!(
+                STANDARD.encode(login.signing_key().public_key_der()),
+                fixture["signer"],
+                "{name}"
+            );
+            assert_eq!(
+                STANDARD.encode(login.exchange_key().public_key_der()),
+                fixture["exchange"],
+                "{name}"
+            );
+            assert_eq!(
+                login.exchange_key().as_p384().is_some(),
+                fixture["p384"].as_bool().unwrap(),
+                "{name}"
+            );
+        }
+    }
+    assert_eq!(checked, 47);
+    assert_eq!(accepted, 10);
+}
+
 /// Tracks mismatches so the divergence table is checked in both directions.
 #[derive(Default)]
 struct Ledger {
@@ -1317,5 +1423,53 @@ mod login {
             mismatches.is_empty(),
             "URL admission mismatches: {mismatches:?}"
         );
+    }
+
+    #[test]
+    fn modern_offline_uuid_spellings_match_go() {
+        use bedrock_net::login::parse_offline_request;
+        let Some(mut oracle) = oracle() else { return };
+        let key = SigningKey::from_slice(&[7; 48]).unwrap();
+        let public = STANDARD.encode(public_der(&key));
+        let header = json!({"alg":"ES384", "x5u": public});
+        let client = sign(&key, &header, &serde_json::to_vec(&json!({
+            "DeviceOS":1, "GameVersion":"1.26.51", "LanguageCode":"en_US",
+            "SkinId":"synthetic", "ThirdPartyName":"MetadataName", "ServerAddress":"127.0.0.1:19132",
+        })).unwrap());
+        for (uuid, expected) in [
+            ("00000000-0000-4000-8000-000000000001", true),
+            ("00000000000040008000000000000001", true),
+            ("{00000000-0000-4000-8000-000000000001}", true),
+            ("URN:UUID:00000000-0000-4000-8000-000000000001", true),
+            ("[00000000-0000-4000-8000-000000000001]", true),
+            ("!00000000-0000-4000-8000-000000000001?", true),
+            ("[00000000-0000-0000-0000-000000000000]", false),
+            ("urn:uuix:00000000-0000-4000-8000-000000000001", false),
+            ("[00000000-0000-4000-8000-00000000000z]", false),
+        ] {
+            let claims = json!({"cpk":public, "xid":"123", "leguuid":uuid, "xname":"TokenName"});
+            let token = sign(&key, &header, &serde_json::to_vec(&claims).unwrap());
+            let request = frame(
+                &serde_json::to_vec(&json!({"Token":token})).unwrap(),
+                client.as_bytes(),
+            );
+            let go = oracle.call(json!({"op":"login_parse", "request":b64(&request)}));
+            assert_eq!(go["accepted"], expected, "{uuid}");
+            let result = parse_offline_request(
+                &request,
+                UNIX_EPOCH + Duration::from_secs(NOW),
+                LIMIT,
+                |_| panic!("numeric address"),
+            );
+            assert_eq!(
+                result.is_ok(),
+                expected,
+                "{uuid}: {:?}",
+                result.as_ref().err()
+            );
+            if let Ok(login) = result {
+                assert_eq!(login.claimed_identity(), uuid);
+            }
+        }
     }
 }

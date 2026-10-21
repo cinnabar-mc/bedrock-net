@@ -11,7 +11,7 @@ mod exchange_key;
 mod fields;
 mod offline;
 pub use exchange_key::ClientExchangeKey;
-pub use offline::OfflineLogin;
+pub use offline::{OfflineLogin, parse_offline_request};
 
 /// Pure authority for the configured multiplayer provider, never a client-selected issuer/key.
 ///

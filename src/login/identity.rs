@@ -65,7 +65,7 @@ impl PlayerIdentity {
 }
 
 /// Applies the Bedrock identity namespace and UUID bits; MD5 is an identifier mapping, not trust.
-fn xuid_uuid(xuid: &str) -> Uuid {
+pub(super) fn xuid_uuid(xuid: &str) -> Uuid {
     let mut bytes: [u8; 16] = Md5::new()
         .chain_update(XUID_UUID_PREFIX)
         .chain_update(xuid.as_bytes())
