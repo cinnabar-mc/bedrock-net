@@ -14,50 +14,20 @@ use p384::PublicKey;
 use p384::ecdsa::signature::{Signer, Verifier};
 use p384::ecdsa::{Signature, SigningKey, VerifyingKey};
 use p384::pkcs8::DecodePublicKey;
-use serde::{Deserialize, Deserializer, Serialize};
+use serde::{Deserialize, Serialize};
 
 use super::{ClientExchangeKey, LoginError, accepting::client_data, url};
 
 mod certificate;
+mod header;
+mod object;
+use header::Header;
+pub(super) use object::Object;
 
 #[derive(Serialize)]
 struct SigningHeader<'a> {
     alg: &'static str,
     x5u: &'a str,
-}
-
-#[derive(Deserialize)]
-struct TokenHeader {
-    alg: String,
-    #[serde(default, rename = "x5c", deserialize_with = "certificates")]
-    _x5c: (),
-    #[serde(default)]
-    x5u: Option<Box<serde_json::value::RawValue>>,
-    #[serde(default)]
-    crit: Option<Vec<String>>,
-    #[serde(default = "encoded_payload", deserialize_with = "payload_encoding")]
-    b64: bool,
-}
-
-/// Checks auxiliary certificate structures without retaining them or granting issuer authority.
-fn certificates<'de, D: Deserializer<'de>>(deserializer: D) -> Result<(), D::Error> {
-    let raw = <&serde_json::value::RawValue>::deserialize(deserializer)?;
-    certificate::chain(raw).ok_or_else(|| serde::de::Error::custom("invalid x5c chain"))?;
-    Ok(())
-}
-
-/// Uses encoded payload authentication when the protected header omits b64.
-fn encoded_payload() -> bool {
-    true
-}
-
-/// Interprets b64 without allocating its raw value; only exact false disables encoding.
-fn payload_encoding<'de, D: Deserializer<'de>>(deserializer: D) -> Result<bool, D::Error> {
-    let raw = <&serde_json::value::RawValue>::deserialize(deserializer)?;
-    if !client_data::jose_values(raw) {
-        return Err(serde::de::Error::custom("invalid b64 header value"));
-    }
-    Ok(raw.get() != "false")
 }
 
 #[derive(Deserialize)]
@@ -128,17 +98,8 @@ pub(super) fn sign(
 
 /// Verifies a bounded server token before decoding its salt or deriving any key.
 pub(super) fn verify_server(token: &str, limit: usize) -> Result<(PublicKey, Vec<u8>), LoginError> {
-    let parsed = Parsed::new(token, limit)?;
-    let public_key: String = serde_json::from_str(
-        parsed
-            .header
-            .x5u
-            .as_deref()
-            .ok_or(LoginError::UnsupportedHeader)?
-            .get(),
-    )
-    .map_err(|_| LoginError::MalformedJson)?;
-    let der = decode(&public_key, false)?;
+    let parsed = Token::parse(token, limit, false)?;
+    let der = decode(&parsed.header.key_text()?, false)?;
     let public = PublicKey::from_public_key_der(&der).map_err(LoginError::PublicKey)?;
     parsed.verify(&VerifyingKey::from(public))?;
     let claims: SaltClaims =
@@ -169,22 +130,22 @@ pub(super) fn verify_client_with(
     limit: usize,
     verify: impl FnOnce(&[u8], &[u8; 96]) -> Result<(), LoginError>,
 ) -> Result<Vec<u8>, LoginError> {
-    let parsed = Parsed::new(token, limit)?;
-    verify(parsed.signing_input(), &parsed.signature)?;
+    let parsed = Token::parse(token, limit, false)?;
+    parsed.verify_with(verify)?;
     Ok(parsed.payload)
 }
 
-/// Shared bounded compact framing and signature policy for both Login directions.
-struct Parsed<'a> {
+/// Shared bounded compact framing with role-specific verification after header interpretation.
+pub(super) struct Token<'a> {
     input: Cow<'a, [u8]>,
-    header: TokenHeader,
-    signature: [u8; 96],
-    payload: Vec<u8>,
+    pub(super) header: Header,
+    signature: Vec<u8>,
+    pub(super) payload: Vec<u8>,
 }
 
-impl<'a> Parsed<'a> {
+impl<'a> Token<'a> {
     /// Parses framing and supported headers without trusting a payload or header-supplied key.
-    fn new(token: &'a str, limit: usize) -> Result<Self, LoginError> {
+    pub(super) fn parse(token: &'a str, limit: usize, modern: bool) -> Result<Self, LoginError> {
         if token.len() > limit {
             return Err(LoginError::LimitExceeded { limit });
         }
@@ -194,31 +155,15 @@ impl<'a> Parsed<'a> {
             return Err(LoginError::MalformedToken);
         }
         let (protected, canonical_header) = decode_compact(header)?;
-        let text = client_data::go_utf8(&protected);
-        let interpreted = client_data::normalize(&text).ok_or(LoginError::MalformedJson)?;
-        let header: TokenHeader =
-            serde_json::from_str(&interpreted).map_err(|_| LoginError::MalformedJson)?;
-        if header.alg != "ES384" || header.crit.iter().flatten().any(|name| name != "b64") {
-            return Err(LoginError::UnsupportedHeader);
-        }
-        if header
-            .x5u
-            .as_deref()
-            .is_some_and(|value| !client_data::jose_values(value))
-        {
-            return Err(LoginError::MalformedJson);
-        }
-        let encoded = header.b64;
-        let signature = decode_compact(signature)?
-            .0
-            .try_into()
-            .map_err(|_| LoginError::Signature(p384::ecdsa::Error::new()))?;
+        let header = Header::parse(&protected)?;
+        header.algorithm(modern)?;
+        let signature = decode_compact(signature)?.0;
         let (payload, canonical_payload) = decode_compact(payload)?;
         let input = authentication_input(
             input,
             &protected,
             &payload,
-            encoded,
+            header.encoded_payload(),
             canonical_header && canonical_payload,
         );
         Ok(Self {
@@ -229,12 +174,29 @@ impl<'a> Parsed<'a> {
         })
     }
 
+    /// Checks signed-token policy and raw ES384 width before the caller's existing crypto verifier.
+    pub(super) fn verify_with(
+        &self,
+        verify: impl FnOnce(&[u8], &[u8; 96]) -> Result<(), LoginError>,
+    ) -> Result<(), LoginError> {
+        self.header.algorithm(false)?;
+        self.header.critical()?;
+        let signature = self
+            .signature
+            .as_slice()
+            .try_into()
+            .map_err(|_| LoginError::Signature(p384::ecdsa::Error::new()))?;
+        verify(self.signing_input(), signature)
+    }
+
     /// Checks P384 scalar ranges and the exact signed representation before payload deserialization.
     fn verify(&self, public: &VerifyingKey) -> Result<(), LoginError> {
-        let signature = Signature::from_slice(&self.signature).map_err(LoginError::Signature)?;
-        public
-            .verify(self.signing_input(), &signature)
-            .map_err(LoginError::Signature)
+        self.verify_with(|input, signature| {
+            let signature = Signature::from_slice(signature).map_err(LoginError::Signature)?;
+            public
+                .verify(input, &signature)
+                .map_err(LoginError::Signature)
+        })
     }
 
     /// Borrows the already selected authentication bytes without changing signed JSON.
@@ -353,7 +315,7 @@ mod tests {
             br#"{"alg":"ES384","b64":17}"#,
         ] {
             let wire = compact(header);
-            let parsed = Parsed::new(&wire, wire.len()).unwrap();
+            let parsed = Token::parse(&wire, wire.len(), false).unwrap();
             assert!(matches!(parsed.input, Cow::Borrowed(_)));
             assert_eq!(
                 parsed.signing_input(),
@@ -363,7 +325,7 @@ mod tests {
         let wire = compact(br#"{"alg":"ES384"}"#);
         let mut signature_crlf = wire.clone();
         signature_crlf.push_str("\r\n");
-        let parsed = Parsed::new(&signature_crlf, signature_crlf.len()).unwrap();
+        let parsed = Token::parse(&signature_crlf, signature_crlf.len(), false).unwrap();
         assert!(matches!(parsed.input, Cow::Borrowed(_)));
     }
 
@@ -372,7 +334,7 @@ mod tests {
         let header = b" { \"alg\" : \"ES384\", \"b64\":false } ";
         let mut wire = compact(header);
         wire.insert_str(2, "\r\n");
-        let parsed = Parsed::new(&wire, wire.len()).unwrap();
+        let parsed = Token::parse(&wire, wire.len(), false).unwrap();
         let expected = [URL_SAFE_NO_PAD.encode(header).as_bytes(), b".", b"{}"].concat();
         assert_eq!(parsed.signing_input(), expected);
         assert!(matches!(parsed.input, Cow::Owned(_)));
@@ -382,12 +344,12 @@ mod tests {
     fn metadata_header_x5u_is_generic_and_never_selects_a_key() {
         for value in ["17", "false", "{}", "[]", "null", r#""untrusted""#] {
             let wire = compact(format!(r#"{{"alg":"ES384","x5u":{value}}}"#).as_bytes());
-            assert!(Parsed::new(&wire, wire.len()).is_ok(), "{value}");
+            assert!(Token::parse(&wire, wire.len(), false).is_ok(), "{value}");
             assert!(verify_server(&wire, wire.len()).is_err(), "{value}");
         }
         for value in ["1e400", r#"{"a":1,"a":2}"#] {
             let wire = compact(format!(r#"{{"alg":"ES384","x5u":{value}}}"#).as_bytes());
-            assert!(Parsed::new(&wire, wire.len()).is_err(), "{value}");
+            assert!(Token::parse(&wire, wire.len(), false).is_err(), "{value}");
         }
     }
 
@@ -396,7 +358,7 @@ mod tests {
         let value = format!("{}0{}", "[".repeat(15_000), "]".repeat(15_000));
         for field in ["b64", "x5u"] {
             let wire = compact(format!(r#"{{"alg":"ES384","{field}":{value}}}"#).as_bytes());
-            assert!(Parsed::new(&wire, wire.len()).is_ok(), "{field}");
+            assert!(Token::parse(&wire, wire.len(), false).is_ok(), "{field}");
         }
     }
 }

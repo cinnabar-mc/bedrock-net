@@ -112,7 +112,7 @@ fn compact_jwt_encodings_match_go_in_both_directions() {
 }
 
 #[test]
-fn protected_x5c_certificate_shapes_match_go() {
+fn certificate_and_reference_shapes_match_go() {
     let Some(cases) = fixtures("jose_admission") else {
         return;
     };
@@ -125,9 +125,6 @@ fn protected_x5c_certificate_shapes_match_go() {
     let mut count = 0;
     let mut mismatches = Vec::new();
     for case in cases {
-        if case["kind"] != "certificate" || !case["name"].as_str().unwrap().ends_with("/x5c") {
-            continue;
-        }
         count += 1;
         let expected = case["accepted"].as_bool().unwrap();
         let request = STANDARD.decode(case["request"].as_str().unwrap()).unwrap();
@@ -141,9 +138,44 @@ fn protected_x5c_certificate_shapes_match_go() {
             mismatches.push(format!("{}/server: {:?}", case["name"], result.err()));
         }
     }
-    assert_eq!(count, 288);
+    assert_eq!(count, 630);
     assert!(
         mismatches.is_empty(),
         "Certificate admission mismatches: {mismatches:?}"
     );
+}
+
+#[test]
+fn shared_headers_match_go_in_authenticated_and_server_roles() {
+    let Some(fixtures) = fixtures("jose_headers") else {
+        return;
+    };
+    assert_eq!(fixtures.len(), 37);
+    let mut scalar = [0; 48];
+    scalar[47] = 7;
+    let key = SigningKey::from_slice(&scalar).unwrap();
+    let provider = Provider(*key.verifying_key());
+    let now = UNIX_EPOCH + Duration::from_secs(1_800_000_000);
+    for fixture in fixtures {
+        let request = STANDARD
+            .decode(fixture["requests"]["authenticated"].as_str().unwrap())
+            .unwrap();
+        let result = verify_authenticated_request(&request, &provider, now, request.len());
+        assert_eq!(
+            result.is_ok(),
+            fixture["accepted"]["authenticated"].as_bool().unwrap(),
+            "{}: {:?}",
+            fixture["name"],
+            result.err()
+        );
+        let token = fixture["server"].as_str().unwrap();
+        let result = finish_key_exchange(&key, token, token.len());
+        assert_eq!(
+            result.is_ok(),
+            fixture["accepted"]["server"].as_bool().unwrap(),
+            "{}: {:?}",
+            fixture["name"],
+            result.err()
+        );
+    }
 }

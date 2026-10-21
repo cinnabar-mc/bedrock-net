@@ -16,7 +16,9 @@ use claims::Claims;
 pub(in crate::login) use claims::{jose_values, normalize};
 
 /// Decodes signed JSON without imposing UTF-8 rules stricter than Go's JSON decoder.
-pub(super) fn parse_json(bytes: &[u8]) -> Result<Box<serde_json::value::RawValue>, LoginError> {
+pub(in crate::login) fn parse_json(
+    bytes: &[u8],
+) -> Result<Box<serde_json::value::RawValue>, LoginError> {
     let text = go_utf8(bytes);
     serde_json::from_str(&text).map_err(|_| LoginError::MalformedJson)
 }
