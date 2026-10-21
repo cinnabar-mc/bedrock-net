@@ -135,14 +135,6 @@ impl Claims {
             .unwrap_or_default()
     }
 
-    /// Moves a final validated string out without allocating another copy.
-    pub(super) fn take_text(&mut self, name: &str) -> String {
-        match self.scalars.remove(name) {
-            Some(Value::String(text)) => text,
-            _ => String::new(),
-        }
-    }
-
     /// Returns the last non-null integer, or the absent field's zero default.
     pub(super) fn number(&self, name: &str) -> i64 {
         self.scalars
