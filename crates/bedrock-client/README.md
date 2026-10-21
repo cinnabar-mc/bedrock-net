@@ -114,8 +114,18 @@ Supply one server key, original absolute deadline, any caller-verified transport
 peer key and required `bedrock_net::login::LoginVerifier`. The verifier uses the
 existing configured provider authority: signature, issuer, audience, dates, XUID
 and `cpk`; there is no default or permissive verifier. Only actual verification
-creates `VerifiedLogin`. Modern authenticated Login is supported; accepting legacy
-chains, offline and guest authentication remain unimplemented.
+creates the default `VerifiedLogin<AuthenticatedLogin>`.
+
+For explicit offline admission, use `ServerHandshake::new_offline` and an
+`OfflinePolicy::new` cached address resolver. All accepting owners retain a
+second Login type parameter, defaulting to `AuthenticatedLogin` for existing
+callers. Offline authorization receives `&OfflineLogin`; packs, external reads,
+world startup and both relay paths preserve it through the final `into_parts`.
+Its claimed account and UUID values stay untrusted. Modern identity signature,
+time and audience checks are disabled in this policy; legacy chains are checked
+once during parsing. Signed ClientData, final exchange-key binding, actual cipher
+acknowledgment, caller authorization and the original deadline remain required.
+Wire guest mode 1 remains unsupported.
 
 `VerifiedLogin::authorize` runs the caller's actual policy callback against the
 original authenticated player and signed nonce, retaining its concrete grant.

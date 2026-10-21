@@ -1,5 +1,6 @@
 //! Real generated client/server pack exchange, original file IO and selected-world initialization.
 
+mod offline;
 mod relay_tests;
 
 use super::{
@@ -135,13 +136,13 @@ fn accepted(
 }
 
 /// Retains caller-owned pipelined siblings while each original read/write continuation is consumed.
-fn exchange_packs(
-    server: ServerPacks<Grant>,
+fn exchange_packs<A, L>(
+    server: ServerPacks<A, L>,
     initial: Vec<packets::Packet>,
     client: ClientLogin,
     now: Instant,
 ) -> (
-    ServerWorldReady<Grant>,
+    ServerWorldReady<A, L>,
     SpawnNegotiation,
     ResourcePackHandoff,
 ) {
@@ -262,13 +263,13 @@ fn world() -> ServerWorld {
 }
 
 /// Runs actual startup observations and original runtime-ID acknowledgment without attaching a world.
-fn initialize(
-    server: ServerWorldReady<Grant>,
+fn initialize<A, L>(
+    server: ServerWorldReady<A, L>,
     mut spawn: SpawnNegotiation,
-    provider: &Provider,
+    provider: &impl crate::server::LoginPolicy<L>,
     now: Instant,
     utc: SystemTime,
-) -> ServerInitialized<Grant> {
+) -> ServerInitialized<A, L> {
     let (server, definitions) = server.start_world(world(), provider, now, utc).unwrap();
     let mut request = None;
     let mut prepared = false;

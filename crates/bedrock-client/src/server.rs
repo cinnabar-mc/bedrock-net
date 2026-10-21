@@ -13,7 +13,9 @@ use std::{
 };
 
 mod lifecycle;
+mod offline;
 mod policy;
+pub use offline::OfflinePolicy;
 pub use policy::{HandshakePolicy, LoginPolicy};
 
 /// Owned accepting pack delivery and selected-world startup after the actual Login handoff.
