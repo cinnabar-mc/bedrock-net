@@ -1,6 +1,11 @@
 //! Opaque offline Login capability, with account claims kept separate from provider authority.
 
-use super::{ClientExchangeKey, client_data};
+use super::{ClientExchangeKey, LoginError, client_data, jwt};
+use std::time::SystemTime;
+
+mod claims;
+use claims::{Identity, Registered};
+use jwt::Object;
 use serde_json::value::RawValue;
 
 /// Untrusted identity text retained without an authenticated player projection.
@@ -100,4 +105,75 @@ impl OfflineLogin {
     pub fn claimed_playfab_title_id(&self) -> &str {
         &self.identity.playfab_title_id
     }
+}
+
+/// Parses a modern offline Login without granting provider authority.
+///
+/// This entry point requires a nonempty identity Token; legacy chains are not yet supported.
+/// Identity signatures, issuer, audience and time are deliberately unverified. Metadata must
+/// verify under the identity-selected key and pass the shared ClientData validator.
+/// Mode 1 is unsupported. Application admission and its original deadline remain caller-owned.
+/// `resolve` must supply an already acquired cached UDP lookup result without blocking or I/O.
+///
+/// # Errors
+/// Rejects malformed framing, unsupported authentication, invalid identity or metadata,
+/// failed metadata signatures, and required cached address results that are absent or failed.
+pub fn parse_offline_request(
+    request: &[u8],
+    _now: SystemTime,
+    max_request_bytes: usize,
+    resolve: impl FnOnce(&str) -> Result<(), LoginError>,
+) -> Result<OfflineLogin, LoginError> {
+    if max_request_bytes == 0 || request.len() > max_request_bytes {
+        return Err(LoginError::LimitExceeded {
+            limit: max_request_bytes,
+        });
+    }
+    let mut rest = request;
+    let envelope = Object::outer(super::take_field(&mut rest)?)?;
+    if envelope.number::<u8>("AuthenticationType")? == Some(1) {
+        return Err(LoginError::UnsupportedAuthentication);
+    }
+    let certificate = envelope.text("Certificate")?.unwrap_or_default();
+    envelope.strings("chain")?;
+    if !certificate.is_empty() {
+        Object::outer(certificate.as_bytes())?.strings("chain")?;
+    }
+    let modern = envelope
+        .text("Token")?
+        .filter(|token| !token.is_empty())
+        .ok_or(LoginError::UnsupportedAuthentication)?;
+    let client = take_client(&mut rest)?;
+    let token = jwt::Token::parse(&modern, max_request_bytes, true)?;
+    let claims = Object::parse(&token.payload)?;
+    Registered::default().merge(&claims)?;
+    let key = jwt::key(&claims.text("cpk")?.unwrap_or_default())?;
+    let mut identity = Identity::modern(&claims)?;
+    let client = std::str::from_utf8(client).map_err(|_| LoginError::MalformedToken)?;
+    let payload = jwt::verify_client_with(client, max_request_bytes, |input, signature| {
+        key.verify_es384(input, signature)
+    })?;
+    let mut metadata = client_data::validate_payload(&payload, resolve)?;
+    identity.name = metadata.take_display_name();
+    Ok(OfflineLogin {
+        identity,
+        exchange_key: metadata
+            .take_exchange_key()
+            .unwrap_or_else(|| key.duplicate()),
+        signing_key: key,
+        metadata,
+    })
+}
+
+/// Applies Buffer.Next semantics only to the final offline field, retaining the caller's cap.
+fn take_client<'a>(rest: &mut &'a [u8]) -> Result<&'a [u8], LoginError> {
+    let prefix = rest.get(..4).ok_or(LoginError::InvalidLength)?;
+    let length = i32::from_le_bytes(prefix.try_into().map_err(|_| LoginError::InvalidLength)?);
+    let bytes = &rest[4..];
+    let length = usize::try_from(length).map_err(|_| LoginError::InvalidLength)?;
+    if length < bytes.len() {
+        return Err(LoginError::InvalidLength);
+    }
+    *rest = &[];
+    Ok(bytes)
 }

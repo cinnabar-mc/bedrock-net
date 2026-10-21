@@ -205,6 +205,11 @@ impl<'a> Token<'a> {
     }
 }
 
+/// Decodes a client-supplied PKIX ECDSA key through the existing exchange-key owner.
+pub(super) fn key(value: &str) -> Result<ClientExchangeKey, LoginError> {
+    ClientExchangeKey::parse(&decode(value, false)?).ok_or(LoginError::Authentication)
+}
+
 /// Decodes Go standard or raw URL base64 with CR/LF and nonzero unused-bit tolerance.
 fn decode(value: &str, url: bool) -> Result<Vec<u8>, LoginError> {
     if url {

@@ -133,6 +133,14 @@ impl Claims {
             .unwrap_or_default()
     }
 
+    /// Moves a final validated string out without allocating another copy.
+    pub(super) fn take_text(&mut self, name: &str) -> String {
+        match self.scalars.remove(name) {
+            Some(Value::String(text)) => text,
+            _ => String::new(),
+        }
+    }
+
     /// Returns the last non-null integer, or the absent field's zero default.
     pub(super) fn number(&self, name: &str) -> i64 {
         self.scalars
@@ -204,6 +212,7 @@ pub(in crate::login) fn normalize(raw: &str) -> Option<Cow<'_, str>> {
 enum JsonContext {
     ClientData,
     StandardMap,
+    StandardStruct,
     JoseMap,
 }
 
@@ -222,6 +231,11 @@ pub(in crate::login) fn json_values(raw: &RawValue, reject_duplicates: bool) -> 
 /// Checks JOSE generic values for finite numbers and decoded duplicates, without a standard depth cap.
 pub(in crate::login) fn jose_values(raw: &RawValue) -> bool {
     scan_json(raw, JsonContext::JoseMap)
+}
+
+/// Checks standard struct JSON depth while leaving ignored numbers and duplicate map values opaque.
+pub(in crate::login) fn standard_json_values(raw: &RawValue) -> bool {
+    scan_json(raw, JsonContext::StandardStruct)
 }
 
 /// Scans all JSON contexts iteratively; the RawValue owner has already checked their syntax.
@@ -295,9 +309,10 @@ fn scan_json(raw: &RawValue, context: JsonContext) -> bool {
                 {
                     index += 1;
                 }
-                if !raw.get()[start..index]
-                    .parse::<f64>()
-                    .is_ok_and(f64::is_finite)
+                if !matches!(context, JsonContext::StandardStruct)
+                    && !raw.get()[start..index]
+                        .parse::<f64>()
+                        .is_ok_and(f64::is_finite)
                 {
                     return false;
                 }

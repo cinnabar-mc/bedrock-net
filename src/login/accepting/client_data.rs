@@ -11,9 +11,9 @@ use super::ClientExchangeKey;
 use address::resolution;
 use language::valid_language;
 
-mod claims;
+pub(super) mod claims;
 use claims::Claims;
-pub(in crate::login) use claims::{jose_values, normalize};
+pub(in crate::login) use claims::{jose_values, normalize, standard_json_values};
 
 /// Decodes signed JSON without imposing UTF-8 rules stricter than Go's JSON decoder.
 pub(in crate::login) fn parse_json(
@@ -71,6 +71,11 @@ impl Payload {
         &self.metadata.nonce
     }
 
+    /// Consumes the validated presentation name when offline policy selects it.
+    pub(super) fn take_display_name(&mut self) -> String {
+        std::mem::take(&mut self.metadata.display_name)
+    }
+
     /// Consumes the optional signed key update once without copying metadata fields.
     pub(super) fn take_exchange_key(&mut self) -> Option<ClientExchangeKey> {
         self.metadata.exchange_key.take()
@@ -96,6 +101,7 @@ pub(super) fn validate_payload(
 
 pub(super) struct Metadata {
     pub(super) nonce: zeroize::Zeroizing<String>,
+    pub(super) display_name: String,
     pub(super) exchange_key: Option<ClientExchangeKey>,
 }
 
@@ -151,24 +157,29 @@ pub(super) fn validate(
         resolve(&address).map_err(LoginError::redact_peer)?;
     }
     Ok(Metadata {
-        nonce: zeroize::Zeroizing::new(data.text("Nonce").to_owned()),
+        nonce: zeroize::Zeroizing::new(data.take_text("Nonce")),
+        display_name: data.take_text("ThirdPartyName"),
         exchange_key,
     })
 }
 
 /// Accepts the UUID spellings used by Go, including case-insensitive URN prefixes.
 fn valid_uuid(value: &str) -> bool {
-    if value.is_empty() {
-        return true;
-    }
+    value.is_empty() || parse_uuid(value).is_some()
+}
+
+/// Parses Go's UUID spellings while preserving the caller's original claim text separately.
+pub(super) fn parse_uuid(value: &str) -> Option<uuid::Uuid> {
     let bytes = value.as_bytes();
     let bytes = match bytes.len() {
         32 | 36 => bytes,
         38 => &bytes[1..37],
         45 if bytes[..9].eq_ignore_ascii_case(b"urn:uuid:") => &bytes[9..],
-        _ => return false,
+        _ => return None,
     };
-    std::str::from_utf8(bytes).is_ok_and(|value| uuid::Uuid::parse_str(value).is_ok())
+    std::str::from_utf8(bytes)
+        .ok()
+        .and_then(|value| uuid::Uuid::parse_str(value).ok())
 }
 
 /// Decodes standard base64 while retaining Go's tolerance for embedded CR and LF.

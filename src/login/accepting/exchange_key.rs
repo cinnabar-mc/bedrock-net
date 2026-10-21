@@ -5,11 +5,14 @@ use super::LoginError;
 use num_bigint::BigUint;
 use p384::{ecdsa::VerifyingKey, pkcs8::EncodePublicKey};
 
-/// Final client-selected exchange key, distinct from the provider-bound metadata signer.
-/// A key update is authenticated by the original signer; it does not prove the new private key.
+mod verification;
+
+/// Validated client public key for offline metadata signing or final key exchange.
+/// A signed key update does not prove possession of the new private key.
 pub struct ClientExchangeKey {
     der: Box<[u8]>,
     p384: Option<VerifyingKey>,
+    point_width: usize,
 }
 
 impl ClientExchangeKey {
@@ -30,7 +33,33 @@ impl ClientExchangeKey {
         Ok(Self {
             der: der.as_bytes().into(),
             p384: Some(*key),
+            point_width: 48,
         })
+    }
+
+    /// Retains the same validated public key when the final exchange key does not rotate.
+    pub(super) fn duplicate(&self) -> Self {
+        Self {
+            der: self.der.clone(),
+            p384: self.p384,
+            point_width: self.point_width,
+        }
+    }
+
+    /// Verifies SHA384 with this validated NIST point and the fixed ES384 integer encoding.
+    pub(super) fn verify_es384(
+        &self,
+        input: &[u8],
+        signature: &[u8; 96],
+    ) -> Result<(), LoginError> {
+        use p384::ecdsa::{Signature, signature::Verifier};
+        if let Some(key) = &self.p384 {
+            let signature = Signature::from_slice(signature).map_err(LoginError::Signature)?;
+            return key.verify(input, &signature).map_err(LoginError::Signature);
+        }
+        // Canonical DER ends with the already validated, uncompressed public point.
+        let point = &self.der[self.der.len() - (1 + 2 * self.point_width)..];
+        verification::verify(point, input, signature).map_err(LoginError::Signature)
     }
 
     /// Validates a signed PKIX ECDSA point and retains its canonical representation.
@@ -100,6 +129,7 @@ impl ClientExchangeKey {
         Some(Self {
             der: der(0x30, &contents).into_boxed_slice(),
             p384,
+            point_width: width,
         })
     }
 }

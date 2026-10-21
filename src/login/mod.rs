@@ -16,7 +16,7 @@ pub mod provider;
 mod url;
 pub use accepting::{
     AuthenticatedLogin, ClientExchangeKey, LoginVerifier, OfflineLogin, TrustedIdentity,
-    verify_authenticated_request,
+    parse_offline_request, verify_authenticated_request,
 };
 
 use std::time::{SystemTime, UNIX_EPOCH};
