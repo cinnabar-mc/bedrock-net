@@ -38,4 +38,10 @@ pub trait PacketIo: Send + 'static {
     }
     /// Flushes accepted output and ends the original connection.
     fn close(&mut self) -> impl std::future::Future<Output = io::Result<()>> + Send;
+    /// Finalizes teardown after the caller has finished consuming transport input.
+    /// Implementors with distinct close-request and drain lifetimes override this hook.
+    /// The default preserves the existing close behavior and the caller owns its deadline.
+    fn finish_close(&mut self) -> impl std::future::Future<Output = io::Result<()>> + Send {
+        self.close()
+    }
 }
