@@ -5,10 +5,12 @@ import (
 	"bytes"
 	"crypto/ecdsa"
 	"crypto/elliptic"
+	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/asn1"
 	"encoding/base64"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 
 	"github.com/go-jose/go-jose/v4"
@@ -152,10 +154,32 @@ func joseAdmissionFixtures() ([]joseAdmissionFixture, error) {
 			return err
 		}
 		jwk := offlineShapeEC(elliptic.P384())
+		jwkWant := want
+		if want {
+			parsed, err := x509.ParseCertificate(cert)
+			if err != nil {
+				return fmt.Errorf("%s/certificate: %w", name, err)
+			}
+			encoded, err := (jose.JSONWebKey{Key: parsed.PublicKey}).MarshalJSON()
+			if err != nil {
+				// Unknown certificate algorithms have no leaf key to compare; DSA has one.
+				jwkWant = parsed.PublicKey == nil
+			} else {
+				jwk = make(map[string]any)
+				if err := json.Unmarshal(encoded, &jwk); err != nil {
+					return err
+				}
+			}
+		}
 		jwk["x5c"] = chain
-		return add(name+"/jwk", "certificate", `"jwk":`+string(offlineEncode(jwk)), want)
+		return add(name+"/jwk", "certificate", `"jwk":`+string(offlineEncode(jwk)), jwkWant)
 	}
 	base := offlineShapeCertificate(key, &key.PublicKey, nil)
+	for _, row := range admissionCoreCertificates(base) {
+		if err := certificate("core/"+row.name, row.der, row.want); err != nil {
+			return nil, err
+		}
+	}
 	for _, row := range []struct {
 		name, serial string
 		want         bool

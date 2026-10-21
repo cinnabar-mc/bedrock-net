@@ -11,7 +11,7 @@ func TestJOSEAdmission(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(cases) != 264 {
+	if len(cases) != 630 {
 		t.Fatalf("admission inventory changed: %d", len(cases))
 	}
 	repeat, err := joseAdmissionFixtures()
@@ -28,7 +28,7 @@ func TestJOSEAdmission(t *testing.T) {
 		seen[row.Name] = true
 		counts[row.Kind]++
 	}
-	if len(counts) != 3 || counts["certificate"] != 210 || counts["url"] != 26 || counts["thumbprint"] != 28 {
+	if len(counts) != 3 || counts["certificate"] != 576 || counts["url"] != 26 || counts["thumbprint"] != 28 {
 		t.Fatal("missing admission context")
 	}
 	t.Logf("%d admission rows: %v; %d encoded bytes", len(cases), counts, len(encoded))
