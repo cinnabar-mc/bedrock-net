@@ -1,5 +1,5 @@
 [workspace]
-members = [".", "crates/bedrock-client", "crates/bedrock-packs", "examples/client"]
+members = [".", "crates/bedrock-client", "crates/bedrock-client-tokio", "crates/bedrock-packs", "examples/client"]
 default-members = [".", "crates/bedrock-client", "crates/bedrock-packs"]
 resolver = "3"
 
@@ -9,11 +9,11 @@ rust-version = "1.93"
 [workspace.dependencies]
 criterion = { version = "0.8", default-features = false, features = ["cargo_bench_support"] }
 bedrock-protocol = { package = "bedrock-protocol-1-26-51", git = "https://github.com/cinnabar-mc/protocolgen", rev = "4e9626abbb51b8fa842f49b4aea0fb4d3c01a682" }
-bedrock-services = { git = "https://github.com/cinnabar-mc/bedrock-services", rev = "a8126ea814db5ce9929ec3897f54a70f359288b5", features = ["signaling-tokio"] }
-nethernet = { git = "https://github.com/cinnabar-mc/nethernet", rev = "c5c8ee5f859a0e195091c5672c64287f3d0ef2ea" }
-nethernet-tokio = { git = "https://github.com/cinnabar-mc/nethernet", rev = "c5c8ee5f859a0e195091c5672c64287f3d0ef2ea" }
+bedrock-services = { git = "https://github.com/cinnabar-mc/bedrock-services", rev = "9ffede7d21f9d67077e402b8817c907590107003", features = ["signaling-tokio"] }
+nethernet = { git = "https://github.com/cinnabar-mc/nethernet", rev = "fed09fc05afb3b0fe34d0e7b18702f7ea86c3290" }
+nethernet-tokio = { git = "https://github.com/cinnabar-mc/nethernet", rev = "fed09fc05afb3b0fe34d0e7b18702f7ea86c3290" }
 p384 = { version = "0.14", default-features = false, features = ["alloc", "ecdsa", "ecdh", "pkcs8"] }
-raknet = { git = "https://github.com/cinnabar-mc/raknet", rev = "82dfa57d33fb54eb307e8b29867214e434c46d72" }
+raknet = { git = "https://github.com/cinnabar-mc/raknet", rev = "5879963a0c6290899616c01a02883c4ed4972a76" }
 
 [package]
 name = "bedrock-net"
@@ -31,7 +31,7 @@ default = []
 login = ["dep:base64", "dep:md-5", "dep:p384", "dep:serde", "dep:serde_json", "dep:uuid", "sha2/zeroize"]
 provider-verification = ["login", "dep:nethernet"]
 raknet = ["dep:raknet", "dep:tokio"]
-messaging = ["dep:bedrock-services", "dep:futures", "dep:nethernet", "dep:nethernet-tokio", "dep:tokio", "dep:uuid"]
+messaging = ["dep:bedrock-services", "dep:futures", "dep:nethernet", "dep:nethernet-tokio", "dep:tokio", "dep:uuid", "uuid/v4"]
 
 [dependencies]
 aes = { version = "0.9", features = ["zeroize"] }
@@ -54,7 +54,7 @@ subtle = "2"
 thiserror = "2"
 tokio = { version = "1", features = ["net", "time", "macros"], optional = true }
 zeroize = "1"
-uuid = { version = "1", features = ["v4"], optional = true }
+uuid = { version = "1", optional = true }
 
 [dev-dependencies]
 rand = "0.10"

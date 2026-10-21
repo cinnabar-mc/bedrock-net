@@ -2,7 +2,6 @@
 
 #[cfg(test)]
 mod interop_tests;
-mod session;
 mod transport;
 
 use std::error::Error;
@@ -12,22 +11,15 @@ use std::time::{Duration, SystemTime};
 
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
-use bedrock_client::handshake::{
-    ClientHandshake, ClientKeyExchange, ClientLogin, ClientLoginReady, ClientPackOffer,
-    ClientSettings, HandshakeOptions, LoginEvent, OfferEvent, SettingsEvent,
-};
+use bedrock_client::handshake::{ClientHandshake, HandshakeOptions};
+use bedrock_client_tokio::handshake::{self, LoginData, Observation};
+use bedrock_net::BatchLimits;
 use bedrock_net::login::OfflineIdentity;
-use bedrock_net::{BatchLimits, BatchPhase, CompressionSettings, Negotiated};
-use bedrock_protocol::{
-    enums::PlayStatusType,
-    packets,
-    wire::{PacketHeader, Peer, Reader},
-};
+use bedrock_protocol::{enums::PlayStatusType, packets, wire::Peer};
 use rand::TryRng;
 use serde_json::value::RawValue;
 
-use session::Session;
-use transport::Transport;
+use bedrock_client_tokio::connection::Connection;
 
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(30);
 const OFFLINE_IDENTITY_LIFETIME: Duration = Duration::from_secs(3600);
@@ -58,26 +50,38 @@ async fn main() -> Result<(), Box<dyn Error>> {
     if arguments.next().is_some() {
         return Err(io::Error::new(io::ErrorKind::InvalidInput, USAGE).into());
     }
-    tokio::time::timeout(HANDSHAKE_TIMEOUT, probe(&kind, address, login)).await??;
+    let deadline = tokio::time::Instant::now() + HANDSHAKE_TIMEOUT;
+    tokio::time::timeout_at(deadline, probe(&kind, address, login, deadline)).await??;
     Ok(())
 }
 
 /// Negotiates settings and, when requested, stops after Login acceptance and the pack offer.
-async fn probe(kind: &str, address: SocketAddr, login: bool) -> Result<(), Box<dyn Error>> {
-    let transport = Transport::connect(kind, address).await?;
+async fn probe(
+    kind: &str,
+    address: SocketAddr,
+    login: bool,
+    deadline: tokio::time::Instant,
+) -> Result<(), Box<dyn Error>> {
+    let (transport, key) = crate::transport::connect(kind, address, deadline).await?;
     let configured = ClientHandshake::new(
-        transport.key(),
+        key,
         HandshakeOptions {
             batch_encryption: transport.batch_encryption(),
             max_login_bytes: BatchLimits::default().max_decoded_bytes,
             ..Default::default()
         },
     )?;
-    let mut session = Session::new(transport);
-    let (settings, request) = configured.start()?;
-    session.send(request.into()).await?;
-    let (ready, compression) = receive_settings(&mut session, settings).await?;
-    let mut session = session.negotiate(compression);
+    let mut session = Connection::new(
+        transport,
+        BatchLimits::default(),
+        bedrock_protocol::wire::Limits::receiving_from(Peer::Server),
+        BatchLimits::default().max_decoded_bytes,
+    );
+    let mut accepted = false;
+    let (ready, compression) = handshake::settings(&mut session, configured, &mut |event| {
+        observe(event, &mut accepted)
+    })
+    .await?;
     println!(
         "requested_protocol={} compression={:?} threshold={}",
         bedrock_protocol::PROTOCOL_VERSION,
@@ -85,22 +89,43 @@ async fn probe(kind: &str, address: SocketAddr, login: bool) -> Result<(), Box<d
         compression.threshold
     );
     if login {
-        let metadata = client_data(kind, address, session.transport.nonce())?;
-        let (pending, request) = ready.login_offline(
-            &OfflineIdentity {
+        let metadata = client_data(kind, address, session.transport().nonce())?;
+        let input = LoginData::Offline {
+            identity: OfflineIdentity {
                 display_name: PROBE_NAME,
                 identity: PROBE_UUID,
                 xuid: "",
                 playfab_id: "",
                 playfab_title_id: "",
             },
-            &metadata,
-            SystemTime::now(),
-        )?;
-        session.send(request.into()).await?;
-        receive_login(&mut session, pending).await?;
+            claims: &metadata,
+            now: SystemTime::now(),
+        };
+        match handshake::login(&mut session, ready, input, &mut |event| {
+            observe(event, &mut accepted)
+        })
+        .await?
+        {
+            Some(mut offer) => {
+                println!("admitted_pack_offer={}", offer.offers().count());
+                while !accepted {
+                    offer = handshake::offer_control(&mut session, offer, &mut |event| {
+                        observe(event, &mut accepted)
+                    })
+                    .await?;
+                }
+                println!(
+                    "offline_login=accepted encryption={}",
+                    session.has_batch_ciphers()
+                );
+            }
+            None => println!(
+                "startup_without_pack_offer=true encryption={}",
+                session.has_batch_ciphers()
+            ),
+        }
     }
-    session.transport.close().await?;
+    session.transport_mut().finish_close().await?;
     Ok(())
 }
 
@@ -150,137 +175,23 @@ fn client_data(
     Ok(RawValue::from_string(serde_json::to_string(&document)?)?)
 }
 
-/// Retains the actual settings owner and unread FIFO until its typed Login handoff.
-async fn receive_settings(
-    session: &mut Session,
-    mut settings: ClientSettings,
-) -> Result<(ClientLoginReady, CompressionSettings), Box<dyn Error>> {
-    loop {
-        match settings.receive(next_negotiation_packet(session).await?)? {
-            SettingsEvent::Ready { login, compression } => return Ok((login, compression)),
-            SettingsEvent::Pending {
-                settings: next,
-                packet,
-            } => {
+/// Records only original numeric metadata; it cannot replace packets or alter admission.
+fn observe(event: Observation<'_>, accepted: &mut bool) {
+    match event {
+        Observation::Unknown(header) => eprintln!("unused unknown packet: {}", header.id),
+        Observation::Received(_, packet) => {
+            *accepted |= is_login_success(packet);
+            if let packets::Packet::PacketViolationWarning(warning) = packet {
                 eprintln!(
-                    "unused packet before network settings: {}",
-                    packet.id() as u32
+                    "violation packet={} severity={} type={}",
+                    warning.violation_packet_id.0,
+                    warning.violation_severity.to_raw(),
+                    warning.violation_type.to_raw(),
                 );
-                settings = next;
             }
         }
+        Observation::Sent(_) => {}
     }
-}
-
-/// Observes Login acceptance and the real pack offer without starting a download.
-async fn receive_login(
-    session: &mut Session<Negotiated>,
-    mut login: ClientLogin,
-) -> Result<(), Box<dyn Error>> {
-    let mut accepted = false;
-    let mut encrypted = false;
-    loop {
-        let packet = next_negotiation_packet(session).await?;
-        accepted |= is_login_success(&packet);
-        match login.receive(packet)? {
-            LoginEvent::Send {
-                login: next,
-                packets,
-            } => {
-                send_responses(session, packets).await?;
-                login = next;
-            }
-            LoginEvent::KeyExchange(exchange) => {
-                let (next, installed) = apply_exchange(session, exchange).await?;
-                encrypted |= installed;
-                login = next;
-            }
-            LoginEvent::Packs {
-                cache_status,
-                packs,
-            } => {
-                if let Some(status) = cache_status {
-                    session.send(status.into()).await?;
-                }
-                println!("admitted_pack_offer={}", packs.offers().count());
-                return finish_offer(session, packs, accepted, encrypted).await;
-            }
-            LoginEvent::Startup { .. } => {
-                println!("startup_without_pack_offer=true encryption={encrypted}");
-                return Ok(());
-            }
-            LoginEvent::Unhandled {
-                login: next,
-                packet,
-            } => {
-                eprintln!("unused packet during Login: {}", packet.id() as u32);
-                login = next;
-            }
-        }
-    }
-}
-
-/// Preserves the original late control owner when the offer precedes LoginSuccess.
-async fn finish_offer(
-    session: &mut Session<Negotiated>,
-    mut offer: ClientPackOffer,
-    mut accepted: bool,
-    mut encrypted: bool,
-) -> Result<(), Box<dyn Error>> {
-    while !accepted {
-        let packet = next_negotiation_packet(session).await?;
-        accepted |= is_login_success(&packet);
-        match offer.receive_control(packet)? {
-            OfferEvent::Send {
-                offer: next,
-                packets,
-            } => {
-                send_responses(session, packets).await?;
-                offer = next;
-            }
-            OfferEvent::KeyExchange(exchange) => {
-                let (next, installed) = apply_exchange(session, exchange).await?;
-                encrypted |= installed;
-                offer = next;
-            }
-            OfferEvent::Unhandled {
-                offer: next,
-                packet,
-            } => {
-                eprintln!("unused packet after offer: {}", packet.id() as u32);
-                offer = next;
-            }
-        }
-    }
-    println!("offline_login=accepted encryption={encrypted}");
-    Ok(())
-}
-
-/// Applies the exact verified streams and acknowledgment before returning the same continuation.
-async fn apply_exchange<C>(
-    session: &mut Session<Negotiated>,
-    exchange: ClientKeyExchange<C>,
-) -> Result<(C, bool), Box<dyn Error>> {
-    let (continuation, ciphers, response) = exchange.into_parts();
-    let encrypted = if let Some(ciphers) = ciphers {
-        session.enable_encryption(*ciphers)?;
-        true
-    } else {
-        false
-    };
-    session.send(response.into()).await?;
-    Ok((continuation, encrypted))
-}
-
-/// Sends original generated effects in order, without another batching or cipher owner.
-async fn send_responses(
-    session: &mut Session<Negotiated>,
-    packets: Vec<packets::Packet>,
-) -> Result<(), Box<dyn Error>> {
-    for packet in packets {
-        session.send(packet).await?;
-    }
-    Ok(())
 }
 
 /// Logs only a numeric status, leaving refusal policy with the actual client owner.
@@ -290,59 +201,5 @@ fn is_login_success(packet: &packets::Packet) -> bool {
         status.status == PlayStatusType::Loginsuccess
     } else {
         false
-    }
-}
-
-/// Decodes only negotiation input while bounded framing/FIFO remain in the existing session.
-/// Unknown or unused well-formed entries are counted locally without dumping their bodies.
-async fn next_negotiation_packet<S: BatchPhase>(
-    session: &mut Session<S>,
-) -> Result<packets::Packet, Box<dyn Error>> {
-    loop {
-        let bytes = session.next_packet().await?;
-        let mut reader = Reader::from_shared(&bytes);
-        let header = PacketHeader::from_raw(reader.read_var_u32()?);
-        let Some(id) = packets::PacketId::from_raw(header.id) else {
-            eprintln!("unused unknown packet: {}", header.id);
-            continue;
-        };
-        if !matches!(
-            id,
-            packets::PacketId::NetworkSettings
-                | packets::PacketId::PlayStatus
-                | packets::PacketId::ServerToClientHandshake
-                | packets::PacketId::ResourcePacksInfo
-                | packets::PacketId::StartGame
-                | packets::PacketId::Disconnect
-                | packets::PacketId::PacketViolationWarning
-        ) {
-            eprintln!("unused packet during negotiation: {}", header.id);
-            continue;
-        }
-        let packet = packets::Packet::decode_from(header.id, Peer::Server, &mut reader)?;
-        log_unused(&reader);
-        match packet {
-            packets::Packet::Disconnect(disconnect) => {
-                return Err(io::Error::other(format!(
-                    "server disconnected during negotiation, reason {}",
-                    disconnect.reason.to_raw()
-                ))
-                .into());
-            }
-            packets::Packet::PacketViolationWarning(warning) => eprintln!(
-                "violation packet={} severity={} type={}",
-                warning.violation_packet_id.0,
-                warning.violation_severity.to_raw(),
-                warning.violation_type.to_raw()
-            ),
-            packet => return Ok(packet),
-        }
-    }
-}
-
-/// Counts uninterpreted trailing data without printing packet contents.
-fn log_unused(reader: &Reader<'_>) {
-    if reader.remaining() != 0 {
-        eprintln!("unused packet bytes: {}", reader.remaining());
     }
 }
