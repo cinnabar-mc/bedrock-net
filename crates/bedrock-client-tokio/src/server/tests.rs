@@ -24,6 +24,8 @@ use std::{
 
 const MARKER: &[u8] = b"prepared-send-reliable-marker";
 
+mod batching;
+
 /// Uses the fixture's one-batch deferred bound without importing application policy.
 fn deferred_bound() -> usize {
     BatchLimits::default().max_decoded_bytes
