@@ -122,6 +122,8 @@ func handle(req *serveRequest) (any, error) {
 		return offlineCurveFixtures()
 	case "offline_encoding_fixtures":
 		return offlineEncodingFixtures()
+	case "jose_headers":
+		return joseHeaderFixtures()
 	case "offline_json_contexts":
 		return offlineJSONContexts()
 	case "resolve_udp":

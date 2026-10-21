@@ -67,3 +67,6 @@ parser before returning the cases. Run `go test ./...` to check the inventories.
 `offline_json_contexts` checks duplicate fields, numeric overflow and nesting
 across standard JSON and JOSE decoding. `resolve_udp` checks one supplied UDP
 address with the local Go resolver; resolver-dependent results are not fixtures.
+
+`jose_headers` compares protected-header shapes across unverified identity,
+metadata, legacy chain, authenticated metadata and server-handshake roles.
