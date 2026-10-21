@@ -7,6 +7,9 @@ use bytes::Bytes;
 use nethernet_tokio::{AcceptedSession, Retired, SessionSender};
 use std::{future::Future, io, sync::Arc, time::Instant};
 
+#[cfg(test)]
+mod tests;
+
 pub(super) struct AcceptedTransport {
     state: Option<State>,
     inbox: Inbox,
@@ -163,12 +166,10 @@ impl AcceptedTransport {
 
     /// Drains the same retired reliable and unreliable receivers under the caller's cutoff.
     /// Cancellation retains their original positions and never reconstructs a Ready owner.
+    /// Reported input failures stay replayable; finalization reports new drain failures.
     pub(super) async fn finish_close(&mut self) -> io::Result<()> {
         self.close();
         while self.inbox.pop().is_some() {}
-        if let Some(error) = &self.input_failure {
-            return Err(io::Error::new(error.kind(), Arc::clone(error)));
-        }
         let State::Retired(accepted) = self.state.as_mut().expect("retained retirement") else {
             unreachable!("close consumed established admission")
         };
