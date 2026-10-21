@@ -1177,6 +1177,10 @@ mod login {
                 cached,
             };
             let rust = verify_authenticated_request(&request, &case_verifier, now, LIMIT);
+            if rust.is_ok() != go {
+                client_mismatches.push(fixture["name"].clone());
+                continue;
+            }
             if let Ok(login) = &rust {
                 assert_eq!(
                     login.nonce(),
@@ -1203,9 +1207,6 @@ mod login {
                     "{}",
                     fixture["name"]
                 );
-            }
-            if rust.is_ok() != go {
-                client_mismatches.push(fixture["name"].clone());
             }
         }
         assert!(
