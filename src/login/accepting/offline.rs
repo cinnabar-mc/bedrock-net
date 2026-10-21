@@ -4,7 +4,9 @@ use super::{ClientExchangeKey, client_data};
 use serde_json::value::RawValue;
 
 /// Untrusted identity text retained without an authenticated player projection.
+#[derive(Default)]
 pub(super) struct Claims {
+    pub(super) name: String,
     pub(super) xuid: String,
     pub(super) uuid: String,
     pub(super) projected_uuid: String,
@@ -38,7 +40,6 @@ pub struct OfflineLogin {
     signing_key: ClientExchangeKey,
     exchange_key: ClientExchangeKey,
     metadata: client_data::Payload,
-    display_name: String,
 }
 
 impl OfflineLogin {
@@ -55,7 +56,7 @@ impl OfflineLogin {
     /// Borrows validated presentation; unauthenticated requests use ThirdPartyName.
     /// This accessor grants no provider or world identity authority.
     pub fn display_name(&self) -> &str {
-        &self.display_name
+        &self.identity.name
     }
 
     /// Borrows validated client JSON, retaining its original spelling for valid UTF-8.
