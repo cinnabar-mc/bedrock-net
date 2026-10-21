@@ -38,6 +38,91 @@ fn offline_options() -> DirectedLanConfig {
     }
 }
 
+/// A rejected owner must release a configured socket before its alternative allocates that same port.
+#[tokio::test]
+async fn native_fixed_port_candidates_retain_the_alternative_after_original_owner_failure() {
+    let _spawn = CHILD_SPAWN.lock().await;
+    tokio::time::timeout(TEST_TIMEOUT, async {
+        let first = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let second = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let addresses = [first.local_addr().unwrap(), second.local_addr().unwrap()];
+        let reservation = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let local = reservation.local_addr().unwrap();
+        drop(reservation);
+        let (bound, mut binding) = tokio::sync::oneshot::channel();
+        let (reject, rejection) = tokio::sync::oneshot::channel();
+        let mut bound = Some(bound);
+        let mut rejection = Some(rejection);
+        let connecting = resolved(
+            addresses.into_iter(),
+            true,
+            Instant::now() + TEST_TIMEOUT,
+            |address| {
+                let first = address == addresses[0];
+                let bound = first.then(|| bound.take().unwrap());
+                let rejection = first.then(|| rejection.take().unwrap());
+                async move {
+                    let socket = UdpSocket::bind(local).await?;
+                    if let Some(rejection) = rejection {
+                        bound.unwrap().send(socket.local_addr()?).unwrap();
+                        rejection.await.unwrap();
+                        drop(socket);
+                        Err(io::Error::new(
+                            io::ErrorKind::ConnectionRefused,
+                            "original fixture candidate rejected negotiation",
+                        ))
+                    } else {
+                        Ok((address, socket))
+                    }
+                }
+            },
+        );
+        tokio::pin!(connecting);
+        assert!(futures::poll!(&mut connecting).is_pending());
+        assert_eq!(binding.try_recv().unwrap(), local);
+        assert_eq!(
+            UdpSocket::bind(local).await.unwrap_err().kind(),
+            io::ErrorKind::AddrInUse,
+            "the original first attempt must actually own the configured port"
+        );
+        reject.send(()).unwrap();
+        let connected = connecting.await;
+        let exchange: io::Result<_> = async {
+            let (selected, socket) = connected.as_ref().map_err(|error| {
+                io::Error::new(error.kind(), "configured-port alternatives did not connect")
+            })?;
+            socket.send_to(b"same configured owner", *selected).await?;
+            let mut body = [0; 64];
+            let (length, source) = second.recv_from(&mut body).await?;
+            let delivered = body[..length].to_vec();
+            second.send_to(b"original alternative", source).await?;
+            let (length, peer) = socket.recv_from(&mut body).await?;
+            Ok((*selected, source, peer, delivered, body[..length].to_vec()))
+        }
+        .await;
+        let connected = connected.map(drop);
+        drop((first, second));
+        let _local_released = UdpSocket::bind(local)
+            .await
+            .expect("the original configured socket retired");
+        let _first_released = UdpSocket::bind(addresses[0])
+            .await
+            .expect("the original rejected endpoint retired");
+        let _second_released = UdpSocket::bind(addresses[1])
+            .await
+            .expect("the original alternative endpoint retired");
+        connected.expect("a valid alternative was discarded while the original port was held");
+        let (selected, source, peer, delivered, reply) = exchange.unwrap();
+        assert_eq!(selected, addresses[1]);
+        assert_eq!(source, local);
+        assert_eq!(peer, addresses[1]);
+        assert_eq!(delivered, b"same configured owner");
+        assert_eq!(reply, b"original alternative");
+    })
+    .await
+    .expect("finite configured-port alternative fixture stalled");
+}
+
 /// A real localhost answer remains usable when an unsupported IPv6 candidate precedes it.
 #[tokio::test]
 async fn native_lan_resolution_skips_ipv6_and_keeps_the_ready_ipv4_owner() {

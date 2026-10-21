@@ -13,14 +13,14 @@ use futures::{StreamExt, stream::FuturesUnordered};
 use std::{collections::HashSet, future::Future, io, net::SocketAddr, time::Instant};
 
 /// Races only explicit compatible addresses; dropping the future drops all losing owners.
-async fn resolved<T>(
+async fn resolved<T, R>(
     addresses: impl Iterator<Item = SocketAddr>,
     ipv4_only: bool,
     deadline: tokio::time::Instant,
     mut connect: impl FnMut(SocketAddr) -> T,
-) -> io::Result<super::transport::Transport>
+) -> io::Result<R>
 where
-    T: Future<Output = io::Result<super::transport::Transport>>,
+    T: Future<Output = io::Result<R>>,
 {
     before_deadline(deadline, async {
         let mut candidates = FuturesUnordered::new();
