@@ -1234,4 +1234,82 @@ mod login {
         }
         ledger.finish("login/");
     }
+
+    #[test]
+    fn metadata_url_constraints_match_signed_go_requests() {
+        let Some(mut oracle) = oracle() else { return };
+        let key = SigningKey::from_slice(&[7; 48]).unwrap();
+        let public = STANDARD.encode(public_der(&key));
+        let header = json!({"alg":"ES384", "x5u":public});
+        let provider = Provider(*key.verifying_key());
+        let now = UNIX_EPOCH + Duration::from_secs(NOW);
+        let token = sign(
+            &key,
+            &header,
+            &serde_json::to_vec(
+                &json!({"iss":ISSUER,"exp":4102444800u64,"xid":"123","cpk":public}),
+            )
+            .unwrap(),
+        );
+        let modern = sign(
+            &key,
+            &header,
+            &serde_json::to_vec(&json!({"cpk":public,"xid":"","xname":"TokenName"})).unwrap(),
+        );
+        for address in [
+            "https://example.invalid:19132:19132",
+            "HTTPS://example.invalid:1:1",
+            "https://example.invalid:19132",
+            "https://example.invalid:1:2",
+            "https://:1:1",
+            "https://example.invalid::",
+            "https://example.invalid:01:01",
+            "https://example.invalid:1/path:1",
+            "https://example.invalid:1/?bad%zz:1",
+            "https://example.invalid:1/#fragment:1",
+            "https://example.invalid:1/#bad%zz:1",
+            "https://example.invalid:1/#line\n:1",
+            "https://example.invalid:1/?line\n:1",
+            "https://%ff.invalid:1:1",
+            "https://%41.invalid:1:1",
+            "https://u%ff:p@example.invalid:1:1",
+            "https://u%zz:p@example.invalid:1:1",
+            "https://[::1]:1:1",
+            "https://[fe80::1%25eth0]:1:1",
+            "https://[fe80::1%25]:1:1",
+            "https://[invalid]:1:1",
+            "https://::1:1:1",
+            "https://[::1%25%ff]:1:1",
+            "other://example.invalid:1:1",
+            "http://example.invalid:1:1",
+        ] {
+            let mut data = client_data();
+            data["ServerAddress"] = json!(address);
+            let client = sign(&key, &header, &serde_json::to_vec(&data).unwrap());
+            let go_request = frame(
+                &serde_json::to_vec(&json!({"Token":modern})).unwrap(),
+                client.as_bytes(),
+            );
+            let go = oracle.call(json!({"op":"login_parse", "request":b64(&go_request)}));
+            let request = frame(
+                &serde_json::to_vec(&json!({"AuthenticationType":0,"Token":token})).unwrap(),
+                client.as_bytes(),
+            );
+            let rust = verify_authenticated_request(
+                &request,
+                &CaseVerifier {
+                    provider: &provider,
+                    cached: None,
+                },
+                now,
+                LIMIT,
+            );
+            assert_eq!(
+                rust.is_ok(),
+                go["accepted"].as_bool().unwrap(),
+                "{address:?}: {:?}",
+                rust.as_ref().err()
+            );
+        }
+    }
 }

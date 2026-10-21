@@ -73,105 +73,46 @@ pub(super) fn resolution(address: &str) -> Option<Option<String>> {
     })
 }
 
-/// Checks Go URL host escaping and returns decoded bytes without WHATWG repairs.
-fn unescape(value: &str, host: bool, zone: bool) -> Option<Vec<u8>> {
-    let bytes = value.as_bytes();
-    let mut result = Vec::with_capacity(bytes.len());
-    let mut i = 0;
-    while i < bytes.len() {
-        let b = bytes[i];
-        if b == b'%' {
-            let escaped = bytes.get(i + 1..i + 3)?;
-            if !escaped.iter().all(u8::is_ascii_hexdigit) {
-                return None;
-            }
-            let n = u8::from_str_radix(std::str::from_utf8(escaped).ok()?, 16).ok()?;
-            if host && n < 128 && n != b'%' {
-                return None;
-            }
-            if zone && n != b'%' && n != b' ' && !host_byte(n) {
-                return None;
-            }
-            result.push(n);
-            i += 3;
-        } else {
-            if (host || zone) && b < 128 && !host_byte(b) {
-                return None;
-            }
-            result.push(b);
-            i += 1;
-        }
-    }
-    Some(result)
-}
-
-/// Recognizes ASCII bytes permitted in Go hosts and percent-encoded zones.
-fn host_byte(b: u8) -> bool {
-    b.is_ascii_alphanumeric() || b"-_.~!$&'()*+,;=:[]<>\"".contains(&b)
-}
-
-/// Applies net/url syntax and the baseline's scheme, host and duplicated-port checks.
+/// Adds the metadata owner's HTTP scheme, IPv6 and duplicated-port requirements to Go URL syntax.
 fn valid_url(address: &str) -> bool {
     let Some((inner, outer_port)) = address.rsplit_once(':') else {
         return false;
     };
-    let (inner, fragment) = inner
-        .split_once('#')
-        .map_or((inner, None), |(r, f)| (r, Some(f)));
-    if inner.bytes().any(|b| b < 32 || b == 127) {
+    if inner.bytes().any(|byte| byte < 32 || byte == 127) {
         return false;
     }
-    let Some((scheme, rest)) = inner.split_once("://") else {
+    let Some((scheme, _)) = inner.split_once("://") else {
         return false;
     };
     if !scheme.eq_ignore_ascii_case("http") && !scheme.eq_ignore_ascii_case("https") {
         return false;
     }
-    if fragment.is_some_and(|f| unescape(f, false, false).is_none()) {
-        return false;
-    }
-    let rest = rest.split_once('?').map_or(rest, |(r, _)| r);
-    let (authority, path) = rest.split_once('/').unwrap_or((rest, ""));
-    if unescape(path, false, false).is_none() {
-        return false;
-    }
-    let host = if let Some((user, host)) = authority.rsplit_once('@') {
-        if !user
-            .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || b"-._:~!$&'()*+,;=%@".contains(&b))
-            || unescape(user, false, false).is_none()
-        {
-            return false;
-        }
-        host
-    } else {
-        authority
-    };
-    let Some((hostname, port)) = host.rsplit_once(':') else {
+    let Some(host) = crate::login::url::parse(inner) else {
         return false;
     };
-    if port.is_empty() || !port.bytes().all(|b| b.is_ascii_digit()) || port != outer_port {
+    let Some(colon) = host.iter().rposition(|byte| *byte == b':') else {
+        return false;
+    };
+    let (hostname, port) = (&host[..colon], &host[colon + 1..]);
+    if port.is_empty() || !port.iter().all(u8::is_ascii_digit) || port != outer_port.as_bytes() {
         return false;
     }
-    if hostname.rfind('[').is_some_and(|index| index > 0) {
-        return false;
-    }
-    if hostname.starts_with('[') {
-        let Some(ip) = hostname.strip_prefix('[').and_then(|h| h.strip_suffix(']')) else {
+    if hostname.starts_with(b"[") {
+        let Some(ip) = hostname
+            .strip_prefix(b"[")
+            .and_then(|ip| ip.strip_suffix(b"]"))
+        else {
             return false;
         };
         let (ip, zone) = ip
-            .split_once("%25")
-            .map_or((ip, None), |(ip, z)| (ip, Some(z)));
-        if unescape(ip, true, false).is_none()
-            || zone.is_some_and(|z| z.is_empty() || unescape(z, false, true).is_none())
-        {
-            return false;
-        }
-        ip.parse::<Ipv6Addr>().is_ok()
+            .iter()
+            .position(|byte| *byte == b'%')
+            .map_or((ip, None), |index| (&ip[..index], Some(&ip[index + 1..])));
+        zone != Some(b"".as_slice())
+            && std::str::from_utf8(ip)
+                .ok()
+                .is_some_and(|ip| ip.parse::<Ipv6Addr>().is_ok())
     } else {
-        !hostname.contains(':')
-            && !hostname.contains('[')
-            && unescape(hostname, true, false).is_some()
+        !hostname.contains(&b':') && !hostname.contains(&b'[')
     }
 }
