@@ -25,6 +25,7 @@ use std::{
 const MARKER: &[u8] = b"prepared-send-reliable-marker";
 
 mod batching;
+mod limits_and_time;
 
 /// Uses the fixture's one-batch deferred bound without importing application policy.
 fn deferred_bound() -> usize {
