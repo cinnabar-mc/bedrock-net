@@ -115,6 +115,9 @@ fn valid_url(address: &str) -> bool {
     let Some((inner, outer_port)) = address.rsplit_once(':') else {
         return false;
     };
+    let (inner, fragment) = inner
+        .split_once('#')
+        .map_or((inner, None), |(r, f)| (r, Some(f)));
     if inner.bytes().any(|b| b < 32 || b == 127) {
         return false;
     }
@@ -124,9 +127,6 @@ fn valid_url(address: &str) -> bool {
     if !scheme.eq_ignore_ascii_case("http") && !scheme.eq_ignore_ascii_case("https") {
         return false;
     }
-    let (rest, fragment) = rest
-        .split_once('#')
-        .map_or((rest, None), |(r, f)| (r, Some(f)));
     if fragment.is_some_and(|f| unescape(f, false, false).is_none()) {
         return false;
     }
