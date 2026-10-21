@@ -95,7 +95,7 @@ fn unescape(value: &str, host: bool, zone: bool) -> Option<Vec<u8>> {
             result.push(n);
             i += 3;
         } else {
-            if (host || zone) && !host_byte(b) {
+            if (host || zone) && b < 128 && !host_byte(b) {
                 return None;
             }
             result.push(b);
@@ -105,9 +105,9 @@ fn unescape(value: &str, host: bool, zone: bool) -> Option<Vec<u8>> {
     Some(result)
 }
 
-/// Recognizes net/url's unescaped host-byte set, including opaque non-ASCII bytes.
+/// Recognizes ASCII bytes permitted in Go hosts and percent-encoded zones.
 fn host_byte(b: u8) -> bool {
-    b >= 128 || b.is_ascii_alphanumeric() || b"-_.~!$&'()*+,;=:[]<>\"".contains(&b)
+    b.is_ascii_alphanumeric() || b"-_.~!$&'()*+,;=:[]<>\"".contains(&b)
 }
 
 /// Applies net/url syntax and the baseline's scheme, host and duplicated-port checks.
@@ -151,6 +151,9 @@ fn valid_url(address: &str) -> bool {
         return false;
     };
     if port.is_empty() || !port.bytes().all(|b| b.is_ascii_digit()) || port != outer_port {
+        return false;
+    }
+    if hostname.rfind('[').is_some_and(|index| index > 0) {
         return false;
     }
     if hostname.starts_with('[') {
