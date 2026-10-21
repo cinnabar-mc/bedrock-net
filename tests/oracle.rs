@@ -147,7 +147,7 @@ fn unb64(value: &Value) -> Vec<u8> {
 
 #[cfg(feature = "login")]
 #[test]
-fn modern_offline_login_matches_go_parse_decisions() {
+fn offline_login_matches_all_go_parse_decisions() {
     use bedrock_net::login::parse_offline_request;
     use std::time::{Duration, UNIX_EPOCH};
 
@@ -159,9 +159,6 @@ fn modern_offline_login_matches_go_parse_decisions() {
     let mut mismatches = Vec::new();
     for fixture in fixtures {
         let name = fixture["name"].as_str().unwrap();
-        if name.starts_with("legacy_") {
-            continue;
-        }
         let request = unb64(&fixture["request"]);
         let result = parse_offline_request(
             &request,
@@ -196,12 +193,12 @@ fn modern_offline_login_matches_go_parse_decisions() {
         }
     }
     assert!(mismatches.is_empty(), "offline mismatches: {mismatches:?}");
-    assert_eq!(accepted, 23);
+    assert_eq!(accepted, 28);
 }
 
 #[cfg(feature = "login")]
 #[test]
-fn modern_offline_signing_curves_match_go() {
+fn offline_signing_curves_match_go() {
     use bedrock_net::login::parse_offline_request;
     use std::time::{Duration, UNIX_EPOCH};
     let Some(mut oracle) = oracle() else { return };
@@ -211,9 +208,6 @@ fn modern_offline_signing_curves_match_go() {
     let mut checked = 0;
     for fixture in fixtures.as_array().unwrap() {
         let name = fixture["name"].as_str().unwrap();
-        if name.contains("_legacy_") {
-            continue;
-        }
         checked += 1;
         let request = unb64(&fixture["request"]);
         let result = parse_offline_request(
@@ -245,10 +239,44 @@ fn modern_offline_signing_curves_match_go() {
                 fixture["p384"].as_bool().unwrap(),
                 "{name}"
             );
+            assert_eq!(login.display_name(), "CurveName", "{name}");
         }
     }
-    assert_eq!(checked, 47);
-    assert_eq!(accepted, 10);
+    assert_eq!(checked, 52);
+    assert_eq!(accepted, 14);
+}
+
+#[cfg(feature = "login")]
+#[test]
+fn offline_numeric_dates_match_go_internal_time() {
+    use bedrock_net::login::parse_offline_request;
+    use std::time::{Duration, UNIX_EPOCH};
+    let Some(mut oracle) = oracle() else { return };
+    let cases = oracle.call(json!({"op":"offline_time_fixtures"}));
+    let cases = cases.as_array().unwrap();
+    assert_eq!(cases.len(), 117);
+    let mut anchors = 0;
+    let mut mismatches = Vec::new();
+    for case in cases {
+        anchors += usize::from(case["parse_anchor"].as_bool().unwrap());
+        let bytes = unb64(&case["request"]);
+        let now = UNIX_EPOCH
+            + Duration::new(
+                case["now"].as_u64().unwrap(),
+                case["nanos"].as_u64().unwrap() as u32,
+            );
+        let result = parse_offline_request(&bytes, now, bytes.len(), |_| panic!("numeric address"));
+        if result.is_ok() != case["accepted"].as_bool().unwrap() {
+            mismatches.push(format!(
+                "{}: Rust {:?}, Go {}",
+                case["name"],
+                result.as_ref().err(),
+                case["accepted"]
+            ));
+        }
+    }
+    assert_eq!(anchors, 72);
+    assert!(mismatches.is_empty(), "Go time mismatches: {mismatches:?}");
 }
 
 /// Tracks mismatches so the divergence table is checked in both directions.
@@ -1425,8 +1453,9 @@ mod login {
         );
     }
 
+    /// Claimed account UUID spellings follow Go without turning them into trusted identity.
     #[test]
-    fn modern_offline_uuid_spellings_match_go() {
+    fn offline_claimed_uuid_spellings_match_go() {
         use bedrock_net::login::parse_offline_request;
         let Some(mut oracle) = oracle() else { return };
         let key = SigningKey::from_slice(&[7; 48]).unwrap();
@@ -1436,6 +1465,8 @@ mod login {
             "DeviceOS":1, "GameVersion":"1.26.51", "LanguageCode":"en_US",
             "SkinId":"synthetic", "ThirdPartyName":"MetadataName", "ServerAddress":"127.0.0.1:19132",
         })).unwrap());
+        let now = UNIX_EPOCH + Duration::from_secs(NOW);
+        let mut mismatches = Vec::new();
         for (uuid, expected) in [
             ("00000000-0000-4000-8000-000000000001", true),
             ("00000000000040008000000000000001", true),
@@ -1447,29 +1478,35 @@ mod login {
             ("urn:uuix:00000000-0000-4000-8000-000000000001", false),
             ("[00000000-0000-4000-8000-00000000000z]", false),
         ] {
-            let claims = json!({"cpk":public, "xid":"123", "leguuid":uuid, "xname":"TokenName"});
-            let token = sign(&key, &header, &serde_json::to_vec(&claims).unwrap());
-            let request = frame(
-                &serde_json::to_vec(&json!({"Token":token})).unwrap(),
-                client.as_bytes(),
-            );
-            let go = oracle.call(json!({"op":"login_parse", "request":b64(&request)}));
-            assert_eq!(go["accepted"], expected, "{uuid}");
-            let result = parse_offline_request(
-                &request,
-                UNIX_EPOCH + Duration::from_secs(NOW),
-                LIMIT,
-                |_| panic!("numeric address"),
-            );
-            assert_eq!(
-                result.is_ok(),
-                expected,
-                "{uuid}: {:?}",
-                result.as_ref().err()
-            );
-            if let Ok(login) = result {
-                assert_eq!(login.claimed_identity(), uuid);
+            for legacy in [false, true] {
+                let claims = if legacy {
+                    json!({"extraData":{"XUID":"123", "identity":uuid, "displayName":"TokenName"}})
+                } else {
+                    json!({"cpk":public, "xid":"123", "leguuid":uuid, "xname":"TokenName"})
+                };
+                let token = sign(&key, &header, &serde_json::to_vec(&claims).unwrap());
+                let envelope = if legacy {
+                    json!({"chain":[token]})
+                } else {
+                    json!({"Token":token})
+                };
+                let request = frame(&serde_json::to_vec(&envelope).unwrap(), client.as_bytes());
+                let go = oracle.call(json!({"op":"login_parse", "request":b64(&request)}));
+                assert_eq!(go["accepted"], expected, "legacy={legacy}, uuid={uuid}");
+                let rust =
+                    parse_offline_request(&request, now, LIMIT, |_| panic!("numeric address"));
+                if rust.is_ok() != expected {
+                    mismatches.push(format!("legacy={legacy}, uuid={uuid}"));
+                }
+                if let Ok(login) = rust {
+                    assert_eq!(login.legacy_uuid_claim(), uuid);
+                    assert_eq!(login.claimed_identity(), uuid);
+                    assert_eq!(login.claimed_xuid(), "123");
+                    assert_eq!(login.display_name(), go["display_name"]);
+                    assert_eq!(go["authenticated"], false);
+                }
             }
         }
+        assert!(mismatches.is_empty(), "UUID mismatches: {mismatches:?}");
     }
 }

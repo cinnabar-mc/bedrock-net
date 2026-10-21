@@ -1,4 +1,5 @@
-//! Opaque offline Login capability, with account claims kept separate from provider authority.
+//! Offline Login capability, with account claims kept separate from provider authority.
+// Chain rules follow gophertunnel under MIT; see LICENSE-GOPHERTUNNEL.
 
 use super::{ClientExchangeKey, LoginError, client_data, jwt};
 use std::time::SystemTime;
@@ -6,6 +7,8 @@ use std::time::SystemTime;
 mod claims;
 use claims::{Identity, Registered};
 use jwt::Object;
+
+const MOJANG_KEY: &str = "MHYwEAYHKoZIzj0CAQYFK4EEACIDYgAECRXueJeTDqNRRgJi/vlRufByu/2G0i2Ebt6YMar5QX/R0DIIyrJMcUpruK4QveTfJSTp3Shlq4Gk34cD/4GUWwkv0DVuzeuB+tXija7HBxii03NHDbPAD0AKnLr2wdAp";
 use serde_json::value::RawValue;
 
 /// Untrusted identity text retained without an authenticated player projection.
@@ -107,20 +110,21 @@ impl OfflineLogin {
     }
 }
 
-/// Parses a modern offline Login without granting provider authority.
+/// Parses an explicitly offline Login without provider authority.
 ///
-/// This entry point requires a nonempty identity Token; legacy chains are not yet supported.
-/// Identity signatures, issuer, audience and time are deliberately unverified. Metadata must
-/// verify under the identity-selected key and pass the shared ClientData validator.
-/// Mode 1 is unsupported. Application admission and its original deadline remain caller-owned.
+/// Modern identity signatures and policy are unverified. Legacy one- and three-token chains
+/// verify linked signatures, key updates and caller-supplied UTC. Both modes require signed
+/// metadata to pass the shared ClientData validator. Mode 1 remains unsupported.
+/// Application admission and its original connection deadline remain caller-owned.
 /// `resolve` must supply an already acquired cached UDP lookup result without blocking or I/O.
+/// The caller's byte cap applies even when the final positive length exceeds remaining input.
 ///
 /// # Errors
-/// Rejects malformed framing, unsupported authentication, invalid identity or metadata,
-/// failed metadata signatures, and required cached address results that are absent or failed.
+/// Rejects malformed framing, unsupported authentication, invalid chain/identity/metadata,
+/// failed signatures, and required cached address results that are absent or failed.
 pub fn parse_offline_request(
     request: &[u8],
-    _now: SystemTime,
+    now: SystemTime,
     max_request_bytes: usize,
     resolve: impl FnOnce(&str) -> Result<(), LoginError>,
 ) -> Result<OfflineLogin, LoginError> {
@@ -135,26 +139,31 @@ pub fn parse_offline_request(
         return Err(LoginError::UnsupportedAuthentication);
     }
     let certificate = envelope.text("Certificate")?.unwrap_or_default();
-    envelope.strings("chain")?;
+    let mut chain = envelope.strings("chain")?.unwrap_or_default();
     if !certificate.is_empty() {
-        Object::outer(certificate.as_bytes())?.strings("chain")?;
+        chain = Object::outer(certificate.as_bytes())?
+            .strings("chain")?
+            .unwrap_or_default();
     }
-    let modern = envelope
-        .text("Token")?
-        .filter(|token| !token.is_empty())
-        .ok_or(LoginError::UnsupportedAuthentication)?;
+    let modern = envelope.text("Token")?.unwrap_or_default();
     let client = take_client(&mut rest)?;
-    let token = jwt::Token::parse(&modern, max_request_bytes, true)?;
-    let claims = Object::parse(&token.payload)?;
-    Registered::default().merge(&claims)?;
-    let key = jwt::key(&claims.text("cpk")?.unwrap_or_default())?;
-    let mut identity = Identity::modern(&claims)?;
+    let (mut identity, key, legacy_rooted) = if modern.is_empty() {
+        legacy(&chain, now, max_request_bytes)?
+    } else {
+        let token = jwt::Token::parse(&modern, max_request_bytes, true)?;
+        let claims = Object::parse(&token.payload)?;
+        Registered::default().merge(&claims)?;
+        let key = jwt::key(&claims.text("cpk")?.unwrap_or_default())?;
+        (Identity::modern(&claims)?, key, false)
+    };
     let client = std::str::from_utf8(client).map_err(|_| LoginError::MalformedToken)?;
     let payload = jwt::verify_client_with(client, max_request_bytes, |input, signature| {
         key.verify_es384(input, signature)
     })?;
     let mut metadata = client_data::validate_payload(&payload, resolve)?;
-    identity.name = metadata.take_display_name();
+    if !legacy_rooted {
+        identity.name = metadata.take_display_name();
+    }
     Ok(OfflineLogin {
         identity,
         exchange_key: metadata
@@ -176,4 +185,53 @@ fn take_client<'a>(rest: &mut &'a [u8]) -> Result<&'a [u8], LoginError> {
     }
     *rest = &[];
     Ok(bytes)
+}
+
+/// Checks a one- or three-token legacy chain without creating provider authority.
+fn legacy(
+    chain: &[String],
+    now: SystemTime,
+    limit: usize,
+) -> Result<(Identity, ClientExchangeKey, bool), LoginError> {
+    if !matches!(chain.len(), 1 | 3) {
+        return Err(LoginError::UnsupportedAuthentication);
+    }
+    let first = jwt::Token::parse(&chain[0], limit, false)?;
+    let mut key = jwt::key(&first.header.key_text()?)?;
+    let mut inherited = Registered::default();
+    let mut rooted = false;
+    let mut identity = Identity::default();
+    for (index, token) in chain.iter().enumerate() {
+        let payload = jwt::verify_client_with(token, limit, |input, signature| {
+            key.verify_es384(input, signature)
+        })?;
+        let raw = client_data::parse_json(&payload)?;
+        if !client_data::jose_values(&raw) {
+            return Err(LoginError::MalformedJson);
+        }
+        let claims = Object::parse(&payload)?;
+        let mut registered = if index == 1 {
+            inherited.clone()
+        } else {
+            Registered::default()
+        };
+        registered.merge(&claims)?;
+        registered.validate(now, index > 0)?;
+        if let Some(raw) = claims.exact("identityPublicKey") {
+            let value: String =
+                serde_json::from_str(raw.get()).map_err(|_| LoginError::MalformedJson)?;
+            key = jwt::key(&value)?;
+        }
+        if index == 0 {
+            rooted = key.public_key_der() == jwt::key(MOJANG_KEY)?.public_key_der();
+            inherited = registered;
+        }
+        if index == chain.len() - 1 {
+            identity = Identity::legacy(&claims)?;
+        }
+    }
+    if chain.len() == 3 && rooted == identity.xuid.is_empty() {
+        return Err(LoginError::Authentication);
+    }
+    Ok((identity, key, chain.len() == 3 && rooted))
 }

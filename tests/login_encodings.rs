@@ -1,9 +1,10 @@
-//! Compact JWT encoding comparisons for authenticated metadata and server handshakes.
+//! Compact JWT and header comparisons across offline, authenticated and server roles.
 #![cfg(feature = "login")]
 
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use bedrock_net::login::{
-    LoginError, LoginVerifier, TrustedIdentity, finish_key_exchange, verify_authenticated_request,
+    LoginError, LoginVerifier, TrustedIdentity, finish_key_exchange, parse_offline_request,
+    verify_authenticated_request,
 };
 use p384::ecdsa::{SigningKey, VerifyingKey};
 use serde_json::{Value, json};
@@ -74,6 +75,34 @@ fn compact_jwt_encodings_match_go_in_both_directions() {
         let payload = STANDARD
             .decode(fixture["payload"].as_str().unwrap())
             .unwrap();
+        for role in ["request", "legacy"] {
+            let bytes = STANDARD.decode(fixture[role].as_str().unwrap()).unwrap();
+            let result =
+                parse_offline_request(&bytes, now, bytes.len(), |_| panic!("numeric address"));
+            let expected = if role == "legacy" {
+                fixture["legacy_accepted"].as_bool().unwrap()
+            } else {
+                expected
+            };
+            if result.is_ok() != expected {
+                mismatches.push(format!("{name}/{role}: {:?}", result.as_ref().err()));
+            }
+            if let Ok(login) = result {
+                assert_eq!(
+                    login.client_data_json_bytes(),
+                    payload.trim_ascii(),
+                    "{name}/{role}"
+                );
+                assert_eq!(login.nonce(), "nonce", "{name}/{role}");
+            }
+            assert!(
+                matches!(
+                    parse_offline_request(&bytes, now, bytes.len() - 1, |_| panic!("byte cap")),
+                    Err(LoginError::LimitExceeded { .. })
+                ),
+                "{name}/{role}"
+            );
+        }
         let bytes = STANDARD
             .decode(fixture["authenticated"].as_str().unwrap())
             .unwrap();
@@ -112,6 +141,54 @@ fn compact_jwt_encodings_match_go_in_both_directions() {
 }
 
 #[test]
+fn shared_jose_headers_match_go_for_each_role() {
+    let Some(fixtures) = fixtures("jose_headers") else {
+        return;
+    };
+    assert_eq!(fixtures.len(), 37);
+    let mut scalar = [0; 48];
+    scalar[47] = 7;
+    let key = SigningKey::from_slice(&scalar).unwrap();
+    let provider = Provider(*key.verifying_key());
+    let now = UNIX_EPOCH + Duration::from_secs(1_800_000_000);
+    let mut mismatches = Vec::new();
+    for fixture in fixtures {
+        let name = fixture["name"].as_str().unwrap();
+        let requests = fixture["requests"].as_object().unwrap();
+        assert_eq!(requests.len(), 5);
+        assert_eq!(fixture["accepted"].as_object().unwrap().len(), 6);
+        for role in ["modern", "metadata", "legacy", "linked", "authenticated"] {
+            let request = STANDARD.decode(requests[role].as_str().unwrap()).unwrap();
+            let expected = fixture["accepted"][role].as_bool().unwrap();
+            let actual = if role == "authenticated" {
+                verify_authenticated_request(&request, &provider, now, request.len()).map(|login| {
+                    assert_eq!(login.signing_key(), key.verifying_key());
+                    assert_eq!(login.xuid(), "123");
+                })
+            } else {
+                parse_offline_request(&request, now, request.len(), |_| panic!("numeric address"))
+                    .map(|login| {
+                        assert_eq!(login.signing_key().as_p384(), Some(key.verifying_key()));
+                        assert_eq!(login.display_name(), "MetadataName");
+                    })
+            };
+            if actual.is_ok() != expected {
+                mismatches.push(format!("{name}/{role}: {:?}", actual.err()));
+            }
+        }
+        let token = fixture["server"].as_str().unwrap();
+        let result = finish_key_exchange(&key, token, token.len());
+        if result.is_ok() != fixture["accepted"]["server"].as_bool().unwrap() {
+            mismatches.push(format!("{name}/server: {:?}", result.err()));
+        }
+    }
+    assert!(
+        mismatches.is_empty(),
+        "shared header mismatches: {mismatches:?}"
+    );
+}
+
+#[test]
 fn certificate_and_reference_shapes_match_go() {
     let Some(cases) = fixtures("jose_admission") else {
         return;
@@ -143,39 +220,4 @@ fn certificate_and_reference_shapes_match_go() {
         mismatches.is_empty(),
         "Certificate admission mismatches: {mismatches:?}"
     );
-}
-
-#[test]
-fn shared_headers_match_go_in_authenticated_and_server_roles() {
-    let Some(fixtures) = fixtures("jose_headers") else {
-        return;
-    };
-    assert_eq!(fixtures.len(), 37);
-    let mut scalar = [0; 48];
-    scalar[47] = 7;
-    let key = SigningKey::from_slice(&scalar).unwrap();
-    let provider = Provider(*key.verifying_key());
-    let now = UNIX_EPOCH + Duration::from_secs(1_800_000_000);
-    for fixture in fixtures {
-        let request = STANDARD
-            .decode(fixture["requests"]["authenticated"].as_str().unwrap())
-            .unwrap();
-        let result = verify_authenticated_request(&request, &provider, now, request.len());
-        assert_eq!(
-            result.is_ok(),
-            fixture["accepted"]["authenticated"].as_bool().unwrap(),
-            "{}: {:?}",
-            fixture["name"],
-            result.err()
-        );
-        let token = fixture["server"].as_str().unwrap();
-        let result = finish_key_exchange(&key, token, token.len());
-        assert_eq!(
-            result.is_ok(),
-            fixture["accepted"]["server"].as_bool().unwrap(),
-            "{}: {:?}",
-            fixture["name"],
-            result.err()
-        );
-    }
 }
