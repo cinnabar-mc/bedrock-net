@@ -138,6 +138,16 @@ func verifyFrames(b *testing.B, frames [][]byte, compression packet.Compression,
 
 func ignore([]byte) error { return nil }
 
+// reportWireBytes records complete encoded frames, including all batch headers.
+func reportWireBytes(b *testing.B, frames [][]byte) {
+	b.Helper()
+	var size int
+	for _, frame := range frames {
+		size += len(frame)
+	}
+	b.ReportMetric(float64(size), "wire-B/op")
+}
+
 // codecGroup runs encode/decode style cases for one compression setting (nil = before NetworkSettings).
 func codecGroup(b *testing.B, group string, compression packet.Compression) {
 	c := load(b)
@@ -166,6 +176,9 @@ func codecGroup(b *testing.B, group string, compression packet.Compression) {
 				verifyFrames(b, w.frames, compression, nil, pks)
 				e := enc(&capture{})
 				b.ResetTimer()
+				if compression != nil {
+					reportWireBytes(b, w.frames)
+				}
 				for range b.N {
 					if err := e.Encode(pks); err != nil {
 						b.Fatal(err)
@@ -186,6 +199,9 @@ func codecGroup(b *testing.B, group string, compression packet.Compression) {
 					d.EnableCompression(compression, 0)
 				}
 				b.ResetTimer()
+				if compression != nil {
+					reportWireBytes(b, w.frames)
+				}
 				for range b.N {
 					if err := d.DecodeFunc(ignore); err != nil {
 						b.Fatal(err)
