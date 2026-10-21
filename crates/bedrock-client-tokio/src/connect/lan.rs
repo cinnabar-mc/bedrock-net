@@ -108,7 +108,7 @@ async fn connect_route(
     };
     let signaling = LanSignaling::with_config(
         rand::random(),
-        local,
+        SocketAddr::new(local.ip(), 0),
         LanConfig {
             broadcast_address: Some(address),
             ..LanConfig::default()
