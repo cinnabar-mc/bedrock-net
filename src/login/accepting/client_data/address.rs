@@ -73,14 +73,11 @@ pub(super) fn resolution(address: &str) -> Option<Option<String>> {
     })
 }
 
-/// Adds the metadata owner's HTTP scheme, IPv6 and duplicated-port requirements to Go URL syntax.
+/// Adds the metadata owner's HTTP scheme and duplicated-port requirements to Go URL syntax.
 fn valid_url(address: &str) -> bool {
     let Some((inner, outer_port)) = address.rsplit_once(':') else {
         return false;
     };
-    if inner.bytes().any(|byte| byte < 32 || byte == 127) {
-        return false;
-    }
     let Some((scheme, _)) = inner.split_once("://") else {
         return false;
     };
@@ -93,26 +90,6 @@ fn valid_url(address: &str) -> bool {
     let Some(colon) = host.iter().rposition(|byte| *byte == b':') else {
         return false;
     };
-    let (hostname, port) = (&host[..colon], &host[colon + 1..]);
-    if port.is_empty() || !port.iter().all(u8::is_ascii_digit) || port != outer_port.as_bytes() {
-        return false;
-    }
-    if hostname.starts_with(b"[") {
-        let Some(ip) = hostname
-            .strip_prefix(b"[")
-            .and_then(|ip| ip.strip_suffix(b"]"))
-        else {
-            return false;
-        };
-        let (ip, zone) = ip
-            .iter()
-            .position(|byte| *byte == b'%')
-            .map_or((ip, None), |index| (&ip[..index], Some(&ip[index + 1..])));
-        zone != Some(b"".as_slice())
-            && std::str::from_utf8(ip)
-                .ok()
-                .is_some_and(|ip| ip.parse::<Ipv6Addr>().is_ok())
-    } else {
-        !hostname.contains(&b':') && !hostname.contains(&b'[')
-    }
+    let port = &host[colon + 1..];
+    !port.is_empty() && port.iter().all(u8::is_ascii_digit) && port == outer_port.as_bytes()
 }

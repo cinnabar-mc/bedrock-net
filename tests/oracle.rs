@@ -1256,6 +1256,7 @@ mod login {
             &header,
             &serde_json::to_vec(&json!({"cpk":public,"xid":"","xname":"TokenName"})).unwrap(),
         );
+        let mut mismatches = Vec::new();
         for address in [
             "https://example.invalid:19132:19132",
             "HTTPS://example.invalid:1:1",
@@ -1304,12 +1305,17 @@ mod login {
                 now,
                 LIMIT,
             );
-            assert_eq!(
-                rust.is_ok(),
-                go["accepted"].as_bool().unwrap(),
-                "{address:?}: {:?}",
-                rust.as_ref().err()
-            );
+            if rust.is_ok() != go["accepted"].as_bool().unwrap() {
+                mismatches.push(format!(
+                    "{address:?}: Rust {:?}, Go {}",
+                    rust.as_ref().err(),
+                    go["accepted"]
+                ));
+            }
         }
+        assert!(
+            mismatches.is_empty(),
+            "URL admission mismatches: {mismatches:?}"
+        );
     }
 }
