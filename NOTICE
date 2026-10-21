@@ -55,3 +55,5 @@ Gophertunnel Login owner (MIT) and Go encoding/json, net/url, unicode and x/text
 (BSD-3-Clause). The actual Go generator checks the reflected schema and finite
 Unicode/locale/JSON data on every oracle test run. These upstream notices are
 retained in LICENSE-MIT-gophertunnel and LICENSE-BSD-Go.
+
+URL-reference parsing follows the Go net/url package under its BSD license; see LICENSE-BSD-Go.

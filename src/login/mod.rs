@@ -13,6 +13,7 @@ mod identity;
 mod jwt;
 #[cfg(feature = "provider-verification")]
 pub mod provider;
+mod url;
 pub use accepting::{
     AuthenticatedLogin, ClientExchangeKey, LoginVerifier, OfflineLogin, TrustedIdentity,
     verify_authenticated_request,
