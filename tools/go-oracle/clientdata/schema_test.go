@@ -97,16 +97,16 @@ func nativeClientDataSchema(t *testing.T, records []nativeSchemaRecord, source n
 			strconv.Quote(row.value),
 		)
 	}
-	out.WriteString("#[derive(Clone, Copy, Debug, Eq, PartialEq)]\npub(super) enum Record {\n")
+	out.WriteString("#[derive(Clone, Copy, Debug, Eq, PartialEq)]\npub(in crate::login) enum Record {\n")
 	for _, record := range records {
 		fmt.Fprintf(&out, "    %s,\n", record.name)
 	}
-	out.WriteString("}\n\n#[derive(Clone, Copy, Debug, Eq, PartialEq)]\npub(super) enum Kind {\n")
+	out.WriteString("}\n\n#[derive(Clone, Copy, Debug, Eq, PartialEq)]\npub(in crate::login) enum Kind {\n")
 	out.WriteString("    String,\n    Integer(u8),\n    Bool,\n    OptionalBool,\n    Float64,\n" +
 		"    Slice(Record),\n    Strings(usize),\n}\n\n")
-	out.WriteString("#[derive(Clone, Copy, Debug)]\npub(super) struct Field {\n")
-	out.WriteString("    pub(super) name: &'static str,\n    pub(super) kind: Kind,\n}\n\n")
-	out.WriteString("impl Record {\n    pub(super) fn fields(self) -> &'static [Field] {\n        match self {\n")
+	out.WriteString("#[derive(Clone, Copy, Debug)]\npub(in crate::login) struct Field {\n")
+	out.WriteString("    pub(in crate::login) name: &'static str,\n    pub(in crate::login) kind: Kind,\n}\n\n")
+	out.WriteString("impl Record {\n    pub(in crate::login) fn fields(self) -> &'static [Field] {\n        match self {\n")
 	for _, record := range records {
 		fmt.Fprintf(
 			&out,

@@ -1,19 +1,10 @@
 //! Ordered struct decoding and generic JSON checks for client-signed claims.
 
+use crate::login::client_data::schema_generated::{Kind, Record};
 use serde::de::{MapAccess, Visitor};
 use serde::{Deserialize, Deserializer};
 use serde_json::{Value, value::RawValue};
 use std::{borrow::Cow, collections::BTreeMap, fmt};
-
-#[derive(Clone, Copy)]
-pub(super) struct Schema {
-    pub(super) strings: &'static [&'static str],
-    pub(super) integers: &'static [&'static str],
-    pub(super) booleans: &'static [&'static str],
-    pub(super) arrays: &'static [&'static str],
-    pub(super) key_update: bool,
-    pub(super) floats: &'static [&'static str],
-}
 
 #[derive(Default)]
 pub(super) struct Claims {
@@ -54,70 +45,77 @@ impl<'de> Deserialize<'de> for Members {
 }
 
 impl Claims {
-    /// Applies Go struct null and slice-reuse rules before final semantic validation.
-    pub(super) fn merge(&mut self, raw: &str, schema: Schema) -> Option<()> {
+    /// Applies Go null and slice-reuse rules using the shared generated field kinds.
+    pub(super) fn merge(&mut self, raw: &str, record: Record) -> Option<()> {
         if raw == "null" {
             return Some(());
         }
         let Members(members) = serde_json::from_str(raw).ok()?;
         for (key, raw) in members {
-            if schema.key_update && key == "identityPublicKey" {
+            if record == Record::Client && key == "identityPublicKey" {
                 self.key_update = Some(raw);
                 continue;
             }
-            let Some(&name) = schema
-                .strings
+            let Some(field) = record
+                .fields()
                 .iter()
-                .chain(schema.integers)
-                .chain(schema.booleans)
-                .chain(schema.arrays)
-                .chain(schema.floats)
-                .find(|name| super::super::fields::matches_field(&key, name))
+                .find(|field| super::super::fields::matches_field(&key, field.name))
             else {
                 continue;
             };
+            let name = field.name;
             let raw = raw.get();
-            if schema.arrays.contains(&name) {
-                if name == "Colors" {
-                    if raw != "null" {
-                        let colors: Vec<Box<RawValue>> = serde_json::from_str(raw).ok()?;
-                        for color in colors.iter().take(4) {
-                            if color.get() != "null" {
-                                serde_json::from_str::<String>(color.get()).ok()?;
-                            }
+            if raw == "null" && !matches!(field.kind, Kind::Slice(_)) {
+                continue;
+            }
+            let value = match field.kind {
+                Kind::Strings(length) => {
+                    let values: Vec<Box<RawValue>> = serde_json::from_str(raw).ok()?;
+                    for value in values.iter().take(length) {
+                        if value.get() != "null" {
+                            serde_json::from_str::<String>(value.get()).ok()?;
                         }
                     }
                     continue;
                 }
-                let slice = self.arrays.entry(name).or_default();
-                if raw == "null" {
-                    *slice = Slice::default();
+                Kind::Slice(record) => {
+                    let slice = self.arrays.entry(name).or_default();
+                    if raw == "null" {
+                        *slice = Slice::default();
+                        continue;
+                    }
+                    let elements: Vec<Box<RawValue>> = serde_json::from_str(raw).ok()?;
+                    if elements.is_empty() {
+                        *slice = Slice::default();
+                        continue;
+                    }
+                    slice.length = elements.len();
+                    slice
+                        .backing
+                        .resize_with(slice.backing.len().max(elements.len()), Claims::default);
+                    for (entry, raw) in slice.backing.iter_mut().zip(elements) {
+                        entry.merge(raw.get(), record)?;
+                    }
                     continue;
                 }
-                let elements: Vec<Box<RawValue>> = serde_json::from_str(raw).ok()?;
-                if elements.is_empty() {
-                    *slice = Slice::default();
-                    continue;
+                Kind::String => Value::String(serde_json::from_str(raw).ok()?),
+                Kind::Integer(bits) => {
+                    let number = raw.parse::<i64>().ok()?;
+                    match bits {
+                        64 => {}
+                        32 => {
+                            i32::try_from(number).ok()?;
+                        }
+                        _ => return None,
+                    }
+                    Value::Number(number.into())
                 }
-                slice.length = elements.len();
-                slice
-                    .backing
-                    .resize_with(slice.backing.len().max(elements.len()), Claims::default);
-                for (entry, raw) in slice.backing.iter_mut().zip(elements) {
-                    entry.merge(raw.get(), super::array_schema(name))?;
-                }
-            } else if raw != "null" {
-                let value = if schema.strings.contains(&name) {
-                    Value::String(serde_json::from_str(raw).ok()?)
-                } else if schema.integers.contains(&name) {
-                    Value::Number(raw.parse::<i64>().ok()?.into())
-                } else if schema.booleans.contains(&name) {
-                    Value::Bool(serde_json::from_str(raw).ok()?)
-                } else {
+                Kind::Bool | Kind::OptionalBool => Value::Bool(serde_json::from_str(raw).ok()?),
+                Kind::Float64 => {
                     Value::Number(serde_json::Number::from_f64(raw.parse::<f64>().ok()?)?)
-                };
-                self.scalars.insert(name, value);
-            }
+                }
+            };
+            self.scalars.insert(name, value);
         }
         Some(())
     }
