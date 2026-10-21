@@ -54,6 +54,11 @@ Raw DEFLATE and Snappy are supported; the protocol's Zlib name means raw DEFLATE
 Incoming negotiated batches select their declared algorithm independently of the
 outgoing threshold.
 
+DEFLATE uses the portable zlib-rs backend at level 6. Compression engines and
+Snappy matching tables are temporary per-call state. Compressed bytes may differ
+between compatible encoders; no encoded-byte identity is promised. The adapted
+Snappy implementation retains its [third-party notices](THIRD_PARTY_NOTICES.md).
+
 `DecodeOutcome::Dropped` means count/log the compression failure and continue.
 Batch framing and size violations return `BatchError`; all entry lengths are
 validated before any packet is exposed. Packet headers and bodies still need
