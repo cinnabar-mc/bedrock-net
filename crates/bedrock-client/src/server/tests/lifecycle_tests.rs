@@ -82,10 +82,8 @@ pub(super) fn ready_with_client(
     let (client, mut login) = client
         .login_authenticated(
             CREDENTIAL,
-            &RawValue::from_string(
-                "{\"Nonce\":\"original-nonce\",\"XUID\":\"999\",\"SkinId\":\"synthetic\"}".into(),
-            )
-            .unwrap(),
+            &RawValue::from_string("{\"Nonce\":\"superseded-nonce\",\"nonce\":\"original-nonce\",\"XUID\":\"999\",\"DeviceOS\":1,\"GameVersion\":\"1.26.51\",\"LanguageCode\":\"en_US\",\"SkinId\":\"synthetic\",\"ThirdPartyName\":\"Probe\"}".into())
+                .unwrap(),
         )
         .unwrap();
     login.client_network_version = wire::I32BE(0);

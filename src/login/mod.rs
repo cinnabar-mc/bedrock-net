@@ -14,7 +14,8 @@ mod jwt;
 #[cfg(feature = "provider-verification")]
 pub mod provider;
 pub use accepting::{
-    AuthenticatedLogin, LoginVerifier, TrustedIdentity, verify_authenticated_request,
+    AuthenticatedLogin, ClientExchangeKey, LoginVerifier, TrustedIdentity,
+    verify_authenticated_request,
 };
 
 use std::time::{SystemTime, UNIX_EPOCH};

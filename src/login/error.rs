@@ -16,9 +16,15 @@ pub enum LoginError {
     /// A Login field cannot be represented by its wire length prefix.
     #[error("login field length is out of range")]
     InvalidLength,
-    /// Client data is not an object or has no nonempty string skin identifier.
+    /// Signed client data has invalid standard claims, types, key updates or address syntax.
     #[error("invalid login client data")]
     InvalidClientData,
+    /// A signed UDP address needs a caller-acquired host or service resolution result.
+    #[error("login client address resolution is required")]
+    AddressResolutionRequired,
+    /// The final client key cannot participate in the existing P384 cipher exchange.
+    #[error("login exchange key curve does not match the server")]
+    UnsupportedExchangeCurve,
     /// Authenticated Login requires a nonempty previously acquired credential.
     #[error("login authentication token is empty")]
     EmptyAuthenticationToken,

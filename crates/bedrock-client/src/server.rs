@@ -329,7 +329,7 @@ impl Engine {
                 if self
                     .transport_key
                     .as_ref()
-                    .is_some_and(|key| *key != *login.public_key())
+                    .is_some_and(|key| login.exchange_key().as_p384() != Some(key))
                 {
                     return Err(ServerHandshakeError::TransportKeyMismatch);
                 }
@@ -371,7 +371,10 @@ impl Engine {
         let salt = salt.ok_or(ServerHandshakeError::MissingSalt)?;
         let (token, ciphers) = login::begin_key_exchange(
             &self.key,
-            login.public_key(),
+            login
+                .exchange_key()
+                .as_p384()
+                .ok_or(LoginError::UnsupportedExchangeCurve)?,
             salt,
             self.options.max_login_bytes,
         )?;

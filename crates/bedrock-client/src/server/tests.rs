@@ -78,10 +78,8 @@ fn pending(encrypted: bool) -> (Engine, ClientLogin, Provider, Instant, SystemTi
     };
     assert_eq!(compression, selected);
     server.compression_installed(now).unwrap();
-    let metadata = RawValue::from_string(
-        "{\"Nonce\":\"original-nonce\",\"XUID\":\"999\",\"SkinId\":\"synthetic\"}".into(),
-    )
-    .unwrap();
+    let metadata =
+        RawValue::from_string("{\"Nonce\":\"original-nonce\",\"XUID\":\"999\",\"DeviceOS\":1,\"GameVersion\":\"1.26.51\",\"LanguageCode\":\"en_US\",\"SkinId\":\"synthetic\",\"ThirdPartyName\":\"Probe\"}".into()).unwrap();
     let (client, mut login) = client.login_authenticated(CREDENTIAL, &metadata).unwrap();
     // The actual negotiated RequestNetworkSettings version supersedes this Login field.
     login.client_network_version = wire::I32BE(0);
@@ -282,7 +280,7 @@ fn accepting_rejects_version_and_transport_proof_before_application_admission() 
     let request = login::encode_authenticated_request(
         client.key(),
         CREDENTIAL,
-        &RawValue::from_string(r#"{"SkinId":"synthetic"}"#.into()).unwrap(),
+        &RawValue::from_string(r#"{"DeviceOS":1,"GameVersion":"1.26.51","LanguageCode":"en_US","SkinId":"synthetic","ThirdPartyName":"Probe"}"#.into()).unwrap(),
         65536,
     )
     .unwrap();
@@ -342,3 +340,184 @@ fn accepting_rejects_version_and_transport_proof_before_application_admission() 
 mod lifecycle_tests;
 
 mod session_tests;
+
+#[test]
+fn signed_rotation_binds_transport_and_continues_ciphers_with_the_final_key() {
+    use base64::{Engine as _, engine::general_purpose::STANDARD};
+    use p384::pkcs8::EncodePublicKey;
+    let signer = SigningKey::from_slice(&[4; 48]).unwrap();
+    let rotated = SigningKey::from_slice(&[6; 48]).unwrap();
+    let now = Instant::now();
+    let utc = SystemTime::UNIX_EPOCH + Duration::from_secs(1000);
+    let provider = Provider {
+        public: *signer.verifying_key(),
+        revoked: Cell::new(false),
+        changed: Cell::new(false),
+    };
+    let data=RawValue::from_string(format!(r#"{{"DeviceOS":1,"GameVersion":"1.26.51","LanguageCode":"en_US","SkinId":"synthetic","ThirdPartyName":"Probe","Nonce":"first","nonce":"final","identityPublicKey":"{}"}}"#,STANDARD.encode(rotated.verifying_key().to_public_key_der().unwrap().as_bytes()))).unwrap();
+    let request = login::encode_authenticated_request(&signer, CREDENTIAL, &data, 65536).unwrap();
+    for transport in [*signer.verifying_key(), *rotated.verifying_key()] {
+        let mut server = Engine::new(
+            SigningKey::from_slice(&[5; 48]).unwrap(),
+            Some(transport),
+            Default::default(),
+            now + Duration::from_secs(10),
+            now,
+        )
+        .unwrap();
+        server
+            .receive(
+                packets::RequestNetworkSettings {
+                    client_network_version: wire::I32BE(PROTOCOL_VERSION),
+                }
+                .into(),
+                &provider,
+                now,
+                utc,
+            )
+            .unwrap();
+        server.compression_installed(now).unwrap();
+        let result = server.receive(
+            packets::Login {
+                client_network_version: wire::I32BE(PROTOCOL_VERSION),
+                connection_request: request.clone(),
+            }
+            .into(),
+            &provider,
+            now,
+            utc,
+        );
+        if transport == *signer.verifying_key() {
+            assert!(matches!(
+                result,
+                Err(ServerHandshakeError::TransportKeyMismatch)
+            ));
+            assert!(server.login().is_none());
+            continue;
+        }
+        assert!(matches!(result.unwrap(), EngineEvent::LoginVerified));
+        assert_eq!(server.login().unwrap().nonce(), "final");
+        assert_eq!(
+            server.login().unwrap().signing_key(),
+            signer.verifying_key()
+        );
+        let EngineEvent::KeyExchange { packet, ciphers } =
+            server.accept(&provider, Some(&[7; 16]), now, utc).unwrap()
+        else {
+            panic!("missing exchange")
+        };
+        let (mut server_out, mut server_in) = *ciphers;
+        let (mut client_out, mut client_in) = login::finish_key_exchange(
+            &rotated,
+            packet.handshake_web_token.to_str().unwrap(),
+            65536,
+        )
+        .unwrap();
+        server.encryption_installed(now).unwrap();
+        let ack = client_out
+            .encrypt(Bytes::from_static(b"ack with rotated key"))
+            .unwrap();
+        assert_eq!(server_in.decrypt(ack).unwrap(), "ack with rotated key");
+        assert!(matches!(
+            server
+                .receive(
+                    packets::ClientToServerHandshake {}.into(),
+                    &provider,
+                    now,
+                    utc
+                )
+                .unwrap(),
+            EngineEvent::ReadyForPacks
+        ));
+        for body in [
+            b"first exact batch".as_slice(),
+            b"second exact batch".as_slice(),
+        ] {
+            assert_eq!(
+                client_in
+                    .decrypt(server_out.encrypt(Bytes::copy_from_slice(body)).unwrap())
+                    .unwrap(),
+                body
+            );
+            assert_eq!(
+                server_in
+                    .decrypt(client_out.encrypt(Bytes::copy_from_slice(body)).unwrap())
+                    .unwrap(),
+                body
+            );
+        }
+        let accepted = server.finish(&provider, now, utc).unwrap();
+        assert_eq!(accepted.xuid(), "123");
+        assert_eq!(accepted.nonce(), "final");
+        assert_eq!(
+            accepted.exchange_key().as_p384(),
+            Some(rotated.verifying_key())
+        );
+    }
+}
+
+#[test]
+fn non_p384_rotation_is_parsed_before_the_existing_cipher_curve_check() {
+    let signer = SigningKey::from_slice(&[4; 48]).unwrap();
+    let now = Instant::now();
+    let utc = SystemTime::UNIX_EPOCH + Duration::from_secs(1000);
+    let provider = Provider {
+        public: *signer.verifying_key(),
+        revoked: Cell::new(false),
+        changed: Cell::new(false),
+    };
+    let data=RawValue::from_string(r#"{"DeviceOS":1,"GameVersion":"1.26.51","LanguageCode":"en_US","SkinId":"synthetic","ThirdPartyName":"Probe","identityPublicKey":"MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEaxfR8uEsQkf4vOblY6RA8ncDfYEt6zOg9KE5RdiYwpZP40Li/hp/m47n60p8D54WK84zV2sxXs7LtkBoN79R9Q=="}"#.into()).unwrap();
+    let request = login::encode_authenticated_request(&signer, CREDENTIAL, &data, 65536).unwrap();
+    for encrypted in [false, true] {
+        let mut server = Engine::new(
+            SigningKey::from_slice(&[5; 48]).unwrap(),
+            None,
+            ServerHandshakeOptions {
+                batch_encryption: encrypted,
+                ..Default::default()
+            },
+            now + Duration::from_secs(10),
+            now,
+        )
+        .unwrap();
+        server
+            .receive(
+                packets::RequestNetworkSettings {
+                    client_network_version: wire::I32BE(PROTOCOL_VERSION),
+                }
+                .into(),
+                &provider,
+                now,
+                utc,
+            )
+            .unwrap();
+        server.compression_installed(now).unwrap();
+        assert!(matches!(
+            server
+                .receive(
+                    packets::Login {
+                        client_network_version: wire::I32BE(PROTOCOL_VERSION),
+                        connection_request: request.clone()
+                    }
+                    .into(),
+                    &provider,
+                    now,
+                    utc
+                )
+                .unwrap(),
+            EngineEvent::LoginVerified
+        ));
+        assert!(server.login().unwrap().exchange_key().as_p384().is_none());
+        let result = server.accept(&provider, Some(&[7; 16]), now, utc);
+        if encrypted {
+            assert!(matches!(
+                result,
+                Err(ServerHandshakeError::Login(
+                    LoginError::UnsupportedExchangeCurve
+                ))
+            ));
+        } else {
+            assert!(matches!(result, Ok(EngineEvent::ReadyForPacks)));
+        }
+    }
+}

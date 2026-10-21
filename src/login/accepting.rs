@@ -6,7 +6,10 @@ use serde_json::value::RawValue;
 use std::time::SystemTime;
 use zeroize::Zeroizing;
 
+mod client_data;
+mod exchange_key;
 mod fields;
+pub use exchange_key::ClientExchangeKey;
 
 /// Pure authority for the configured multiplayer provider, never a client-selected issuer/key.
 ///
@@ -21,6 +24,19 @@ pub trait LoginVerifier {
     /// # Errors
     /// Return an authentication error without credential/claim contents on any policy failure.
     fn verify(&self, token: &str, now: SystemTime) -> Result<TrustedIdentity, LoginError>;
+
+    /// Requires a cached result equivalent to Go's `ResolveUDPAddr("udp", address)`.
+    /// Called only for a validated signed UDP address needing the configured resolver,
+    /// including empty IPv6 zones and IP spellings that fail literal parsing.
+    /// This callback must not block or perform network I/O; acquire/cache its result before
+    /// submitting Login to the consuming engine. A miss must return AddressResolutionRequired.
+    /// The pure parser can be retried with the same request after asynchronous acquisition.
+    ///
+    /// # Errors
+    /// Return InvalidClientData for a failed resolution, or AddressResolutionRequired on a cache miss.
+    fn resolve_client_address(&self, _address: &str) -> Result<(), LoginError> {
+        Err(LoginError::AddressResolutionRequired)
+    }
 }
 
 /// Identity asserted by a trusted provider-verification implementation.
@@ -90,8 +106,10 @@ impl TrustedIdentity {
 /// credentials or allows this owner to be silently substituted.
 pub struct AuthenticatedLogin {
     identity: TrustedIdentity,
+    exchange_key: ClientExchangeKey,
     credential: Zeroizing<String>,
     client_data: Box<RawValue>,
+    original_client_data: Option<Box<[u8]>>,
     nonce: Zeroizing<String>,
 }
 
@@ -101,9 +119,19 @@ impl AuthenticatedLogin {
         &self.identity.xuid
     }
 
-    /// Borrows the same provider key that verified this client's metadata and will derive encryption.
+    /// Borrows the provider-bound metadata signing key. Use `exchange_key()` for transport and cipher setup.
     pub fn public_key(&self) -> &VerifyingKey {
         &self.identity.public_key
+    }
+
+    /// Borrows the original provider-bound metadata signer, also retained for provider revalidation.
+    pub fn signing_key(&self) -> &VerifyingKey {
+        &self.identity.public_key
+    }
+
+    /// Borrows the final signed exchange key, which may differ from the metadata signer.
+    pub fn exchange_key(&self) -> &ClientExchangeKey {
+        &self.exchange_key
     }
 
     /// Borrows authenticated presentation if the trusted verifier supplied it.
@@ -112,9 +140,19 @@ impl AuthenticatedLogin {
         self.identity.player_identity()
     }
 
-    /// Borrows the original client-signed JSON; application metadata validation remains caller-owned.
+    /// Borrows validated client JSON, replacing invalid UTF-8 as Go does.
+    /// Valid UTF-8 retains its original spelling, including escaped surrogates.
+    /// Application policy remains caller-owned; required address lookups have a successful cached result.
     pub fn client_data(&self) -> &RawValue {
         &self.client_data
+    }
+
+    /// Borrows the original signed JSON value bytes before UTF-8 replacement.
+    /// Insignificant whitespace surrounding the JSON value is omitted.
+    pub fn client_data_json_bytes(&self) -> &[u8] {
+        self.original_client_data
+            .as_deref()
+            .unwrap_or_else(|| self.client_data.get().as_bytes())
     }
 
     /// Borrows the original client-signed title nonce; this value alone grants no world access.
@@ -154,7 +192,8 @@ impl AuthenticatedLogin {
 ///
 /// # Errors
 /// Rejects an oversized/truncated/negative-length/trailing frame, unsupported
-/// authentication, provider rejection, invalid client signature/JSON/nonce, or an empty skin identifier.
+/// authentication, provider rejection, invalid signed client claims, or a required address lookup
+/// without a successful cached result.
 pub fn verify_authenticated_request(
     request: &[u8],
     verifier: &impl LoginVerifier,
@@ -186,18 +225,23 @@ pub fn verify_authenticated_request(
         .map_err(LoginError::redact_peer)?;
     let client = std::str::from_utf8(client).map_err(|_| LoginError::MalformedToken)?;
     let payload = jwt::verify_client(client, &identity.public_key, max_request_bytes)?;
-    let client_data: Box<RawValue> =
-        serde_json::from_slice(&payload).map_err(|_| LoginError::MalformedJson)?;
-    super::validate_client_data(&client_data, max_request_bytes)?;
-    let metadata: fields::Metadata =
-        serde_json::from_str(client_data.get()).map_err(|_| LoginError::MalformedJson)?;
-    if !metadata.skin_id_valid {
-        return Err(LoginError::InvalidClientData);
-    }
+    let original_client_data = std::str::from_utf8(&payload)
+        .err()
+        .map(|_| payload.trim_ascii().to_vec().into_boxed_slice());
+    let client_data = client_data::parse_json(&payload)?;
+    let metadata = client_data::validate(&client_data, |address| {
+        verifier.resolve_client_address(address)
+    })?;
+    let exchange_key = metadata
+        .exchange_key
+        .map(Ok)
+        .unwrap_or_else(|| ClientExchangeKey::from_signer(&identity.public_key))?;
     Ok(AuthenticatedLogin {
         identity,
+        exchange_key,
         credential: Zeroizing::new(token),
         client_data,
+        original_client_data,
         nonce: Zeroizing::new(metadata.nonce),
     })
 }

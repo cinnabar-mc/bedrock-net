@@ -23,6 +23,7 @@ tracing = "0.1"
 uuid = { version = "1", features = ["serde"] }
 
 [dev-dependencies]
+base64 = "0.22"
 criterion.workspace = true
 
 [[bench]]

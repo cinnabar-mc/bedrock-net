@@ -929,6 +929,30 @@ mod login {
         }
     }
 
+    /// Supplies the resolver result acquired from the Go helper before pure admission.
+    struct CaseVerifier<'a> {
+        provider: &'a Provider,
+        cached: Option<(&'a str, bool)>,
+    }
+
+    impl LoginVerifier for CaseVerifier<'_> {
+        /// Delegates identity verification to the independently configured provider.
+        fn verify(&self, token: &str, now: SystemTime) -> Result<TrustedIdentity, LoginError> {
+            self.provider.verify(token, now)
+        }
+
+        /// Returns only the pre-acquired result for this fixture's normalized address.
+        fn resolve_client_address(&self, address: &str) -> Result<(), LoginError> {
+            let (expected, resolved) = self.cached.expect("unexpected resolver request");
+            assert_eq!(address, expected);
+            if resolved {
+                Ok(())
+            } else {
+                Err(LoginError::InvalidClientData)
+            }
+        }
+    }
+
     /// Splits a request into its envelope line and client token.
     fn fields(request: &[u8]) -> (Vec<u8>, String) {
         let length = u32::from_le_bytes(request[..4].try_into().unwrap()) as usize;
@@ -1108,6 +1132,87 @@ mod login {
         }));
         let verifier = Provider(*provider.verifying_key());
         let now = UNIX_EPOCH + Duration::from_secs(NOW);
+        let fixtures: Vec<Value> =
+            serde_json::from_str(include_str!("../tools/go-oracle/client-data-cases.json"))
+                .unwrap();
+        assert!(!fixtures.is_empty());
+        let mut client_mismatches = Vec::new();
+        for fixture in fixtures {
+            let mut base = json!({"DeviceOS":1,"GameVersion":"1.26.51","LanguageCode":"en_US","SkinId":"synthetic","ThirdPartyName":"Probe"});
+            for field in fixture["remove"].as_array().unwrap() {
+                base.as_object_mut()
+                    .unwrap()
+                    .remove(field.as_str().unwrap());
+            }
+            let base = base.to_string();
+            let mut payload = base.as_bytes()[..base.len() - 1].to_vec();
+            payload.push(b',');
+            let claims = fixture["claims_base64"]
+                .as_str()
+                .map(|s| STANDARD.decode(s).unwrap())
+                .unwrap_or_else(|| fixture["claims"].as_str().unwrap().as_bytes().to_vec());
+            payload.extend_from_slice(&claims);
+            payload.extend_from_slice(b"}\n");
+            let request = frame(&envelope, client_token(&payload).as_bytes());
+            let response = oracle.call(json!({
+                "op":"login_parse", "request":b64(&request), "provider_key":b64(&public_der(&provider)),
+                "issuer":ISSUER, "audience":AUDIENCE, "now":NOW,
+            }));
+            let go = response["accepted"] == true && response["authenticated"] == true;
+            let cached = fixture["resolve_address"].as_str().map(|address| {
+                let result = oracle.call(json!({"op":"resolve_udp", "address":address}));
+                (address, result["resolved"].as_bool().unwrap())
+            });
+            let expected = cached.map_or_else(
+                || fixture["accepted"].as_bool().unwrap(),
+                |(_, resolved)| resolved,
+            );
+            assert_eq!(
+                go, expected,
+                "Go fixture {}: {}",
+                fixture["name"], response["reason"]
+            );
+            let case_verifier = CaseVerifier {
+                provider: &verifier,
+                cached,
+            };
+            let rust = verify_authenticated_request(&request, &case_verifier, now, LIMIT);
+            if rust.is_ok() != go {
+                client_mismatches.push(fixture["name"].clone());
+                continue;
+            }
+            if let Ok(login) = &rust {
+                assert_eq!(
+                    login.nonce(),
+                    response["nonce"].as_str().unwrap(),
+                    "nonce {}",
+                    fixture["name"]
+                );
+                assert_eq!(
+                    STANDARD.encode(login.exchange_key().public_key_der()),
+                    response["exchange_key"],
+                    "key {}",
+                    fixture["name"]
+                );
+                if let Some(expected) = fixture["exchange_key"].as_str() {
+                    assert_eq!(
+                        response["exchange_key"], expected,
+                        "Go key anchor {}",
+                        fixture["name"]
+                    );
+                }
+                assert_eq!(
+                    login.client_data_json_bytes(),
+                    &payload[..payload.len() - 1],
+                    "{}",
+                    fixture["name"]
+                );
+            }
+        }
+        assert!(
+            client_mismatches.is_empty(),
+            "ClientData mismatches: {client_mismatches:?}"
+        );
         let mut ledger = Ledger::default();
         for (name, request) in cases {
             let response = oracle.call(json!({
