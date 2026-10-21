@@ -133,6 +133,13 @@ The verifier can retain signed name, canonical UUID and PlayFab identifiers with
 `TrustedIdentity::with_player_identity`; `AuthenticatedLogin::player_identity`
 borrows them and revalidation rejects changes. Missing presentation stays absent.
 
+The `login` feature also exposes `parse_offline_request`, with explicit UTC, a
+byte cap and a nonblocking cached address resolver. Its opaque `OfflineLogin`
+retains validated client-signed metadata, the original signer and the final
+exchange key. Account and UUID claims remain untrusted.
+`bedrock_client::server::ServerHandshake::new_offline` and `OfflinePolicy` carry
+that distinct capability through authorization, packs, startup and relay handoffs.
+
 The accepting APIs provide protocol continuations through `AcceptedSession`.
 The application supplies its listener, current authorization and running-world
 attachment. It can also stop at the Login-only handoff.
@@ -238,8 +245,9 @@ application work.
 ## Protocol scope and license
 
 Packet negotiation uses the generated protocol revision in the workspace
-manifest. The accepting APIs handle modern authenticated Login; offline, guest
-and legacy-chain accepting Login are unsupported. World loading, presentation,
+manifest. The accepting APIs handle modern authenticated Login and explicit
+offline admission with modern tokens or legacy chains. Wire guest mode 1 remains
+unsupported. World loading, presentation,
 running-world attachment and ongoing play belong to the application.
 
 The root crate offers MIT or Apache-2.0. Extracted `bedrock-client`,

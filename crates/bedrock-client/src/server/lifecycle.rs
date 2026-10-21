@@ -39,6 +39,28 @@ impl ServerHandshake {
     }
 }
 
+impl ServerHandshake<bedrock_net::login::OfflineLogin> {
+    /// Starts an explicitly offline accepting lifetime under the original caller deadline.
+    ///
+    /// All continuations retain `OfflineLogin`; application authorization receives
+    /// its untrusted claims and signed metadata, without authenticated account access.
+    /// Transport comparison and cipher setup use the final signed exchange key.
+    ///
+    /// # Errors
+    /// Rejects a zero Login budget or an already reached deadline.
+    pub fn new_offline(
+        key: impl Into<Arc<SigningKey>>,
+        transport_key: Option<VerifyingKey>,
+        options: ServerHandshakeOptions,
+        deadline: Instant,
+        now: Instant,
+    ) -> Result<Self, ServerHandshakeError> {
+        Ok(Self {
+            engine: Box::new(Engine::new(key, transport_key, options, deadline, now)?),
+        })
+    }
+}
+
 impl<L> ServerHandshake<L> {
     /// Borrows the same key allocation for actual signed transport admission.
     pub fn key(&self) -> &SigningKey {

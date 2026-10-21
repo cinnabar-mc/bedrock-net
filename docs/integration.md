@@ -211,8 +211,12 @@ Supply the original server key, absolute monotonic deadline, configuration and
 any already verified transport peer key. A caller-owned `LoginVerifier` supplies
 trusted provider policy; there is no permissive/default verifier. The accepting
 helper verifies client metadata against that provider's bound proof key rather
-than an untrusted JWT header. Modern authenticated Login is supported; offline,
-guest and legacy chains are outside this accepting API.
+than an untrusted JWT header. The default accepting types retain provider
+authentication. For explicit offline admission use `ServerHandshake::new_offline`
+and `OfflinePolicy::new` with a cached address resolver. Authorization and every
+pack/world/relay continuation then retain `OfflineLogin` as their second type
+parameter. Its account and UUID claims stay untrusted; assign any world identity
+through the actual application grant. Wire guest mode 1 remains unsupported.
 
 `ServerHandshake` first produces `PendingServerSettings`. Borrow its packet,
 send/flush it uncompressed, install its compression on the retained codec, then
