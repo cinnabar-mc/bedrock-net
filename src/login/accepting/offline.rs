@@ -1,8 +1,7 @@
 //! Opaque offline Login capability, with account claims kept separate from provider authority.
 
-use super::ClientExchangeKey;
+use super::{ClientExchangeKey, client_data};
 use serde_json::value::RawValue;
-use zeroize::Zeroizing;
 
 /// Untrusted identity text retained without an authenticated player projection.
 pub(super) struct Claims {
@@ -38,10 +37,8 @@ pub struct OfflineLogin {
     identity: Claims,
     signing_key: ClientExchangeKey,
     exchange_key: ClientExchangeKey,
-    client_data: Box<RawValue>,
-    original_client_data: Option<Box<[u8]>>,
+    metadata: client_data::Payload,
     display_name: String,
-    nonce: Zeroizing<String>,
 }
 
 impl OfflineLogin {
@@ -63,20 +60,18 @@ impl OfflineLogin {
 
     /// Borrows validated client JSON, retaining its original spelling for valid UTF-8.
     pub fn client_data(&self) -> &RawValue {
-        &self.client_data
+        self.metadata.client_data()
     }
 
     /// Borrows the original signed JSON value bytes before UTF-8 replacement.
     /// Insignificant whitespace surrounding the JSON value is omitted.
     pub fn client_data_json_bytes(&self) -> &[u8] {
-        self.original_client_data
-            .as_deref()
-            .unwrap_or_else(|| self.client_data.get().as_bytes())
+        self.metadata.client_data_json_bytes()
     }
 
     /// Borrows the client-signed nonce; it grants no world access.
     pub fn nonce(&self) -> &str {
-        &self.nonce
+        self.metadata.nonce()
     }
 
     /// Borrows an untrusted, shape-checked XUID claim; it grants no account authority.
