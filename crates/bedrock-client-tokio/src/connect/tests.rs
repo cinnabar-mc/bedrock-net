@@ -56,6 +56,7 @@ async fn native_fixed_port_candidates_retain_the_alternative_after_original_owne
         let connecting = resolved(
             addresses.into_iter(),
             true,
+            false,
             Instant::now() + TEST_TIMEOUT,
             |address| {
                 let first = address == addresses[0];

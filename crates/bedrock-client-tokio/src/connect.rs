@@ -12,10 +12,12 @@ pub mod raknet;
 use futures::{StreamExt, stream::FuturesUnordered};
 use std::{collections::HashSet, future::Future, io, net::SocketAddr, time::Instant};
 
-/// Races only explicit compatible addresses; dropping the future drops all losing owners.
+/// Connects only explicit compatible addresses, optionally racing independent owners.
+/// Serial attempts drop the completed future before allocating its alternative.
 async fn resolved<T, R>(
     addresses: impl Iterator<Item = SocketAddr>,
     ipv4_only: bool,
+    parallel: bool,
     deadline: tokio::time::Instant,
     mut connect: impl FnMut(SocketAddr) -> T,
 ) -> io::Result<R>
@@ -25,16 +27,23 @@ where
     before_deadline(deadline, async {
         let mut candidates = FuturesUnordered::new();
         let mut seen = HashSet::new();
-        for address in addresses {
-            if address.port() != 0 && (!ipv4_only || address.is_ipv4()) && seen.insert(address) {
-                candidates.push(connect(address));
-            }
-        }
+        let mut addresses = addresses.filter(|address| {
+            address.port() != 0 && (!ipv4_only || address.is_ipv4()) && seen.insert(*address)
+        });
         let mut failure = io::Error::new(
             io::ErrorKind::AddrNotAvailable,
             "native endpoint has no compatible resolved address",
         );
-        while let Some(result) = candidates.next().await {
+        loop {
+            for address in addresses.by_ref() {
+                candidates.push(connect(address));
+                if !parallel {
+                    break;
+                }
+            }
+            let Some(result) = candidates.next().await else {
+                break;
+            };
             match result {
                 Ok(transport) => return Ok(transport),
                 Err(error) => failure = error,

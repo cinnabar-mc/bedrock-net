@@ -39,7 +39,8 @@ pub struct DirectedLanConfig {
     pub credential_expires: Option<Instant>,
 }
 
-/// Races compatible IPv4 answers under one first cutoff and drops all losing actual owners.
+/// Connects compatible IPv4 answers under one first cutoff and drops all losing actual owners.
+/// An explicit nonzero ICE port serializes attempts; ephemeral bindings race independently.
 pub async fn connect_resolved(
     addresses: impl Iterator<Item = SocketAddr>,
     options: &DirectedLanConfig,
@@ -49,7 +50,13 @@ pub async fn connect_resolved(
         .credential_expires
         .map_or(deadline, |expires| deadline.min(expires.into()));
     super::check(deadline, options.credential_expires)?;
-    let result = super::resolved(addresses, true, deadline, |address| async move {
+    let parallel = options
+        .connection
+        .client_ice
+        .as_ref()
+        .and_then(|ice| ice.bind_addr)
+        .is_none_or(|bind| bind.port() == 0);
+    let result = super::resolved(addresses, true, parallel, deadline, |address| async move {
         connect_directed(address, options, deadline)
             .await
             .map(|(transport, _)| transport)
