@@ -124,6 +124,8 @@ func handle(req *serveRequest) (any, error) {
 		return offlineEncodingFixtures()
 	case "jose_headers":
 		return joseHeaderFixtures()
+	case "jose_admission":
+		return joseAdmissionFixtures()
 	case "offline_json_contexts":
 		return offlineJSONContexts()
 	case "resolve_udp":
