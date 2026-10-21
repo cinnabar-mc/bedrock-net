@@ -135,6 +135,14 @@ impl Claims {
             .unwrap_or_default()
     }
 
+    /// Moves a final validated string out without allocating another copy.
+    pub(super) fn take_text(&mut self, name: &str) -> String {
+        match self.scalars.remove(name) {
+            Some(Value::String(text)) => text,
+            _ => String::new(),
+        }
+    }
+
     /// Returns the last non-null integer, or the absent field's zero default.
     pub(super) fn number(&self, name: &str) -> i64 {
         self.scalars
@@ -152,7 +160,7 @@ impl Claims {
 }
 
 /// Replaces unmatched escaped UTF-16 surrogates for interpretation, retaining signed JSON separately.
-pub(super) fn normalize(raw: &str) -> Option<Cow<'_, str>> {
+pub(in crate::login) fn normalize(raw: &str) -> Option<Cow<'_, str>> {
     if !raw.contains("\\u") {
         return Some(Cow::Borrowed(raw));
     }
@@ -201,8 +209,33 @@ pub(super) fn normalize(raw: &str) -> Option<Cow<'_, str>> {
     }
 }
 
-/// Checks float64 numbers, decoded-key uniqueness and Go's depth limit without recursive values.
-pub(super) fn json_values(raw: &RawValue, reject_duplicates: bool) -> bool {
+/// Selects the decoder that consumes a syntactically validated raw JSON value.
+#[derive(Clone, Copy)]
+enum JsonContext {
+    ClientData,
+    StandardMap,
+    JoseMap,
+}
+
+/// Keeps the metadata contract: standard depth, finite numbers, and optional map-key uniqueness.
+pub(in crate::login) fn json_values(raw: &RawValue, reject_duplicates: bool) -> bool {
+    scan_json(
+        raw,
+        if reject_duplicates {
+            JsonContext::ClientData
+        } else {
+            JsonContext::StandardMap
+        },
+    )
+}
+
+/// Checks JOSE generic values for finite numbers and decoded duplicates, without a standard depth cap.
+pub(in crate::login) fn jose_values(raw: &RawValue) -> bool {
+    scan_json(raw, JsonContext::JoseMap)
+}
+
+/// Scans all JSON contexts iteratively; the RawValue owner has already checked their syntax.
+fn scan_json(raw: &RawValue, context: JsonContext) -> bool {
     use std::collections::BTreeSet;
     struct Object {
         keys: BTreeSet<String>,
@@ -247,11 +280,14 @@ pub(super) fn json_values(raw: &RawValue, reject_duplicates: bool) -> bool {
                     index += if bytes[index] == b'\\' { 2 } else { 1 };
                 }
                 index += 1;
-                if reject_duplicates
+                if matches!(context, JsonContext::ClientData | JsonContext::JoseMap)
                     && let Some(Some(object)) = stack.last_mut()
                     && object.key
                 {
-                    let Ok(key) = serde_json::from_str(&raw.get()[start..index]) else {
+                    let Some(text) = normalize(&raw.get()[start..index]) else {
+                        return false;
+                    };
+                    let Ok(key) = serde_json::from_str(&text) else {
                         return false;
                     };
                     if !object.keys.insert(key) {
@@ -278,7 +314,7 @@ pub(super) fn json_values(raw: &RawValue, reject_duplicates: bool) -> bool {
             }
             _ => index += 1,
         }
-        if stack.len() > 10_000 {
+        if !matches!(context, JsonContext::JoseMap) && stack.len() > 10_000 {
             return false;
         }
     }
