@@ -114,6 +114,8 @@ func handle(req *serveRequest) (any, error) {
 		return loginBuild(req)
 	case "login_parse":
 		return loginParse(req)
+	case "offline_fixtures":
+		return offlineFixtures()
 	default:
 		return nil, fmt.Errorf("unknown op %q", req.Op)
 	}
