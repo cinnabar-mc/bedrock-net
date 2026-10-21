@@ -54,8 +54,14 @@ Raw DEFLATE and Snappy are supported; the protocol's Zlib name means raw DEFLATE
 Incoming negotiated batches select their declared algorithm independently of the
 outgoing threshold.
 
-DEFLATE uses the portable zlib-rs backend at level 6. Compression engines and
-Snappy matching tables are temporary per-call state. Compressed bytes may differ
+Native DEFLATE encoding uses libdeflate at level 6 for complete batches. Its
+bundled C code builds through the `cc` crate and requires a C compiler; no Perl or
+CMake is needed for this dependency. DEFLATE decoding uses portable zlib-rs;
+WebAssembly also uses zlib-rs level 6 for encoding without a C dependency.
+DEFLATE engines remain temporary per-call state. Snappy lazily reuses bounded
+matching tables and initialized output scratch per connection to avoid repeated
+allocation and initialization. Every batch resets its matching state and emits
+an independent block. Compressed bytes may differ
 between compatible encoders; no encoded-byte identity is promised. The adapted
 Snappy implementation retains its [third-party notices](THIRD_PARTY_NOTICES.md).
 
@@ -72,7 +78,7 @@ After negotiating compression, `with_incoming_decoded_limit` can set a separate
 incoming decoded-byte ceiling. It preserves the original outgoing, wire and
 packet-count limits; the initial plaintext phase keeps its original byte policy.
 
-Keep one codec per connection to reuse its decode scratch. For synchronous
+Keep one codec per connection to reuse its encoding and decode scratch. For synchronous
 packet handling, `codec.decode_with(message, callback)` visits borrowed packet
 bytes and reuses scratch for small Snappy batches. It validates the complete batch
 before invoking the callback. Use the owning iterator when packets must outlive

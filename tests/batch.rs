@@ -910,3 +910,106 @@ fn synchronous_snappy_decode_reuses_scratch_and_validates_before_visiting() {
         assert_eq!(visits, 0);
     }
 }
+
+#[test]
+fn snappy_large_offsets_and_long_matches_decode_with_the_reference() {
+    let mut state = 7_u32;
+    let source: Vec<_> = (0..100000)
+        .map(|_| {
+            state ^= state << 13;
+            state ^= state >> 17;
+            state ^= state << 5;
+            state as u8
+        })
+        .collect();
+    let input = [source.repeat(4)];
+    let codec = negotiated(CompressionAlgorithm::Snappy, BatchLimits::default());
+    let wire = codec.encode(&input).unwrap().pop().unwrap();
+    let decoded = snap::raw::Decoder::new()
+        .decompress_vec(&wire[2..])
+        .unwrap();
+    let plain = BatchCodec::new(BatchHeader::NetherNet, BatchLimits::default());
+    assert_eq!(packets(&plain, decoded.into()), input);
+}
+
+#[test]
+fn reused_compressors_emit_independent_batches_and_retained_output_stays_unchanged() {
+    for algorithm in [CompressionAlgorithm::Deflate, CompressionAlgorithm::Snappy] {
+        let sender = negotiated(algorithm, BatchLimits::default());
+        let mut retained = Vec::new();
+        for length in [50000, 3, 200000, 100, 50000] {
+            let input = vec![
+                (0..length)
+                    .map(|index| (index % 251) as u8)
+                    .collect::<Vec<_>>(),
+            ];
+            let wire = sender.encode(&input).unwrap().pop().unwrap();
+            retained.push((wire, input));
+        }
+        for (wire, input) in retained.into_iter().rev() {
+            let fresh = negotiated(algorithm, BatchLimits::default());
+            assert_eq!(packets(&fresh, wire.clone()), input);
+            assert_eq!(fresh.encode(&input).unwrap(), [wire]);
+        }
+    }
+}
+
+#[test]
+fn small_snappy_encoder_matches_the_reference_decoder_across_boundaries() {
+    let codec = negotiated(CompressionAlgorithm::Snappy, BatchLimits::default());
+    let plain = BatchCodec::new(BatchHeader::RakNet, BatchLimits::default());
+    let mut state = 0x12345678_u32;
+    for length in [
+        1, 31, 1024, 4095, 4096, 8191, 8192, 8193, 16383, 16384, 50000, 65535, 65536, 65537,
+    ] {
+        for pattern in 0..3 {
+            let input: Vec<_> = (0..length)
+                .map(|index| {
+                    state ^= state << 13;
+                    state ^= state >> 17;
+                    state ^= state << 5;
+                    match pattern {
+                        0 => state as u8,
+                        1 => (index % 251) as u8,
+                        _ => 0x42,
+                    }
+                })
+                .collect();
+            let wire = codec
+                .encode(std::slice::from_ref(&input))
+                .unwrap()
+                .pop()
+                .unwrap();
+            let expected = plain.encode(&[input]).unwrap().pop().unwrap();
+            assert_eq!(
+                snap::raw::Decoder::new()
+                    .decompress_vec(&wire[2..])
+                    .unwrap(),
+                expected[1..]
+            );
+        }
+    }
+}
+
+#[test]
+fn malformed_snappy_blocks_never_dispatch_partial_packets() {
+    let mut codec = negotiated(CompressionAlgorithm::Snappy, BatchLimits::default());
+    for block in [
+        &[1, 0][..],
+        &[1, 2, 0, 0],
+        &[2, 4, 1, 7, 0],
+        &[2, 0, 1, 2, 0, 0],
+        &[2, 0, 1, 2, 2, 0],
+        &[1, 8, 1, 7, 8],
+    ] {
+        assert!(snap::raw::Decoder::new().decompress_vec(block).is_err());
+        let mut wire = vec![0xfe, 1];
+        wire.extend_from_slice(block);
+        let mut visits = 0;
+        assert!(matches!(
+            codec.decode_with(wire.into(), |_| visits += 1),
+            Ok(VisitOutcome::Dropped(DropReason::InvalidSnappy(_)))
+        ));
+        assert_eq!(visits, 0);
+    }
+}
