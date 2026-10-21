@@ -14,6 +14,7 @@ return the next owned continuation and its effects.
 | --- | --- |
 | [`bedrock-net`](src/lib.rs) | Encoded packet batches, compression and directional ciphers; optional Login primitives and transport edges. |
 | [`bedrock-client`](crates/bedrock-client) | Sans-I/O client and accepting negotiation over generated packets, including pack transfer and startup. |
+| [`bedrock-client-tokio`](crates/bedrock-client-tokio) | Optional caller-owned settings/Login/pack wire loops, codec/FIFO/cipher and established transport lifecycles; no runtime or session task is created. |
 | [`bedrock-packs`](crates/bedrock-packs) | Runtime-independent pack text, owned archive handoffs and content-key lifetime. |
 
 [protocolgen](https://github.com/cinnabar-mc/protocolgen) owns the version-specific
@@ -80,8 +81,8 @@ original bytes. Keep unsent encrypted batches until delivery before recycling.
 `BatchDecryptor::decrypt_batch(header, message)` accept complete batches and
 preserve the clear transport marker. Pass an owned `Bytes` value to allow
 in-place encryption or decryption; shared inputs are copied. The
-[probe session](examples/client/src/session.rs) shows this flow and sends each
-batch immediately.
+[Tokio connection](crates/bedrock-client-tokio/src/connection.rs) used by the
+probe applies these operations on its original codec and directional streams.
 
 ## Typed connection flow
 
@@ -205,7 +206,7 @@ when adapting it:
 | Example source | Shows |
 | --- | --- |
 | [main.rs](examples/client/src/main.rs) | Consuming settings/Login phases and handling returned effects. |
-| [session.rs](examples/client/src/session.rs) | One codec/cipher pair and preserving unread batch entries. |
+| [connection.rs](crates/bedrock-client-tokio/src/connection.rs) | One codec/cipher pair and preserving unread batch entries. |
 | [transport.rs](examples/client/src/transport.rs) | Concrete transport setup, send and retirement. |
 
 ```sh
@@ -230,8 +231,8 @@ manifest. The accepting APIs handle modern authenticated Login; offline, guest
 and legacy-chain accepting Login are unsupported. World loading, presentation,
 running-world attachment and ongoing play belong to the application.
 
-The root crate offers MIT or Apache-2.0. Extracted `bedrock-client` and
-`bedrock-packs` code retains its separately identified
+The root crate offers MIT or Apache-2.0. Extracted `bedrock-client`,
+`bedrock-client-tokio` and `bedrock-packs` code retains its separately identified
 [PolyForm Noncommercial license](LICENSE-CINNABAR). See
 [NOTICE](https://github.com/cinnabar-mc/bedrock-net/blob/dev/NOTICE) for
 implementation references and the retained dependency/adaptation notices.
