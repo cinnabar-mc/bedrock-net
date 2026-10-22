@@ -2,7 +2,7 @@
 
 Build Minecraft Bedrock clients, servers and proxies in Rust. These libraries
 handle Login, resource-pack transfer and session startup, with Tokio adapters
-for RakNet and NetherNet connections.
+for `RakNet` and `NetherNet` connections.
 
 ## Connect to a server
 
@@ -39,7 +39,7 @@ The LAN probe requires an IPv4 loopback discovery endpoint. See the
 ## Accept clients or build a proxy
 
 Start a listener with [`raknet-tokio`](https://github.com/cinnabar-mc/raknet) and
-pass an accepted session to `AcceptingConnection::from_raknet`. For NetherNet,
+pass an accepted session to `AcceptingConnection::from_raknet`. For `NetherNet`,
 use `AcceptingConnection::from_nether`. The
 [accepting example](https://github.com/cinnabar-mc/bedrock-net/blob/dev/docs/tokio.md#accept-a-client) reads a
 settings request, sends its response and prepares the connection for Login.
@@ -73,7 +73,7 @@ and service requests come from
 For the client, server and packet examples, copy the complete
 [Tokio dependency block](https://github.com/cinnabar-mc/bedrock-net/blob/dev/docs/tokio.md#dependencies). It declares every direct
 dependency and feature used by those functions, including the generated packet
-crate and accepting RakNet types. The individual crate READMEs have setup for
+crate and accepting `RakNet` types. The individual crate READMEs have setup for
 their examples too.
 
 Use Git dependencies while the required registry releases are unavailable.

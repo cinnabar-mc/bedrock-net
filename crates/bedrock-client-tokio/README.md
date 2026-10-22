@@ -14,7 +14,7 @@ run their own workers.
 For the client, server and packet examples, copy the complete
 [dependency block](https://github.com/cinnabar-mc/bedrock-net/blob/dev/docs/tokio.md#dependencies). It includes Tokio, client
 and batch APIs, the generated packet crate, P-384 keys, raw JSON metadata and
-RakNet's accepting types, with versions and Git revisions from this workspace.
+`RakNet`'s accepting types, with versions and Git revisions from this workspace.
 
 Keep crates from this repository on the same revision and commit your
 application's `Cargo.lock`. Select `nethernet` instead of `raknet` when using
@@ -23,7 +23,7 @@ HTTP, LAN or Player Messaging transports.
 ## Connect a client
 
 The [client function](https://github.com/cinnabar-mc/bedrock-net/blob/dev/docs/tokio.md#connect-a-client) connects to a resolved
-RakNet address, negotiates settings and sends authenticated Login. Supply the
+`RakNet` address, negotiates settings and sends authenticated Login. Supply the
 verified token, proof key, expiry and a metadata builder. It returns the same
 connection and an optional pack offer for further negotiation.
 
@@ -42,7 +42,7 @@ original headers and bytes.
 
 The [accepting function](https://github.com/cinnabar-mc/bedrock-net/blob/dev/docs/tokio.md#accept-a-client) takes a session from
 `RakServer::accept`, answers settings and returns the connection ready to verify
-Login. For NetherNet, `AcceptingConnection::from_nether` binds Login to the verified
+Login. For `NetherNet`, `AcceptingConnection::from_nether` binds Login to the verified
 SDP key and uses the association's DTLS protection.
 
 Continue with the [server guide](https://github.com/cinnabar-mc/bedrock-net/blob/dev/docs/server.md) for player authorization,
