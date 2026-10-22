@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+// SPDX-License-Identifier: MIT
 //! Shared URL host decoding for the actual relay origin and title metadata consumers.
 //! Source-attributed Go net/url host escape rules; see NOTICE.
 

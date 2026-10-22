@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+// SPDX-License-Identifier: MIT
 
 //! Real signed HTTP/DTLS/SCTP associations for integration fixtures; no account or world is created.
 

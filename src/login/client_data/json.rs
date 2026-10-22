@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+// SPDX-License-Identifier: MIT
 //! Bounded raw metadata and decoded-skin JSON without constructing a recursive Value tree.
 
 use super::{invalid, json_generated::MAX_NESTING_DEPTH};

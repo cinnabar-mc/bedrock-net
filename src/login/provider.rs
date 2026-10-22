@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+// SPDX-License-Identifier: MIT
 //! Provider policy over the existing pure `NetherNet` JWS/JWK/claims implementation.
 //!
 //! Acquisition, service clocks and refresh policy belong to the caller. Verification

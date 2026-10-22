@@ -66,5 +66,4 @@ Constructors retain supplied data without validating an archive or its manifest.
 
 ## License
 
-This crate retains Cinnabar's
-[PolyForm Noncommercial license](https://github.com/cinnabar-mc/bedrock-net/blob/dev/LICENSE-CINNABAR).
+This crate is [MIT licensed](https://github.com/cinnabar-mc/bedrock-net/blob/dev/crates/bedrock-packs/LICENSE-MIT).

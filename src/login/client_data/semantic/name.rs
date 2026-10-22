@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+// SPDX-License-Identifier: MIT
 //! The pinned Go username predicate: a bounded UTF8 byte string containing space or category L.
 
 use super::unicode_generated::LETTER_RANGES;

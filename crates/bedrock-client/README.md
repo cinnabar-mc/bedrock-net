@@ -94,6 +94,7 @@ and error handling; the [batch guide](https://github.com/cinnabar-mc/bedrock-net
 
 ## License
 
-This crate retains Cinnabar's
-[PolyForm Noncommercial license](https://github.com/cinnabar-mc/bedrock-net/blob/dev/LICENSE-CINNABAR). The spawn adaptation
+This crate is [MIT licensed](https://github.com/cinnabar-mc/bedrock-net/blob/dev/crates/bedrock-client/LICENSE-MIT). The spawn adaptation
 also preserves [Jolyne's MIT notice](https://github.com/cinnabar-mc/bedrock-net/blob/dev/crates/bedrock-client/LICENSE-AXOLOTL).
+The built-in pack catalog preserves
+[Gophertunnel's MIT notice](https://github.com/cinnabar-mc/bedrock-net/blob/dev/crates/bedrock-client/LICENSE-MIT-gophertunnel).

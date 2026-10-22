@@ -104,8 +104,7 @@ Underlying transports may run their own workers.
 
 ## License
 
-The root crate is available under MIT or Apache-2.0. `bedrock-client`,
-`bedrock-client-tokio` and `bedrock-packs` retain their
-[PolyForm Noncommercial license](https://github.com/cinnabar-mc/bedrock-net/blob/dev/LICENSE-CINNABAR).
+Cinnabar-owned code in this workspace is
+[MIT licensed](https://github.com/cinnabar-mc/bedrock-net/blob/dev/LICENSE-MIT).
 [NOTICE](https://github.com/cinnabar-mc/bedrock-net/blob/dev/NOTICE) and [THIRD_PARTY_NOTICES.md](https://github.com/cinnabar-mc/bedrock-net/blob/dev/THIRD_PARTY_NOTICES.md) list retained
-implementation and dependency attribution.
+third-party licenses and attribution, including Apache-2.0 and BSD terms.

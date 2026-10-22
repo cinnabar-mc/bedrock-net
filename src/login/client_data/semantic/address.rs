@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+// SPDX-License-Identifier: MIT
 //! Incoming address syntax is metadata only; DNS and OS service resolution are deliberately omitted.
 //! URL component admission follows the actual Go net/url consumer, without browser normalization.
 

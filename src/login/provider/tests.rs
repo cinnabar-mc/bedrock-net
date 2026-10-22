@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+// SPDX-License-Identifier: MIT
 //! Provider admission controls using original synthetic signing keys.
 use super::*;
 use base64::engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD};

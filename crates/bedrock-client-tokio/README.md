@@ -58,5 +58,8 @@ unread packets across phase changes. A canceled borrowed send can resume through
 pending output and retire that connection under your cleanup deadline.
 
 See [transport setup and shutdown](https://github.com/cinnabar-mc/bedrock-net/blob/dev/docs/transports.md) for polling,
-backpressure, cancellation and closing. The implementation retains its
-[PolyForm Noncommercial license](https://github.com/cinnabar-mc/bedrock-net/blob/dev/LICENSE-CINNABAR).
+backpressure, cancellation and closing.
+
+## License
+
+This crate is [MIT licensed](https://github.com/cinnabar-mc/bedrock-net/blob/dev/crates/bedrock-client-tokio/LICENSE-MIT).
