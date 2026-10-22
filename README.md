@@ -1,300 +1,111 @@
 # bedrock-net
 
-Native Rust libraries for Minecraft Bedrock batch framing, Login, resource-pack
-delivery and startup negotiation. Use the protocol owners with your own
-transport and scheduler, or enable the optional Tokio transport edges.
+Build Minecraft Bedrock clients, servers and proxies in Rust. These libraries
+handle Login, resource-pack transfer and session startup, with Tokio adapters
+for RakNet and NetherNet connections.
 
-Applications supply account and endpoint policy, credentials, pack sources,
-world definitions and ongoing play. The libraries retain protocol state and
-return the next owned continuation and its effects.
+## Connect to a server
 
-## Choose a layer
-
-| Crate | Responsibility |
-| --- | --- |
-| [`bedrock-net`](src/lib.rs) | Encoded packet batches, compression and directional ciphers; optional Login primitives and transport edges. |
-| [`bedrock-client`](crates/bedrock-client) | Sans-I/O client and accepting negotiation over generated packets, including pack transfer and startup. |
-| [`bedrock-client-tokio`](crates/bedrock-client-tokio) | Optional caller-owned settings/Login/pack wire loops, codec/FIFO/cipher and established transport lifecycles; no runtime or session task is created. |
-| [`bedrock-packs`](crates/bedrock-packs) | Runtime-independent pack text, owned archive handoffs and content-key lifetime. |
-
-[protocolgen](https://github.com/cinnabar-mc/protocolgen) owns the version-specific
-packet schemas and serializers. [bedrock-services](https://github.com/cinnabar-mc/bedrock-services)
-owns account authentication and service traffic. This workspace consumes their
-outputs; applications select accounts, authorize world/session joins, acquire
-credentials and decide retry, cache, rendering and ongoing-play policy.
-
-The three libraries are the default workspace members. Their pure owners perform
-no socket, HTTP, filesystem or clock I/O and create no runtime. Callers supply
-time to operations that need it. A Bevy or custom-executor application can drive
-these owners directly; enabling an optional Tokio edge is a separate choice.
-
-## Library releases
-
-Use a pinned Git revision while a package's registry dependencies are not yet
-released. Publication eligibility is declared in each package manifest; examples
-remain unpublished. A path dependency also declares its registry version, which
-Cargo checks against the local package. Before publishing a dependent package,
-release its prerequisites and verify the packaged archive against the registry.
-Git dependencies need compatible registry releases containing the required fixes;
-a similarly named upstream package is not a substitute for the pinned fork.
-Preserve each package's declared license when preparing an archive.
-
-Registry releases still need the protocolgen, service and transport prerequisites.
-The `raknet` name on crates.io belongs to another repository; resolve ownership
-or choose a publication name before adding its registry fallback.
-
-The workspace opts into selected pedantic Clippy checks for documentation,
-patterns and underscore-prefixed bindings. CI enforces that policy across all
-targets and features with warnings denied.
-
-## Batch codec
-
-Pass encoded packets, including their packet headers. The codec adds batch
-framing, splits at the configured byte/packet limits and preserves wire order.
-It leaves packet-body interpretation to the generated codec.
-
-```rust
-use bedrock_net::{BatchCodec, BatchHeader, BatchLimits, DecodeOutcome};
-use bytes::Bytes;
-
-let plain = BatchCodec::new(BatchHeader::RakNet, BatchLimits::default());
-let packet = Bytes::from_static(&[0x02, 0, 0, 0, 0]);
-let batches = plain.encode(std::slice::from_ref(&packet))?;
-match plain.decode(batches[0].clone())? {
-    DecodeOutcome::Packets { packets, .. } => assert!(packets.eq([packet])),
-    DecodeOutcome::Dropped(reason) => panic!("unexpected compression drop: {reason}"),
-}
-# Ok::<(), bedrock_net::BatchError>(())
-```
-
-After actual `NetworkSettings`, consume `plain.negotiate(settings)` to obtain a
-`BatchCodec<Negotiated>`. That owner cannot renegotiate or reset compression.
-Raw DEFLATE and Snappy are supported; the protocol's Zlib name means raw DEFLATE.
-Incoming negotiated batches select their declared algorithm independently of the
-outgoing threshold.
-
-Native DEFLATE encoding uses libdeflate at level 6 for complete batches. Its
-bundled C code builds through the `cc` crate and requires a C compiler; no Perl or
-`CMake` is needed for this dependency. DEFLATE decoding uses portable zlib-rs;
-WebAssembly also uses zlib-rs level 6 for encoding without a C dependency.
-DEFLATE engines remain temporary per-call state. Snappy lazily reuses bounded
-matching tables and initialized output scratch per connection to avoid repeated
-allocation and initialization. Every batch resets its matching state and emits
-an independent block. Compressed bytes may differ
-between compatible encoders; no encoded-byte identity is promised. The adapted
-Snappy implementation retains its [third-party notices](THIRD_PARTY_NOTICES.md).
-
-`DecodeOutcome::Dropped` means count/log the compression failure and continue.
-Batch framing and size violations return `BatchError`; all entry lengths are
-validated before any packet is exposed. Packet headers and bodies still need
-decoding. Empty incoming entries are skipped and counted. Limits are
-explicit library policy, adjustable for an application's pack-transfer budget.
-Decoded packets are an owning iterator over one validated body; consume it as
-needed rather than collecting unread packets. `max_packets` controls outgoing
-splitting. Incoming batches use the byte bounds by default; set
-`max_incoming_packets` to enforce a separate nonempty packet-count ceiling.
-After negotiating compression, `with_incoming_decoded_limit` can set a separate
-incoming decoded-byte ceiling. It preserves the original outgoing, wire and
-packet-count limits; the initial plaintext phase keeps its original byte policy.
-
-Keep one codec per connection to reuse its encoding and decode scratch. For synchronous
-packet handling, `codec.decode_with(message, callback)` visits borrowed packet
-bytes and reuses scratch for small Snappy batches. It validates the complete batch
-before invoking the callback. Use the owning iterator when packets must outlive
-the callback.
-
-After sending a batch group, `encode_into(packets, &mut batches)` can reuse its
-uncompressed buffers for the next group. Retained shared batches keep their
-original bytes. Keep unsent encrypted batches until delivery before recycling.
-
-`BatchEncryptor::encrypt_batch(header, message)` and
-`BatchDecryptor::decrypt_batch(header, message)` accept complete batches and
-preserve the clear transport marker. Pass an owned `Bytes` value to allow
-in-place encryption or decryption; shared inputs are copied. The
-[Tokio connection](crates/bedrock-client-tokio/src/connection.rs) used by the
-probe applies these operations on its original codec and directional streams.
-
-## Typed connection flow
-
-`bedrock-client` exposes consumed owners for completed local transitions:
-
-| Flow | Handoffs |
-| --- | --- |
-| Client Login | `ClientHandshake` → `ClientSettings` → `ClientLoginReady` → `ClientLogin` |
-| Client packs | `ClientPackOffer` → `ClientPacks` → `PackComplete` |
-| Client startup | `SpawnNegotiation` → `SpawnReady` → initialization acknowledgment |
-| Accepting Login | `ServerHandshake` → settings/verification/authorization/exchange owners → `ServerPacksReady<Grant>` or Login-only `AcceptedLogin<Grant>` |
-| Accepting packs | `ServerPacks<Grant>` → owned chunk read/write continuations → `ServerWorldReady<Grant>` |
-| Accepting startup | `ServerSpawning<Grant>` → `ServerInitialized<Grant>` → `AcceptedSession<Grant>` |
-| Packless upstream relay | `ServerPacksReady<Grant>` → pending `LoginSuccess` flush → `ServerRelaying<Grant>` → actual forwarded initialization |
-
-Methods consume the current phase and return its continuation. Install returned
-compression or ciphers and dispatch effects before advancing that continuation.
-`ClientSettings` exposes no Login formatter, pack transfer exposes no preload
-method, and only `SpawnReady` exposes the initialization acknowledgment. The
-original key and negotiated data move with the owner.
-
-These types constrain local call order. Remote refusal, malformed input, expiry
-and I/O failure still return errors. Preparation errors such as Login formatting
-can return the unchanged owner for correction. Accepting transition errors retain
-their continuation for retirement. Recovery does not reset a deadline or stream.
-
-The application dispatches returned packets in order, installs compression and
-ciphers on its retained connection, and preserves unrelated packets in a bounded
-FIFO. A pure continuation cannot prove that a real socket flushed or that a
-world authorized a player. Accepting Login requires a provider `LoginVerifier`
-and an explicit application authorization callback. Pack delivery retains the
-original memory archive or adapter-owned external source through sequential
-read/write continuations. Startup requires the actual caller-selected world
-packet definitions; completion does not attach that world to a player.
-
-The verifier can retain signed name, canonical UUID and `PlayFab` identifiers with
-`TrustedIdentity::with_player_identity`; `AuthenticatedLogin::player_identity`
-borrows them and revalidation rejects changes. Missing presentation stays absent.
-
-The `login` feature also exposes `parse_offline_request`, with explicit UTC, a
-byte cap and a nonblocking cached address resolver. Its opaque `OfflineLogin`
-retains validated client-signed metadata, the original signer and the final
-exchange key. Account and UUID claims remain untrusted.
-`bedrock_client::server::ServerHandshake::new_offline` and `OfflinePolicy` carry
-that distinct capability through authorization, packs, startup and relay handoffs.
-
-The accepting APIs provide protocol continuations through `AcceptedSession`.
-The application supplies its listener, current authorization and running-world
-attachment. It can also stop at the Login-only handoff.
-An upstream without a pack phase uses `relay_without_packs`; it creates no pack
-metadata or acknowledgment. The caller flushes its `LoginSuccess` before forwarding
-the real startup. Runtime, registry, radius/spawn and Initialized checks remain.
-
-See the [integration guide](docs/integration.md) for packet routing, cipher
-ordering, pack/startup handoffs and owner-preserving error/close handling. The
-[client contract](crates/bedrock-client/README.md) describes each capability.
-
-## Features and runtimes
-
-| Root feature | Provides |
-| --- | --- |
-| Default | Synchronous batch codec and directional batch ciphers. |
-| `login` | Offline/acquired-credential request formatting, server exchange, accepting verification and pure `ClientData` validation. |
-| `provider-verification` | Pure configured issuer/JWK verification for Login and signed SDP, using caller-supplied UTC; includes `login` and `NetherNet` identity primitives. |
-| `raknet` | `RakNetConnection`, a caller-polled Tokio socket driver over the Cinnabar `RakNet` fork. |
-| `messaging` | `PreparedMessaging`/`MessagingConnection` and `messaging::server`, composing a supplied SDK service socket with connecting or accepting `NetherNet`. |
-
-The optional edges start no runtime or task of their own. `RakNet` owns one socket;
-keep `recv` or `maintain` polled for protocol progress, use `queue_send` for admission and drive
-`flush` for local emission. `wait_send_capacity` services that same connection
-when its send budget is full. `maintain` retains accepted input and defers new
-reliable input when aggregate capacity is full; drain the FIFO and its terminal
-through `recv`. One original message head may wait outside the FIFO, while a
-message exceeding the whole configured byte allowance still fails. Messaging
-needs `recv` or `maintain` polled; its
-underlying `NetherNet` Tokio adapter owns its bounded transport workers. Accepting
-`MessagingServer` needs `accept` or `maintain` polled and takes caller-supplied
-ICE configuration. It publishes no world or activity and does not authorize Login.
-
-An accepting JSON-RPC server can request fresh TURN credentials with
-`begin_turn_refresh(deadline)` and finish that exact request with
-`finish_turn_refresh(&receipt)`. Keep the receipt across canceled waits; it belongs
-to that server and cannot be reused on another one. Finish the request, explicitly
-retire it with `cancel_turn_refresh(&receipt)`, or close the server before abandoning
-it. Explicit cancellation releases only that receipt's local wait and result;
-an admitted write can still reach the service, with late responses ignored.
-The result moves the actual SDK credential
-owner once and preserves its expiry. This operation does not refresh account
-authentication, replace ICE configuration or renew an existing allocation.
-
-The caller can install a qualified answer identity, offer trust and ICE
-configuration with `set_identity`, `set_token_trust` and `set_server_ice`.
-Coordinate these changes before accepting another offer. Pending and accepted
-peers retain their original transport and signer owners; the setters perform no
-service requests or atomic renewal transaction.
-
-Choose the service dialect from the acquired route before connecting.
-`PreparedMessaging::new` takes a Player Messaging UUID;
-`PreparedMessaging::new_legacy` takes the original legacy string recipient and a
-matching legacy SDK socket. `recipient()` preserves that typed distinction.
-Legacy offer completion uses the service delivery outcome; it does not invent a
-peer receipt. Supply signed identity and explicit answer trust in both cases.
-Only the explicit legacy route may opt into missing answer assertions; any
-present assertion still passes the configured verification.
-
-Local transport close consumes send capability and retains a closing owner.
-Borrowed drain/close waits keep accepted input and pending work across
-cancellation. Completion describes local retirement; it does not acknowledge
-remote delivery. Shared established Messaging senders observe global closure at
-the runtime admission gate.
-For an accepting Messaging server, `begin_close` seals its routes immediately and
-retains the original service socket. Keep calling the resulting owner's
-`finish_close` to drive its bounded WebSocket close and join the listener.
-Canceling that wait preserves both owners and the original close cutoff.
-
-The crates currently use Git/path dependencies rather than crates.io releases.
-Select one reviewed revision of this repository for its library crates and use
-the matching generated packet/dependency graph from [Cargo.toml](Cargo.toml).
-The manifest declares the required Rust version. Optional edges bring their
-runtime dependencies only when enabled.
-
-## Examples and checks
-
-The standalone `bedrock-probe` binary demonstrates settings and optional offline
-Login. Its Login path stops at the pack offer. Read its existing owners together
-when adapting it:
-
-| Example source | Shows |
-| --- | --- |
-| [main.rs](examples/client/src/main.rs) | Consuming settings/Login phases and handling returned effects. |
-| [connection.rs](crates/bedrock-client-tokio/src/connection.rs) | One codec/cipher pair and preserving unread batch entries. |
-| [transport.rs](examples/client/src/transport.rs) | Concrete transport setup, send and retirement. |
+Run the included client against a listening peer that permits offline Login:
 
 ```sh
-cargo run --locked -p bedrock-probe -- raknet 127.0.0.1:19132
-cargo run --locked -p bedrock-probe -- nethernet 127.0.0.1:19132 --offline-login
-cargo run --locked -p bedrock-probe -- nethernet-lan 127.0.0.1:19132 --offline-login
-cargo test --locked
-cargo test --locked -p bedrock-net --all-features
-cargo fmt --all --check
+git clone https://github.com/cinnabar-mc/bedrock-net
+cd bedrock-net
+cargo run --locked -p bedrock-probe -- raknet 127.0.0.1:19132 --offline-login
 ```
 
-Each probe invocation needs a peer listening at the supplied endpoint. The
-default probe only requests settings; `--offline-login` uses synthetic identity.
-The LAN mode targets an IPv4 discovery endpoint; the `nethernet` mode uses HTTP
-signaling. Account authentication, pack download and entering a world remain
-application work.
+The probe connects, negotiates compression, sends Login with synthetic player
+and skin data, and prints Login status. It stops at the pack offer, or at
+`StartGame` if the peer skips packs. It does not download packs or enter a world.
+Omit `--offline-login` to request settings only.
 
-## Protocol scope and license
+For an authenticated client, start with the
+[connect and Login example](https://github.com/cinnabar-mc/bedrock-net/blob/dev/docs/tokio.md#connect-a-client).
+Supply your account token, its proof key, expiry and client metadata. Continue
+with the [client guide](https://github.com/cinnabar-mc/bedrock-net/blob/dev/docs/client.md) to download packs and initialize the player.
+The [probe source](https://github.com/cinnabar-mc/bedrock-net/blob/dev/examples/client/src/main.rs) shows metadata construction and
+connection cleanup.
 
-Packet negotiation uses the generated protocol revision in the workspace
-manifest. The accepting APIs handle modern authenticated Login and explicit
-offline admission with modern tokens or legacy chains. Wire guest mode 1 remains
-unsupported. World loading, presentation,
-running-world attachment and ongoing play belong to the application.
+The probe also supports HTTP signaling and directed LAN discovery:
 
-The root crate offers MIT or Apache-2.0. Extracted `bedrock-client`,
-`bedrock-client-tokio` and `bedrock-packs` code retains its separately identified
-[`PolyForm` Noncommercial license](LICENSE-CINNABAR). See
-[NOTICE](https://github.com/cinnabar-mc/bedrock-net/blob/dev/NOTICE) for
-implementation references and the retained dependency/adaptation notices.
+```sh
+cargo run --locked -p bedrock-probe -- nethernet 127.0.0.1:19132 --offline-login
+cargo run --locked -p bedrock-probe -- nethernet-lan 127.0.0.1:19132 --offline-login
+```
 
-Accepting Login validates standard client claims before returning signed metadata.
-`client_data()` interprets invalid UTF-8 with Go replacement rules;
-`client_data_json_bytes()` preserves the original signed JSON value bytes.
-The provider-bound `signing_key()` and final signed `exchange_key()` are distinct.
-Transport binding and cipher setup use the final exchange key; provider revalidation
-retains the original signer and identity. Nonce aliases use the final non-null signed value.
+The LAN probe requires an IPv4 loopback discovery endpoint. See the
+[transport guide](https://github.com/cinnabar-mc/bedrock-net/blob/dev/docs/transports.md) for application setup and trust settings.
 
-Colon-containing UDP addresses that need the configured resolver require
-`LoginVerifier::resolve_client_address()` to return a cached successful resolution.
-The default returns `AddressResolutionRequired`; unknown hosts/services never pass
-without a result. Match the resolver environment used by the accepting application.
-The callback must not block or perform network I/O. Applications can preflight the
-pure parser, collect cache misses, resolve them asynchronously under their original
-admission deadline, and replay the same request after acquisition. Submit the Login
-to the consuming server engine only when its cache is ready, since an engine error
-seals that transition. Resolver-independent literals and HTTP URLs need no lookup
-callback; empty IPv6 zones and nonstandard IP spellings use the cached resolver.
-Application authorization remains separate from these validation steps. The rules follow gophertunnel; see [LICENSE-GOPHERTUNNEL](LICENSE-GOPHERTUNNEL).
-Language registry data and parsing follow Go; see [LICENSE-GO](LICENSE-GO).
+## Accept clients or build a proxy
 
-`RawClientData::validate()` applies caller-selected title/version and presentation
-policy to relay metadata. Accepting signed Login uses the separate wire-admission
-rules above, including authenticated key updates and required cached UDP resolution.
+Start a listener with [`raknet-tokio`](https://github.com/cinnabar-mc/raknet) and
+pass an accepted session to `AcceptingConnection::from_raknet`. For NetherNet,
+use `AcceptingConnection::from_nether`. The
+[accepting example](https://github.com/cinnabar-mc/bedrock-net/blob/dev/docs/tokio.md#accept-a-client) reads a
+settings request, sends its response and prepares the connection for Login.
+
+Your application supplies Login verification and player authorization. Then you
+can serve a resource-pack snapshot and world definitions, or relay an upstream
+server's startup. The [server guide](https://github.com/cinnabar-mc/bedrock-net/blob/dev/docs/server.md) explains both paths and the
+packets to send at each step. The library handles negotiation; your application
+runs the world and ongoing gameplay.
+
+For a proxy, retain original packet headers and forward packet bytes in order.
+Use the [relay startup APIs](https://github.com/cinnabar-mc/bedrock-net/blob/dev/docs/server.md#relay-an-upstream-world) to track
+initialization and the [pack metadata option](https://github.com/cinnabar-mc/bedrock-net/blob/dev/docs/client.md#retain-metadata-for-a-relay)
+when you need the upstream offer and stack.
+
+## Send and receive packets
+
+After negotiation, keep the same `Connection` for play. `next_packet` returns a
+generated packet with its header; `send_packet` sends a generated packet with
+your selected sender role and subclient IDs. See the
+[packet I/O example](https://github.com/cinnabar-mc/bedrock-net/blob/dev/docs/tokio.md#send-and-receive-packets).
+Raw reads and forwarding are available when a proxy must preserve packet bytes.
+
+Packet types and codecs come from
+[protocolgen](https://github.com/cinnabar-mc/protocolgen). Account authentication
+and service requests come from
+[bedrock-services](https://github.com/cinnabar-mc/bedrock-services).
+
+## Add it to your application
+
+For the client, server and packet examples, copy the complete
+[Tokio dependency block](https://github.com/cinnabar-mc/bedrock-net/blob/dev/docs/tokio.md#dependencies). It declares every direct
+dependency and feature used by those functions, including the generated packet
+crate and accepting RakNet types. The individual crate READMEs have setup for
+their examples too.
+
+Use Git dependencies while the required registry releases are unavailable.
+Keep crates from this repository on one revision and commit `Cargo.lock`.
+The [workspace manifest](https://github.com/cinnabar-mc/bedrock-net/blob/dev/Cargo.toml) declares the Rust version and external
+revisions. Native DEFLATE encoding requires a C compiler.
+
+| If you need… | Use |
+| --- | --- |
+| Connections on your Tokio runtime | [`bedrock-client-tokio`](https://github.com/cinnabar-mc/bedrock-net/blob/dev/crates/bedrock-client-tokio/README.md), with `raknet` or `nethernet`. |
+| Negotiation on another runtime or an existing network loop | [`bedrock-client`](https://github.com/cinnabar-mc/bedrock-net/blob/dev/crates/bedrock-client/README.md). |
+| Batching and encryption for encoded packets | [`bedrock-net`](https://github.com/cinnabar-mc/bedrock-net/blob/dev/src/lib.rs). |
+| Pack JSONC parsing and archive handoffs | [`bedrock-packs`](https://github.com/cinnabar-mc/bedrock-net/blob/dev/crates/bedrock-packs/README.md). |
+
+`bedrock-client` and `bedrock-packs` do no I/O and use no async runtime. The default
+`bedrock-net` build is synchronous; its optional transports use Tokio.
+`bedrock-client-tokio` uses your runtime and does not spawn a session task for you.
+Underlying transports may run their own workers.
+
+## Guides and reference
+
+- [Integration](https://github.com/cinnabar-mc/bedrock-net/blob/dev/docs/integration.md): packet routing, buffering, deadlines and errors.
+- [Client](https://github.com/cinnabar-mc/bedrock-net/blob/dev/docs/client.md): Login, packs and entering play.
+- [Server](https://github.com/cinnabar-mc/bedrock-net/blob/dev/docs/server.md): verification, authorization, packs and world startup.
+- [Transports](https://github.com/cinnabar-mc/bedrock-net/blob/dev/docs/transports.md): connection setup, polling and shutdown.
+- [Batch codec](https://github.com/cinnabar-mc/bedrock-net/blob/dev/docs/batches.md): framing, compression, limits and encryption.
+- [Release dependencies](https://github.com/cinnabar-mc/bedrock-net/blob/dev/docs/releases.md): packaging and registry prerequisites.
+
+## License
+
+The root crate is available under MIT or Apache-2.0. `bedrock-client`,
+`bedrock-client-tokio` and `bedrock-packs` retain their
+[PolyForm Noncommercial license](https://github.com/cinnabar-mc/bedrock-net/blob/dev/LICENSE-CINNABAR).
+[NOTICE](https://github.com/cinnabar-mc/bedrock-net/blob/dev/NOTICE) and [THIRD_PARTY_NOTICES.md](https://github.com/cinnabar-mc/bedrock-net/blob/dev/THIRD_PARTY_NOTICES.md) list retained
+implementation and dependency attribution.

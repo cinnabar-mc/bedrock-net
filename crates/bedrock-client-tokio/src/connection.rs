@@ -20,7 +20,10 @@ use pending::PendingPackets;
 pub mod send;
 use send::{PendingSend, RetirementState};
 
-/// One caller-driven codec, cipher and original received FIFO.
+/// Batching, encryption and ordered input buffering for one transport connection.
+///
+/// Keep this value through settings, Login, packs and play. It preserves unread
+/// batch entries and deferred packets across those transitions.
 pub struct Connection {
     pub(super) transport: Transport,
     codec: Option<Codec>,
@@ -55,8 +58,9 @@ pub mod observation;
 use observation::{BatchLifetimes, OBSERVE_BATCHES, ObservedBatch};
 
 impl Connection {
-    /// Binds the caller's wire, field and deferred-prefix limits before any codec transition.
-    /// Incoming decoded limits remain unchanged until actual compression settings are installed.
+    /// Creates a plain connection with batch, packet-field and deferred-input limits.
+    /// Set `receive_limits` for the remote peer's role. The negotiated incoming-byte
+    /// limit takes effect when compression is enabled.
     pub fn new(
         mut transport: Transport,
         limits: BatchLimits,

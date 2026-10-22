@@ -1,4 +1,9 @@
-//! Network negotiation and key exchange, driven one generated packet at a time.
+//! Client settings, Login and key exchange, driven with generated packets.
+//!
+//! Start with [`ClientHandshake`]. Send its settings request, then feed incoming
+//! packets to [`ClientSettings::receive`]. Install the returned compression before
+//! formatting Login. The [client guide](https://github.com/cinnabar-mc/bedrock-net/blob/dev/docs/client.md)
+//! covers pack transfer and startup after Login.
 
 use std::{sync::Arc, time::SystemTime};
 

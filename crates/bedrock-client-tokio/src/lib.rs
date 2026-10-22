@@ -21,7 +21,11 @@ pub mod server;
 pub mod transport;
 use rtt::RoundTripTime;
 
-/// Exclusive packet I/O consumed by a caller's session pump.
+/// Batch I/O for an application's session loop.
+///
+/// Implement this trait to use another transport with that loop. Each body is one
+/// complete batch; implementations retain partial receive progress across canceled
+/// waits. The application supplies the runtime and closing deadline.
 pub trait PacketIo: Send + 'static {
     /// Observes the original transport without retaining its lifecycle capability.
     fn observe_rtt(&self) -> Option<RoundTripTime> {

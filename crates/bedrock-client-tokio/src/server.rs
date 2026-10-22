@@ -1,6 +1,10 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 
-//! Caller-driven accepting wire ownership over an established transport association.
+//! Packet I/O for an accepted RakNet or NetherNet session.
+//!
+//! [`AcceptingConnection`] retains batching, ciphers and unread packets while the
+//! application drives [`ServerHandshake`]. Use [`prepare_packets`](AcceptingConnection::prepare_packets)
+//! to send returned effects before advancing pending handshake states.
 
 use crate::connection::send::{PreparedSend, SendRetirement};
 use crate::{
@@ -22,8 +26,10 @@ use bytes::Bytes;
 use p384::ecdsa::SigningKey;
 use std::{io, sync::Arc, time::Instant};
 
-/// The sole codec/cipher and receive FIFO for one actual established server association.
-/// Construction grants no Login, hosted membership or selected-world authority.
+/// Reads and writes generated packets on one accepted transport session.
+///
+/// The returned handshake performs Login verification. Your application separately
+/// authorizes the player and supplies packs and world data.
 #[must_use]
 pub struct AcceptingConnection {
     connection: Connection,
@@ -37,9 +43,9 @@ pub struct RetiredAcceptingConnection {
 }
 
 impl AcceptingConnection {
-    /// Takes the original established `RakNet` listener handoff and enables Bedrock Login.
-    /// The caller supplies its own proof key and Login/world admission policy.
-    /// This creates no socket, provider session, account authority or hosted membership.
+    /// Wraps a session returned by `RakServer::accept` and starts Bedrock settings negotiation.
+    /// Supply the server key, limits and an absolute setup deadline. Drive the
+    /// returned [`ServerHandshake`] with your configured Login verifier.
     #[cfg(feature = "raknet")]
     pub fn from_raknet(
         accepted: raknet_tokio::prelude::RakSession<raknet_tokio::prelude::Established>,
@@ -65,10 +71,9 @@ impl AcceptingConnection {
         ))
     }
 
-    /// Takes an actual Ready association and binds Login to its original authenticated SDP key.
-    /// The caller must have configured its server's real transport identity/signaling policy and
-    /// supply that same server proof key. The deferred-byte bound belongs to the caller.
-    /// This performs no dial or provider/account acquisition.
+    /// Wraps an accepted NetherNet association and binds Login to its verified SDP key.
+    /// Supply the server proof key used by signaling. DTLS protects this association,
+    /// so the returned handshake disables the additional Bedrock batch cipher.
     #[cfg(feature = "nethernet")]
     pub async fn from_nether(
         accepted: nethernet_tokio::AcceptedSession,
