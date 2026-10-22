@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+// SPDX-License-Identifier: MIT
 //! The finite generated Go JSON type gate; semantic validation and raw normalization stay separate.
 
 use super::{

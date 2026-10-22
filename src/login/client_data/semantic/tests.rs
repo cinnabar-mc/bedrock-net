@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+// SPDX-License-Identifier: MIT
 use super::{locale_generated as locale, unicode_generated as unicode};
 use crate::login::client_data::schema_generated;
 

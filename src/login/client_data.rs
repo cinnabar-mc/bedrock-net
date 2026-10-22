@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+// SPDX-License-Identifier: MIT
 //! Bounded untrusted JSON objects whose opaque value lexemes survive native Login signing.
 
 use serde::{

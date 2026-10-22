@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+// SPDX-License-Identifier: MIT
 use super::{MAX_NESTING_DEPTH, object_or_null};
 
 mod bytes;

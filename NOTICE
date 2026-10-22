@@ -1,19 +1,19 @@
 bedrock-net
 Copyright 2026 Cinnabar contributors
 
+Cinnabar-owned code in this workspace is licensed under MIT; see LICENSE-MIT.
 The optional src/login/provider and src/login/client_data implementations, their
 tests and the tools/go-oracle/clientdata helper extract provider verification
-and title metadata validation from cinnabar-mc/cinnabar. They retain the PolyForm
-Noncommercial License 1.0.0 reproduced in LICENSE-CINNABAR. They are not covered by the root
-crate's MIT/Apache license choice; individual source files identify this exception.
+and title metadata validation from cinnabar-mc/cinnabar.
 
-The bedrock-client, bedrock-client-tokio and bedrock-packs crates extract resource-pack negotiation,
-caller-driven Tokio resolved/direct setup, settings/Login/pack wire effects and connection/transport
-lifecycles, bounded transfer-target normalization, archive handoff and text
-handling from cinnabar-mc/cinnabar. These extracted
-implementations retain the PolyForm Noncommercial License 1.0.0 reproduced in
-LICENSE-CINNABAR; they are not covered by the root crate's MIT/Apache license
-choice. Their Cargo manifests identify that retained license explicitly.
+The bedrock-client, bedrock-client-tokio and bedrock-packs crates extract
+resource-pack negotiation, caller-driven Tokio resolved/direct setup,
+settings/Login/pack wire effects and connection/transport lifecycles, bounded
+transfer-target normalization, archive handoff and text handling from
+cinnabar-mc/cinnabar. The Cinnabar-owned portions of these extracted
+implementations are licensed under MIT. The base Cinnabar application's license
+is unchanged. Retained third-party code and notices keep their original terms.
+
 The built-in resource-pack identity catalog follows the public Gophertunnel
 behavior reference pinned in tools/go-oracle/go.mod. Its MIT notice is retained in
 LICENSE-MIT-gophertunnel.

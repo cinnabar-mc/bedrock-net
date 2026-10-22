@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+// SPDX-License-Identifier: MIT
 //! Acceptance follows the pinned Go x/text parser; canonical output never rewrites signed metadata.
 //! Source-attributed adaptation of Go's BSD-licensed internal/language/parse.go; see notices.
 

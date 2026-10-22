@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+// SPDX-License-Identifier: MIT
 //! Presentation retained only after the configured provider verified these claims.
 
 use crate::login::{LoginError, TrustedIdentity};

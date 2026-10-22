@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+// SPDX-License-Identifier: MIT
 //! Consuming relay metadata validation before any canonical identity overlay or credential mint.
 
 use super::RawClientData;
