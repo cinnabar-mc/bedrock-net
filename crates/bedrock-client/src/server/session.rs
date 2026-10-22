@@ -130,7 +130,7 @@ impl<A, L> SessionEngine<A, L> {
     }
 
     /// Records actual chunk flush before advancing the original archive.
-    /// Send any returned next-pack DataInfo before retrying retained input.
+    /// Send any returned next-pack `DataInfo` before retrying retained input.
     ///
     /// # Errors
     /// Rejects expiry or a missing/repeated chunk acknowledgment.

@@ -13,7 +13,7 @@ use std::{
 };
 
 impl<A, L> ServerPacksReady<A, L> {
-    /// Validates the original selected snapshot before advertising any pack or LoginSuccess.
+    /// Validates the original selected snapshot before advertising any pack or `LoginSuccess`.
     /// Revalidates Login under its unchanged deadline. Application grant validity belongs
     /// to the caller and must be checked again at actual sends/attachment after waits.
     pub fn start_packs(

@@ -44,7 +44,7 @@ pub enum EncryptionError {
     /// Adding the checksum would overflow the payload length.
     #[error("encrypted batch length overflow")]
     LengthOverflow,
-    /// A RakNet batch has no valid transport marker.
+    /// A `RakNet` batch has no valid transport marker.
     #[error("invalid encrypted batch transport marker")]
     InvalidBatchHeader,
 }

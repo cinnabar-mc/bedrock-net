@@ -154,7 +154,7 @@ pub(super) struct Delivery {
 }
 
 impl Delivery {
-    /// Checks the entire caller snapshot before any LoginSuccess or offer is emitted.
+    /// Checks the entire caller snapshot before any `LoginSuccess` or offer is emitted.
     pub(super) fn new(
         snapshot: ServerPackSnapshot,
         mut options: ServerPackDelivery,
@@ -528,7 +528,7 @@ impl Delivery {
 }
 
 impl Archive {
-    /// Uses the same immutable metadata for validation and every emitted DataInfo.
+    /// Uses the same immutable metadata for validation and every emitted `DataInfo`.
     fn data_info(&self, chunk_size: u32) -> packets::ResourcePackDataInfo {
         packets::ResourcePackDataInfo {
             resource_name: self.name.clone(),

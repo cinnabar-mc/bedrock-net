@@ -4,10 +4,10 @@ use thiserror::Error;
 #[derive(Debug, Error)]
 #[non_exhaustive]
 pub enum BatchError {
-    /// A RakNet message had no batch marker.
+    /// A `RakNet` message had no batch marker.
     #[error("missing batch header")]
     MissingBatchHeader,
-    /// A RakNet message had a different batch marker.
+    /// A `RakNet` message had a different batch marker.
     #[error("invalid batch header {0:#04x}")]
     InvalidBatchHeader(u8),
     /// Compression was enabled but no algorithm byte followed.

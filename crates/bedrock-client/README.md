@@ -14,7 +14,7 @@ The public client capabilities are consumed at each handoff:
 | `ClientLogin` | Observe post-Login controls and verified exchange | `ClientPackOffer` or actual packless startup |
 | `ClientPackOffer` | Supply validated cache/CDN preloads; start once | `ClientPacks` |
 | `ClientPacks` | Transfer packs and handle late Login controls | `PackComplete` |
-| `SpawnNegotiation` | Observe first definitions and PlayerSpawn; defer radius updates | `SpawnReady` |
+| `SpawnNegotiation` | Observe first definitions and `PlayerSpawn`; defer radius updates | `SpawnReady` |
 | `SpawnReady` | Consume one presentation-ready initialization | Generated acknowledgment |
 
 `ClientHandshake::new` accepts the caller's owned signing key or an existing
@@ -45,7 +45,7 @@ handles both resource packets and late Login controls; it returns startup and
 terminal input unchanged. The standalone `PackOffer`→`PackNegotiation` API reuses
 the same bounded transfer implementation when no Login control is needed.
 
-When the server sends StartGame without an earlier offer, `LoginEvent::Startup`
+When the server sends `StartGame` without an earlier offer, `LoginEvent::Startup`
 consumes Login and returns that actual packet. Keep its original encoded header/body
 ahead of unread siblings on the caller's bounded FIFO. This path creates no offer,
 stack, pack acknowledgment or spawn readiness. The same startup prerequisites still
@@ -75,11 +75,11 @@ observer. `into_parts` supports callers stopping at the pack boundary. Ordinary
 `ResourcePackHandoff`/archive inputs are data, not constructors for protocol
 completion. Cache writers release shared archive references before the final stack.
 
-Startup returns the first StartGame/item registry as soon as both arrive and
+Startup returns the first `StartGame`/item registry as soon as both arrive and
 requests the caller-selected radius once. Preserve returned `deferred` packets
 in the caller's bounded FIFO ahead of unread input; handle Disconnect, Transfer
-and non-spawn PlayStatus promptly. StartGame, the first item registry and
-PlayerSpawn produce the non-cloneable `SpawnReady`; a radius reply can arrive
+and non-spawn `PlayStatus` promptly. `StartGame`, the first item registry and
+`PlayerSpawn` produce the non-cloneable `SpawnReady`; a radius reply can arrive
 later during play. Retain readiness until presentation completes,
 then consume `finish_loading` once. Loading-screen policy remains application-owned.
 
@@ -87,14 +87,14 @@ Adapters with externally prepared handoffs may configure `SpawnNegotiation::new`
 directly. That creates only a prerequisite observer and claims no Login, pack or
 world authority; the actual incoming prerequisites must still produce readiness.
 `receive_deferred` accepts only unrelated raw packet IDs, retaining a terrain fact
-while the caller keeps original bytes. StartGame, ItemRegistry, PlayStatus and
-ChunkRadiusUpdated require decoded bodies. Packet schemas/codecs remain in
+while the caller keeps original bytes. `StartGame`, `ItemRegistry`, `PlayStatus` and
+`ChunkRadiusUpdated` require decoded bodies. Packet schemas/codecs remain in
 protocolgen; the byte codec and directional ciphers remain in `bedrock-net`.
 
 Malformed-wire handling, endpoint trust, credential persistence, cache/CDN I/O,
 deferred byte bounds and ongoing play stay with callers.
 The extracted Cinnabar implementation retains its
-[PolyForm Noncommercial license](../../LICENSE-CINNABAR); the spawn adaptation
+[`PolyForm` Noncommercial license](../../LICENSE-CINNABAR); the spawn adaptation
 preserves [Jolyne's MIT notice](LICENSE-AXOLOTL).
 
 Accepting Login uses its own consumed capabilities:
@@ -123,7 +123,7 @@ callers. Offline authorization receives `&OfflineLogin`; packs, external reads,
 world startup and both relay paths preserve it through the final `into_parts`.
 Its claimed account and UUID values stay untrusted. Modern identity signature,
 time and audience checks are disabled in this policy; legacy chains are checked
-once during parsing. Signed ClientData, final exchange-key binding, actual cipher
+once during parsing. Signed `ClientData`, final exchange-key binding, actual cipher
 acknowledgment, caller authorization and the original deadline remain required.
 Wire guest mode 1 remains unsupported.
 
@@ -147,7 +147,7 @@ Approved marker constructor exists.
 The original deadline never restarts. Provider identity/key/presentation are
 revalidated at exchange, acknowledgment and final handoff. `ServerTransitionError`
 returns the retained owner/cause for retirement; it never resets a failed owner.
-The Login-only `finish` emits no LoginSuccess or pack advertisement.
+The Login-only `finish` emits no `LoginSuccess` or pack advertisement.
 Prepare the actual world and exact pack snapshot before calling `start_packs`.
 `AcceptedLogin` proves consumed Login completion, not world attachment/spawn.
 The caller preserves decoded siblings, handles terminal packets immediately and
@@ -166,7 +166,7 @@ Accepting pack delivery and startup continue through owned capabilities:
 | `ServerInitialized<Grant>` | Final provider/grant handoff | `AcceptedSession<Grant>` |
 
 `ServerPacksReady::start_packs` validates a `ServerPackSnapshot` before emitting
-LoginSuccess and its original offer. The snapshot contains exact offer/stack
+`LoginSuccess` and its original offer. The snapshot contains exact offer/stack
 metadata plus original `ServerPackContent` archives in offer order. Memory content
 shares immutable compressed bytes; external content asserts prevalidated size/SHA
 and keeps the actual immutable file/source lease in the adapter. The core performs
@@ -184,7 +184,7 @@ Delivery bounds and chunk indexing belong to the retained snapshot/delivery
 configuration; the core adds no pacing delay.
 
 Only the actual final stack acknowledgment permits `ServerWorldReady::start_world`.
-`ServerWorld` requires original generated StartGame/items/creative data and the
+`ServerWorld` requires original generated `StartGame`/items/creative data and the
 selected world's radius policy; it has no default world constructor. Exact
 runtime-ID initialization creates the sole final handoff owner. Provider
 revalidation remains at advertisement, world startup and final transfer; the
@@ -205,7 +205,7 @@ Login, grant and deadline without generating world or spawn responses. Pass its
 actual startup controls to `forward_server` or `forward_client`, forward the
 original packet, and consume `PendingServerRelay::flushed` only after that exact
 write finishes. The adapter keeps original raw headers and unread siblings.
-The continuation observes StartGame, item/radius/spawn controls and the matching
+The continuation observes `StartGame`, item/radius/spawn controls and the matching
 client Initialized; it returns `AcceptedSession` only after the final upstream
 forward and provider revalidation. Application authority still belongs to the
 adapter at every real write and final attachment.

@@ -61,7 +61,7 @@ impl OfflineLogin {
         &self.exchange_key
     }
 
-    /// Borrows validated presentation; unauthenticated requests use ThirdPartyName.
+    /// Borrows validated presentation; unauthenticated requests use `ThirdPartyName`.
     /// This accessor grants no provider or world identity authority.
     pub fn display_name(&self) -> &str {
         &self.identity.name
@@ -99,12 +99,12 @@ impl OfflineLogin {
         &self.identity.projected_uuid
     }
 
-    /// Borrows the untrusted PlayFab master-player claim.
+    /// Borrows the untrusted `PlayFab` master-player claim.
     pub fn claimed_playfab_id(&self) -> &str {
         &self.identity.playfab_id
     }
 
-    /// Borrows the untrusted PlayFab title claim.
+    /// Borrows the untrusted `PlayFab` title claim.
     pub fn claimed_playfab_title_id(&self) -> &str {
         &self.identity.playfab_title_id
     }
@@ -114,7 +114,7 @@ impl OfflineLogin {
 ///
 /// Modern identity signatures and policy are unverified. Legacy one- and three-token chains
 /// verify linked signatures, key updates and caller-supplied UTC. Both modes require signed
-/// metadata to pass the shared ClientData validator. Mode 1 remains unsupported.
+/// metadata to pass the shared `ClientData` validator. Mode 1 remains unsupported.
 /// Application admission and its original connection deadline remain caller-owned.
 /// `resolve` must supply an already acquired cached UDP lookup result without blocking or I/O.
 /// The caller's byte cap applies even when the final positive length exceeds remaining input.

@@ -10,4 +10,4 @@ independently without changing the server's required status.
 
 This crate performs no filesystem, HTTP, rendering or packet I/O. Archive
 validation and application remain caller responsibilities. The extracted
-Cinnabar implementation retains its [PolyForm Noncommercial license](../../LICENSE-CINNABAR).
+Cinnabar implementation retains its [`PolyForm` Noncommercial license](../../LICENSE-CINNABAR).

@@ -35,7 +35,7 @@ fn forward(
     }
 }
 
-/// Retains original early PlayerSpawn ordering and never generates a replacement radius response.
+/// Retains original early `PlayerSpawn` ordering and never generates a replacement radius response.
 fn startup(mut relay: ServerRelaying<Grant>, now: Instant) -> ServerRelaying<Grant> {
     for packet in [
         packets::PlayStatus {

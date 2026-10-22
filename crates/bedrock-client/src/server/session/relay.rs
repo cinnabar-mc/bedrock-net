@@ -11,7 +11,7 @@ use std::time::{Instant, SystemTime};
 impl<A, L> ServerPacksReady<A, L> {
     /// Relays a caller-selected upstream with no advertised pack phase.
     /// Revalidates the original Login and retains its grant/deadline. The returned
-    /// LoginSuccess must be sent and flushed before any upstream startup is forwarded.
+    /// `LoginSuccess` must be sent and flushed before any upstream startup is forwarded.
     /// This creates no offer, stack acknowledgment, selected world or initialization.
     ///
     /// # Errors
@@ -74,7 +74,7 @@ pub struct ServerRelaying<A, L = AuthenticatedLogin> {
     spawned: bool,
 }
 
-/// One original control or initial LoginSuccess and its sole continuation, awaiting actual flush.
+/// One original control or initial `LoginSuccess` and its sole continuation, awaiting actual flush.
 /// Raw headers/bytes and pipelined siblings remain with the adapter, under its original byte bound.
 ///
 /// ```compile_fail

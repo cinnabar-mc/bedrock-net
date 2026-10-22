@@ -108,7 +108,7 @@ fn native_provider_rejects_malformed_matching_key_before_cache_admission() {
     }
 }
 
-/// NumericDate compatibility must retain controlled rejection of invalid values and time bounds.
+/// `NumericDate` compatibility must retain controlled rejection of invalid values and time bounds.
 #[test]
 fn native_provider_numeric_dates_reject_invalid_values_and_time_bounds() {
     let now = UNIX_EPOCH + Duration::from_secs(SERVICE_SECONDS);

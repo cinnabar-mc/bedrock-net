@@ -12,7 +12,7 @@ pub enum SpawnError {
     /// The caller supplied an unusable requested radius.
     #[error("requested startup chunk radius must be positive")]
     InvalidRequest,
-    /// A later StartGame attempted to replace the local player's identity.
+    /// A later `StartGame` attempted to replace the local player's identity.
     #[error("conflicting StartGame runtime entity ID: first {first}, then {received}")]
     ConflictingRuntimeId {
         /// The first local-player runtime identifier.
@@ -30,7 +30,7 @@ pub enum SpawnError {
 
 /// First definitions handed to application preparation as soon as both arrive.
 pub struct StartupData {
-    /// The first StartGame, never replaced by later packets.
+    /// The first `StartGame`, never replaced by later packets.
     pub start_game: Box<packets::StartGame>,
     /// The first item table, never replaced by later custom-only/empty tables.
     pub item_registry: packets::ItemRegistry,
@@ -77,13 +77,13 @@ impl SpawnReady {
 /// Effects of one input, delivered together so no sibling action is lost.
 #[derive(Default)]
 pub struct SpawnUpdate {
-    /// Send once when the first StartGame arrives; loading-screen policy is external.
+    /// Send once when the first `StartGame` arrives; loading-screen policy is external.
     pub request_radius: Option<packets::RequestChunkRadius>,
     /// Start application preparation immediately when both first definitions arrive.
     pub startup: Option<StartupData>,
     /// Preserve this packet in the caller's bounded FIFO, ahead of unread input.
     ///
-    /// Disconnect, Transfer and non-spawn PlayStatus are also returned here for
+    /// Disconnect, Transfer and non-spawn `PlayStatus` are also returned here for
     /// handling by the caller. The core does not interpret display text or validate routes.
     pub deferred: Option<Box<packets::Packet>>,
     /// Signals completion of the network prerequisites exactly once.
@@ -102,7 +102,7 @@ enum Phase {
 /// in wire order under the caller's byte bound; this owner never buffers play
 /// traffic. The caller may prepare packs/world data on `startup` while continuing
 /// input. Retain the returned [`SpawnReady`] until presentation is actually ready.
-/// Readiness requires StartGame, the first item registry and PlayerSpawn. A radius
+/// Readiness requires `StartGame`, the first item registry and `PlayerSpawn`. A radius
 /// reply is validated and deferred if received before readiness; a later reply belongs
 /// to ordinary play. The original radius request is still emitted exactly once.
 /// This configuration-only entry asserts no Login or pack authority; external
@@ -151,7 +151,7 @@ impl SpawnNegotiation {
     /// Observes one generated packet and returns all immediate effects without a flush delay.
     ///
     /// # Errors
-    /// Conflicting StartGame identity, invalid radius or use after completion
+    /// Conflicting `StartGame` identity, invalid radius or use after completion
     /// ends the negotiation. The caller must stop on any terminal packet it
     /// receives through `deferred`, rather than continuing this state machine.
     pub fn receive(&mut self, packet: packets::Packet) -> Result<SpawnUpdate, SpawnError> {

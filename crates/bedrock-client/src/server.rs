@@ -36,7 +36,7 @@ pub type ServerKeyExchangeHandoff<A, L = AuthenticatedLogin> = (
 /// Fixed accepting capabilities; the caller supplies the original deadline and server proof key.
 #[derive(Clone, Copy, Debug)]
 pub struct ServerHandshakeOptions {
-    /// Compression installed only after sending and flushing NetworkSettings uncompressed.
+    /// Compression installed only after sending and flushing `NetworkSettings` uncompressed.
     pub compression: CompressionSettings,
     /// Whether the accepted transport also needs the Bedrock batch cipher.
     pub batch_encryption: bool,
@@ -103,7 +103,7 @@ enum EngineEvent {
         ciphers: Box<(BatchEncryptor, BatchDecryptor)>,
     },
     /// Login and any encrypted acknowledgment are complete; prepare the original world/pack snapshot.
-    /// Recheck application approval after awaits before advertising LoginSuccess or any packs.
+    /// Recheck application approval after awaits before advertising `LoginSuccess` or any packs.
     ReadyForPacks,
     /// Return unrelated packets unchanged, including Disconnect/Transfer for immediate caller handling.
     Unhandled(Box<packets::Packet>),
@@ -131,7 +131,7 @@ enum Phase {
 /// insufficient. Recheck that approval at actual pack/world handoff after waits.
 ///
 /// This owner stops before server pack advertisement/delivery and world startup.
-/// No LoginSuccess is emitted before the caller prepares its actual pack offer.
+/// No `LoginSuccess` is emitted before the caller prepares its actual pack offer.
 struct Engine<L = AuthenticatedLogin> {
     key: Arc<SigningKey>,
     transport_key: Option<VerifyingKey>,
@@ -205,7 +205,7 @@ impl<L> Engine<L> {
     /// Commits the caller's completed uncompressed send/flush and retained codec transition.
     ///
     /// # Errors
-    /// Rejects expiry, failure or an operation outside the NetworkSettings boundary.
+    /// Rejects expiry, failure or an operation outside the `NetworkSettings` boundary.
     fn compression_installed(&mut self, now: Instant) -> Result<(), ServerHandshakeError> {
         self.require(Phase::Compression, now)?;
         self.phase = Phase::Login;
@@ -216,7 +216,7 @@ impl<L> Engine<L> {
     ///
     /// Revalidates the exact provider credential immediately before creating the
     /// single exchange. Supply fresh caller entropy when batch encryption is
-    /// enabled; an encrypted transport can omit salt and receives ReadyForPacks.
+    /// enabled; an encrypted transport can omit salt and receives `ReadyForPacks`.
     ///
     /// # Errors
     /// Expiry, repeated/out-of-sequence use, provider/key changes or missing salt end this handshake.
@@ -247,7 +247,7 @@ impl<L> Engine<L> {
     /// Transfers the original Login once at the pack-preparation policy boundary.
     ///
     /// Caller owns later pack/session deadlines and must retain/recheck actual
-    /// application approval before publishing LoginSuccess/ResourcePacksInfo.
+    /// application approval before publishing `LoginSuccess`/`ResourcePacksInfo`.
     ///
     /// # Errors
     /// Rejects an incomplete/expired handshake or changed/expired provider credential.

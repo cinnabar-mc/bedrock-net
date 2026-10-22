@@ -31,11 +31,11 @@ pub trait LoginVerifier {
     /// Called only for a validated signed UDP address needing the configured resolver,
     /// including empty IPv6 zones and IP spellings that fail literal parsing.
     /// This callback must not block or perform network I/O; acquire/cache its result before
-    /// submitting Login to the consuming engine. A miss must return AddressResolutionRequired.
+    /// submitting Login to the consuming engine. A miss must return `AddressResolutionRequired`.
     /// The pure parser can be retried with the same request after asynchronous acquisition.
     ///
     /// # Errors
-    /// Return InvalidClientData for a failed resolution, or AddressResolutionRequired on a cache miss.
+    /// Return `InvalidClientData` for a failed resolution, or `AddressResolutionRequired` on a cache miss.
     fn resolve_client_address(&self, _address: &str) -> Result<(), LoginError> {
         Err(LoginError::AddressResolutionRequired)
     }
@@ -72,7 +72,7 @@ impl TrustedIdentity {
     /// Retains provider-verified presentation using this identity's original XUID.
     ///
     /// This asserts already verified claims; it does not authenticate them. Names
-    /// and PlayFab fields must come from the same provider credential as this
+    /// and `PlayFab` fields must come from the same provider credential as this
     /// XUID/key, never client metadata. Missing/empty legacy UUID derives from XUID.
     ///
     /// # Errors

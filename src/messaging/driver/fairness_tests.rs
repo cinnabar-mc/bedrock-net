@@ -7,7 +7,7 @@ use std::collections::VecDeque;
 use tokio::net::{TcpListener, TcpStream};
 use tokio_websockets::{ClientBuilder, Message, ServerBuilder};
 
-/// Receives a finite original corpus over actual loopback WebSockets and decodes it with the SDK.
+/// Receives a finite original corpus over actual loopback `WebSockets` and decodes it with the SDK.
 /// Retaining these ready events makes the service burst independent of kernel read pacing.
 /// Protected upgrade and SDK heartbeat behavior remain the SDK's separate owning tests.
 async fn readable_burst(peer: Uuid, total: usize) -> VecDeque<Event> {

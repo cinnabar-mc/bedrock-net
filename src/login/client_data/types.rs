@@ -23,7 +23,7 @@ fn fields(record: Record, entries: &Entries) -> io::Result<()> {
     Ok(())
 }
 
-/// Checks one replacement through the same generated ClientData field owner.
+/// Checks one replacement through the same generated `ClientData` field owner.
 pub(super) fn replacement(name: &str, raw: &RawValue) -> io::Result<()> {
     field(Record::Client, name, raw)
 }

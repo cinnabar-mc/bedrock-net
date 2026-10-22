@@ -48,17 +48,17 @@ impl PlayerIdentity {
         self.uuid
     }
 
-    /// The provider's authenticated player name, never ThirdPartyName from client metadata.
+    /// The provider's authenticated player name, never `ThirdPartyName` from client metadata.
     pub fn display_name(&self) -> &str {
         &self.display_name
     }
 
-    /// The provider's PlayFab master-player identifier; empty means it was absent.
+    /// The provider's `PlayFab` master-player identifier; empty means it was absent.
     pub fn playfab_id(&self) -> &str {
         &self.playfab_id
     }
 
-    /// The provider's PlayFab title identifier; empty means it was absent.
+    /// The provider's `PlayFab` title identifier; empty means it was absent.
     pub fn playfab_title_id(&self) -> &str {
         &self.playfab_title_id
     }

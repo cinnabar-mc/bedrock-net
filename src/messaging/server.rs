@@ -1,10 +1,10 @@
-//! Caller-driven Player Messaging for an existing bounded NetherNet listener.
+//! Caller-driven Player Messaging for an existing bounded `NetherNet` listener.
 //!
 //! The application acquires the protected SDK socket and supplies signed answer identity,
 //! offer trust, and any accepting ICE endpoints through `ConnectionConfig`. This adapter
 //! neither publishes a world nor authorizes Minecraft Login. Continue polling `accept` or
 //! `maintain` while accepted peers are in use. No task or runtime is added by this adapter;
-//! the existing NetherNet listener retains its own bounded transport workers.
+//! the existing `NetherNet` listener retains its own bounded transport workers.
 //!
 //! STUN/TURN acquisition and renewal remain caller policy. Supplied `ServerIceConfig`
 //! keeps its original credential expirations: the transport checks them for each new

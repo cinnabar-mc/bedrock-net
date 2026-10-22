@@ -7,12 +7,12 @@ The separate `bedrock-client` crate retains its runtime-free protocol typestates
 The default API provides `PacketIo` for an application's existing pump. Select
 `raknet` or `nethernet` to use `connection::Connection` and the concrete
 `transport::Transport` owners. Their constructors consume actual established
-RakNet, protected messaging or Ready NetherNet associations. Dialing, endpoint
+`RakNet`, protected messaging or Ready `NetherNet` associations. Dialing, endpoint
 trust, account acquisition and membership stay with the caller. The standalone
 `bedrock-probe` and Cinnabar use these same owners directly.
 
 `connect::raknet::connect_resolved` races caller-resolved candidates using the
-supplied RakNet options. `connect::lan` owns directed discovery and the same
+supplied `RakNet` options. `connect::lan` owns directed discovery and the same
 Ready association under an explicit `DirectedLanConfig`; the caller supplies its
 actual identity/trust, wire-admission selection and nonce bound. Local-world
 eligibility remains caller policy. `connect::http::connect` consumes prepared
@@ -36,7 +36,7 @@ other application validation remain above this owner.
 installs compression before the caller constructs metadata. `handshake::login`
 accepts the caller's opaque, verified proof-bound token and original absolute
 credential deadline, or explicit offline identity and caller UTC. Its result
-retains the actual advertised pack offer, or the actual packless StartGame in
+retains the actual advertised pack offer, or the actual packless `StartGame` in
 the same deferred FIFO. Late key exchange installs the verified streams before
 its acknowledgment. UI errors, redirects and account/provider decisions remain
 with the caller through typed `NegotiationError` values.
@@ -86,7 +86,7 @@ association fixture for downstream integration tests.
 
 Keep the same connection through settings, encryption and play. A canceled
 receive, maintenance or close wait retains its original FIFO and lifecycle
-owner. `prepare_body` retains one encoded accepted-NetherNet send; canceling a
+owner. `prepare_body` retains one encoded accepted-`NetherNet` send; canceling a
 borrow does not restart it. After `PreparedSend::next` grants capacity, check
 current application authority and synchronously `commit` with no intervening
 await. Cipher progress occurs once at that commit. Retirement seals new commits
@@ -106,4 +106,4 @@ RTT observations withdraw when their original transport retires.
 
 `WireIdentity` and the retained challenge are wire metadata, never authentication
 or membership capabilities. The extracted implementation retains its
-[PolyForm Noncommercial license](../../LICENSE-CINNABAR).
+[`PolyForm` Noncommercial license](../../LICENSE-CINNABAR).

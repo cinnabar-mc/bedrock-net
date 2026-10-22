@@ -1,8 +1,8 @@
-//! Optional, caller-polled service signaling to NetherNet runtime composition.
+//! Optional, caller-polled service signaling to `NetherNet` runtime composition.
 //!
 //! Authentication and upgrade acquisition stay with the application's selected
 //! account. This owner starts no tasks or runtime. It drives the existing SDK
-//! socket alongside the existing NetherNet client and retains both through play.
+//! socket alongside the existing `NetherNet` client and retains both through play.
 //! Dropping it retires its service socket, pending signaling and transport handles.
 
 mod caller;
@@ -64,7 +64,7 @@ pub enum Error {
     /// Service-provided ICE endpoints could not be admitted or resolved.
     #[error("messaging transport ICE configuration failed")]
     Ice,
-    /// The existing NetherNet transport failed.
+    /// The existing `NetherNet` transport failed.
     #[error("messaging transport failed")]
     Transport,
     /// The connection attempt's original cause, shared without copying its diagnostics.
@@ -123,7 +123,7 @@ impl fmt::Display for ConnectionContext<'_> {
     }
 }
 
-/// One signed NetherNet connection and the authenticated messaging socket that carries its signals.
+/// One signed `NetherNet` connection and the authenticated messaging socket that carries its signals.
 /// It has no Debug implementation because the signaling owner retains sensitive SDP.
 struct Engine {
     client: TransportState,
