@@ -9,8 +9,6 @@ use flate2::{Decompress, FlushDecompress, Status};
 
 use crate::{BatchError, DropReason};
 
-mod snappy;
-
 const DEFLATE_ID: u8 = 0;
 const SNAPPY_ID: u8 = 1;
 const UNCOMPRESSED_ID: u8 = u8::MAX;
@@ -80,28 +78,51 @@ pub(crate) fn compress(
 ) -> Result<Vec<u8>, BatchError> {
     match algorithm {
         CompressionAlgorithm::Deflate => compress_deflate(body),
-        CompressionAlgorithm::Snappy => {
-            SnappyEncoder::default().compress(body).map(Cow::into_owned)
-        }
+        CompressionAlgorithm::Snappy => snap::raw::Encoder::new()
+            .compress_vec(body)
+            .map_err(BatchError::Snappy),
         CompressionAlgorithm::None => Ok(body.to_vec()),
     }
 }
 
-/// Reusable matching tables and initialized output for independent Snappy batches.
-#[derive(Default)]
-pub(crate) struct SnappyEncoder(snappy::Encoder);
+/// Largest input whose compressed block the encoder retains between batches.
+const RETAINED_SNAPPY_INPUT: usize = 65536;
+
+/// Reusable Snappy tables and bounded output for independent batches.
+pub(crate) struct SnappyEncoder {
+    encoder: snap::raw::Encoder,
+    output: Vec<u8>,
+}
+
+impl Default for SnappyEncoder {
+    fn default() -> Self {
+        Self {
+            encoder: snap::raw::Encoder::new(),
+            output: Vec::new(),
+        }
+    }
+}
 
 impl SnappyEncoder {
-    /// Compresses one whole input, resetting matching state before emitting its own block.
+    /// Returns one independent block; only inputs up to 64 KiB borrow retained output.
     pub(crate) fn compress(&mut self, body: &[u8]) -> Result<Cow<'_, [u8]>, BatchError> {
-        let maximum = snap::raw::max_compress_len(body.len());
-        if maximum == 0 {
-            return snap::raw::Encoder::new()
+        if body.len() > RETAINED_SNAPPY_INPUT {
+            return self
+                .encoder
                 .compress_vec(body)
                 .map(Cow::Owned)
                 .map_err(BatchError::Snappy);
         }
-        Ok(self.0.compress(body))
+        let maximum = snap::raw::max_compress_len(body.len());
+        if self.output.len() < maximum {
+            self.output.reserve_exact(maximum - self.output.len());
+            self.output.resize(maximum, 0);
+        }
+        let length = self
+            .encoder
+            .compress(body, &mut self.output)
+            .map_err(BatchError::Snappy)?;
+        Ok(Cow::Borrowed(&self.output[..length]))
     }
 }
 
@@ -125,14 +146,33 @@ fn compress_deflate(body: &[u8]) -> Result<Vec<u8>, BatchError> {
     encoder.finish().map_err(BatchError::Deflate)
 }
 
-/// Uses the checked hot loop before falling back to the reference decoder's diagnostics.
+/// Decodes a block into output sized from its validated header.
 pub(crate) fn decompress_snappy_into(body: &[u8], output: &mut [u8]) -> Result<(), snap::Error> {
-    if snappy::decompress_into(body, output).is_some() {
-        return Ok(());
-    }
     snap::raw::Decoder::new()
         .decompress(body, output)
         .map(|_| ())
+}
+
+/// Returns the payload of a block holding exactly one literal of `length` bytes.
+/// Shares the received storage for incompressible batches instead of copying it.
+fn snappy_literal(body: &Bytes, length: usize) -> Option<Bytes> {
+    let header = body.iter().position(|byte| byte & 0x80 == 0)? + 1;
+    let (&tag, rest) = body.get(header..)?.split_first()?;
+    let code = usize::from(tag >> 2);
+    let prefix = match code {
+        _ if tag & 3 != 0 => return None,
+        0..60 => 0,
+        _ => code - 59,
+    };
+    let mut encoded = [0; 4];
+    encoded[..prefix].copy_from_slice(rest.get(..prefix)?);
+    let literal = if prefix == 0 {
+        code
+    } else {
+        u32::from_le_bytes(encoded) as usize
+    };
+    (literal.checked_add(1)? == length && rest.len() - prefix == length)
+        .then(|| body.slice(body.len() - length..))
 }
 
 /// Bounds decompression and distinguishes a discarded payload from a fatal limit violation.
@@ -151,12 +191,12 @@ pub(crate) fn decompress(
             if length > maximum {
                 return Err(BatchError::DecodedTooLarge { maximum });
             }
-            if let Some(decoded) = snappy::decompress(&body, length) {
-                return Ok(Ok(decoded));
+            if let Some(literal) = snappy_literal(&body, length) {
+                return Ok(Ok(literal));
             }
-            Ok(snap::raw::Decoder::new()
-                .decompress_vec(&body)
-                .map(Bytes::from)
+            let mut decoded = vec![0; length];
+            Ok(decompress_snappy_into(&body, &mut decoded)
+                .map(|()| Bytes::from(decoded))
                 .map_err(DropReason::InvalidSnappy))
         }
         UNCOMPRESSED_ID => {
@@ -198,6 +238,99 @@ fn inflate(body: &[u8], maximum: usize) -> Result<Result<Bytes, DropReason>, Bat
         }
         if consumed == 0 && produced == 0 {
             return Ok(Err(DropReason::TruncatedDeflate));
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Deterministic inputs at every retained-output and block boundary.
+    fn inputs() -> impl Iterator<Item = Vec<u8>> {
+        let mut state = 0x9e37_79b9_u32;
+        let mut random = move || {
+            state ^= state << 13;
+            state ^= state >> 17;
+            state ^= state << 5;
+            state as u8
+        };
+        let sizes = [
+            0, 1, 2, 31, 32, 33, 1023, 1024, 1025, 4095, 4096, 4097, 16383, 16384, 16385, 65535,
+            65536, 65537, 131_072, 200_003,
+        ];
+        sizes.into_iter().flat_map(move |size| {
+            let noise: Vec<u8> = (0..size).map(|_| random()).collect();
+            let letters: Vec<u8> = noise
+                .iter()
+                .map(|byte| b"ACGT"[usize::from(byte & 3)])
+                .collect();
+            let mut mixed = noise.clone();
+            for (index, byte) in mixed.iter_mut().enumerate() {
+                if index % 97 > 13 {
+                    *byte = (index % 251) as u8;
+                }
+            }
+            [
+                noise,
+                vec![0x42; size],
+                (0..size).map(|index| (index % 251) as u8).collect(),
+                letters,
+                mixed,
+            ]
+        })
+    }
+
+    #[test]
+    fn snappy_blocks_round_trip_within_bounds_and_stay_independent() {
+        let mut reused = SnappyEncoder::default();
+        for input in inputs() {
+            let wire = reused.compress(&input).unwrap().into_owned();
+            assert!(wire.len() <= snap::raw::max_compress_len(input.len()));
+            assert_eq!(SnappyEncoder::default().compress(&input).unwrap(), wire);
+            assert_eq!(
+                compress(CompressionAlgorithm::Snappy, &input).unwrap(),
+                wire
+            );
+            let decoded = decompress(SNAPPY_ID, wire.into(), input.len()).unwrap();
+            assert_eq!(decoded.unwrap(), input);
+            assert!(reused.output.capacity() <= snap::raw::max_compress_len(RETAINED_SNAPPY_INPUT));
+        }
+    }
+
+    #[test]
+    fn single_literal_blocks_share_received_storage() {
+        for length in [1, 60, 61, 256, 257, 65536, 65537] {
+            let payload: Vec<u8> = (0..length).map(|index| (index % 251) as u8).collect();
+            let code = (length - 1) as u32;
+            for width in 0..=4_usize {
+                if (width == 0 && code >= 60) || (width > 0 && u64::from(code) >> (8 * width) != 0)
+                {
+                    continue;
+                }
+                let mut body = Vec::new();
+                crate::batch::write_length(length as u32, &mut body);
+                if width == 0 {
+                    body.push((code as u8) << 2);
+                } else {
+                    body.push(((59 + width) as u8) << 2);
+                    body.extend_from_slice(&code.to_le_bytes()[..width]);
+                }
+                body.extend_from_slice(&payload);
+                let body = Bytes::from(body);
+                let decoded = decompress(SNAPPY_ID, body.clone(), length)
+                    .unwrap()
+                    .unwrap();
+                assert_eq!(decoded, payload);
+                assert_eq!(decoded.as_ptr(), body[body.len() - length..].as_ptr());
+                let mut trailing = body.to_vec();
+                trailing.push(0);
+                assert!(
+                    decompress(SNAPPY_ID, trailing.into(), length)
+                        .unwrap()
+                        .is_err()
+                );
+            }
         }
     }
 }

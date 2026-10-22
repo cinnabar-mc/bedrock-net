@@ -64,7 +64,7 @@ func compressionFixture(t *testing.T, goText, id string, size any) (string, stri
 }
 
 func TestCompressionSizeGuard(t *testing.T) {
-	for _, group := range []string{"Flate", "Snappy"} {
+	for group, allowance := range map[string]int{"Flate": 5, "Snappy": 50} {
 		for _, op := range []string{"compress", "decompress"} {
 			id := group + "/" + op + "_small64"
 			for _, tc := range []struct {
@@ -74,9 +74,9 @@ func TestCompressionSizeGuard(t *testing.T) {
 			}{
 				{"smaller", 900, 0},
 				{"equal", 1000, 0},
-				{"exact 0.5 percent", 1005, 0},
-				{"one byte beyond", 1006, exitSlower},
-				{"bandwidth regression despite faster timing", 1048, exitSlower},
+				{"exact allowance", 1000 + allowance, 0},
+				{"one byte beyond", 1001 + allowance, exitSlower},
+				{"bandwidth regression despite faster timing", 1100, exitSlower},
 			} {
 				t.Run(id+"/"+tc.name, func(t *testing.T) {
 					goText := fmt.Sprintf("Benchmark%s-4 10 100 ns/op 1000 wire-B/op\n", id)

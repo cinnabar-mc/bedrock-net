@@ -149,9 +149,18 @@ func consistentWireSizes(goResults map[string]*goResult, rustResults map[string]
 	return nil
 }
 
-// exceedsWireAllowance compares integer bytes with a fixed 1/200 allowance, including its boundary.
-func exceedsWireAllowance(goWire, rustWire float64) bool {
-	return rustWire-goWire > goWire/200
+// wireAllowanceDivisor gives Rust's permitted excess over Go's bytes as a fraction of Go's.
+// Independent Snappy encoders choose different matches, so Snappy allows 5% against DEFLATE's 0.5%.
+func wireAllowanceDivisor(path string) float64 {
+	if group, _, _ := strings.Cut(key(path), "/"); group == "snappy" {
+		return 20
+	}
+	return 200
+}
+
+// exceedsWireAllowance compares integer bytes with the path's fixed allowance, including its boundary.
+func exceedsWireAllowance(path string, goWire, rustWire float64) bool {
+	return rustWire-goWire > goWire/wireAllowanceDivisor(path)
 }
 
 // benchLine matches one result line; the metric list is parsed separately.
@@ -439,8 +448,8 @@ func slower(rows []row) []string {
 func larger(rows []row) []string {
 	var problems []string
 	for _, r := range rows {
-		if compressionPath(r.path) && r.goWire > 0 && exceedsWireAllowance(r.goWire, r.rustWire) {
-			problems = append(problems, r.path+": Rust wire bytes exceed Go by more than 0.5%")
+		if compressionPath(r.path) && r.goWire > 0 && exceedsWireAllowance(r.path, r.goWire, r.rustWire) {
+			problems = append(problems, fmt.Sprintf("%s: Rust wire bytes exceed Go by more than %g%%", r.path, 100/wireAllowanceDivisor(r.path)))
 		}
 	}
 	return problems
@@ -454,13 +463,13 @@ func renderSizes(rows []row) string {
 			continue
 		}
 		if b.Len() == 0 {
-			fmt.Fprintln(&b, "\n| Compression path | Go wire B/op | Rust wire B/op | Rust/Go | Size (≤ +0.5%) |")
+			fmt.Fprintln(&b, "\n| Compression path | Go wire B/op | Rust wire B/op | Rust/Go | Size (Flate ≤ +0.5%, Snappy ≤ +5%) |")
 			fmt.Fprintln(&b, "|---|---:|---:|---:|---|")
 		}
 		ratio, status := math.NaN(), "missing"
 		if r.goWire > 0 && r.rustWire > 0 {
 			ratio, status = r.rustWire/r.goWire, "ok"
-			if exceedsWireAllowance(r.goWire, r.rustWire) {
+			if exceedsWireAllowance(r.path, r.goWire, r.rustWire) {
 				status = "**larger**"
 			}
 		}

@@ -85,7 +85,6 @@ ciphertext until emission completes before recycling it.
 
 Native DEFLATE encoding uses libdeflate at level 6 and requires a C compiler.
 Decoding uses zlib-rs; WebAssembly also uses zlib-rs level 6 for encoding. DEFLATE
-engines are temporary per call. Snappy reuses bounded matching tables and output
-scratch, resetting its state for each independent block. Compatible encoders may
-produce different compressed bytes. See the retained
-[third-party notices](../THIRD_PARTY_NOTICES.md) for the adapted Snappy code.
+engines are temporary per call. Snappy uses the `snap` crate, reusing its tables
+and, for batches up to 64 KiB, its output for each independent block. Compatible
+encoders may produce different compressed bytes.

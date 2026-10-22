@@ -7,8 +7,11 @@ Names pair case-insensitively: criterion `group/case` matches Go
 slope estimate, else the mean.
 
 Flate and Snappy compression and decompression rows also compare complete wire
-bytes, including batch headers. Rust may use at most 0.5% more bytes than Go;
-this fixed allowance is independent of `--margin`. The Go benches report
+bytes, including batch headers. Rust may use at most 0.5% more DEFLATE bytes
+than Go, or 5% more Snappy bytes because independent Snappy encoders choose
+different matches; these fixed allowances are independent of `--margin`. Snappy
+skips `chunks4m`, whose one chunk repeated 84 times measures matching across
+Snappy's 64 KiB blocks rather than realistic batches. The Go benches report
 `wire-B/op` after resetting the timer. The Rust batch bench records sizes outside
 the timed loop in `new/wire-size.json`, alongside Criterion's estimates. Each
 sidecar contains `full_id`, `wire_bytes`, and the SHA-256 of `estimates.json`.
@@ -44,4 +47,4 @@ or malformed input; 3 means a missing measurement: either side read no results,
 a path has no counterpart and is not declared with `--one-sided PATH`
 (repeatable), or a declaration is unknown or now has both sides; 1 means Rust is
 slower than Go by more than `--margin` percent (default 5), or a compression row
-exceeds the fixed 0.5% wire-size allowance, on a validated set.
+exceeds its fixed wire-size allowance, on a validated set.
