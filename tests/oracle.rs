@@ -335,7 +335,7 @@ enum Outcome {
     Fatal,
 }
 
-/// Incoming codec settings shared by both sides; `compression` None means before NetworkSettings.
+/// Incoming codec settings shared by both sides; `compression` None means before `NetworkSettings`.
 #[derive(Clone, Copy, Default)]
 struct Settings {
     compression: Option<&'static str>,
@@ -501,7 +501,7 @@ fn rust_batch(header: BatchHeader, name: &str, packets: &[Vec<u8>]) -> Vec<u8> {
     batches.pop().unwrap().to_vec()
 }
 
-/// Encrypts consecutive plaintext RakNet messages with one outgoing stream.
+/// Encrypts consecutive plaintext `RakNet` messages with one outgoing stream.
 fn encrypt_all(messages: &[Vec<u8>]) -> Vec<Vec<u8>> {
     let mut encryptor = BatchEncryptor::new(KEY);
     messages
@@ -767,7 +767,7 @@ fn decode_decisions_match_go() {
     ledger.finish("decode/");
 }
 
-/// Outgoing settings: `None` is before NetworkSettings.
+/// Outgoing settings: `None` is before `NetworkSettings`.
 struct EncodeCase {
     name: &'static str,
     compression: Option<(&'static str, u16)>,
