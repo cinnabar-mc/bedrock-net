@@ -28,6 +28,25 @@ no socket, HTTP, filesystem or clock I/O and create no runtime. Callers supply
 time to operations that need it. A Bevy or custom-executor application can drive
 these owners directly; enabling an optional Tokio edge is a separate choice.
 
+## Library releases
+
+Use a pinned Git revision while a package's registry dependencies are not yet
+released. Publication eligibility is declared in each package manifest; examples
+remain unpublished. A path dependency also declares its registry version, which
+Cargo checks against the local package. Before publishing a dependent package,
+release its prerequisites and verify the packaged archive against the registry.
+Git dependencies need compatible registry releases containing the required fixes;
+a similarly named upstream package is not a substitute for the pinned fork.
+Preserve each package's declared license when preparing an archive.
+
+Registry releases still need the protocolgen, service and transport prerequisites.
+The `raknet` name on crates.io belongs to another repository; resolve ownership
+or choose a publication name before adding its registry fallback.
+
+The workspace opts into selected pedantic Clippy checks for documentation,
+patterns and underscore-prefixed bindings. CI enforces that policy across all
+targets and features with warnings denied.
+
 ## Batch codec
 
 Pass encoded packets, including their packet headers. The codec adds batch

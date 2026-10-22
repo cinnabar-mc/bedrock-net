@@ -24,7 +24,6 @@ license = "MIT OR Apache-2.0"
 description = "Native Rust transport and session foundations for Minecraft Bedrock"
 repository = "https://github.com/cinnabar-mc/bedrock-net"
 readme = "README.md"
-publish = false
 
 [features]
 default = []
@@ -92,6 +91,10 @@ missing_docs = "warn"
 correctness = "deny"
 suspicious = "warn"
 perf = "warn"
+# Opt into useful pedantic checks without imposing the entire style group.
+doc_markdown = "warn"
+unnested_or_patterns = "warn"
+used_underscore_binding = "warn"
 
 [lints]
 workspace = true

@@ -7,7 +7,6 @@ license-file = "../../LICENSE-CINNABAR"
 description = "Resource-pack text decoding and owned archive handoff for Bedrock clients"
 repository = "https://github.com/cinnabar-mc/bedrock-net"
 readme = "README.md"
-publish = false
 
 [dependencies]
 serde = "1"
