@@ -7,20 +7,19 @@ license-file = "../../LICENSE-CINNABAR"
 description = "Caller-owned Tokio connection and transport adapters for Bedrock"
 repository = "https://github.com/cinnabar-mc/bedrock-net"
 readme = "README.md"
-publish = false
 
 [features]
 default = []
-raknet = ["bedrock-net/raknet", "tokio/net", "dep:bedrock-client", "dep:bedrock-packs", "dep:serde_json"]
+raknet = ["bedrock-net/raknet", "dep:raknet-tokio", "dep:p384", "tokio/net", "dep:bedrock-client", "dep:bedrock-packs", "dep:serde_json"]
 nethernet = ["dep:p384", "dep:nethernet", "bedrock-net/messaging", "dep:nethernet-tokio", "dep:rand", "tokio/net", "dep:bedrock-client", "dep:bedrock-packs", "dep:serde_json"]
 # Observations and real signed associations used by integration fixtures.
 test-support = []
 
 [dependencies]
-bedrock-client = { path = "../bedrock-client", optional = true }
-bedrock-packs = { path = "../bedrock-packs", optional = true }
+bedrock-client = { path = "../bedrock-client", version = "0.1.0", optional = true }
+bedrock-packs = { path = "../bedrock-packs", version = "0.1.0", optional = true }
 serde_json = { version = "1", features = ["raw_value"], optional = true }
-bedrock-net = { path = "../.." }
+bedrock-net = { path = "../..", version = "0.1.0" }
 bedrock-protocol.workspace = true
 bytes = "1"
 futures = "0.3"
@@ -28,6 +27,7 @@ nethernet = { workspace = true, optional = true }
 nethernet-tokio = { workspace = true, optional = true }
 p384 = { workspace = true, optional = true }
 rand = { version = "0.10", optional = true }
+raknet-tokio = { workspace = true, optional = true }
 tokio = { version = "1", features = ["rt", "time", "macros", "sync"] }
 thiserror = "2"
 tracing = "0.1"

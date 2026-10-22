@@ -106,7 +106,7 @@ fn reader(algorithm: CompressionAlgorithm) -> BatchCodec<bedrock_net::Negotiated
         .with_incoming_decoded_limit(usize::MAX)
 }
 
-/// Consumes every packet so lazy iteration costs are measured like Go's DecodeFunc walk.
+/// Consumes every packet so lazy iteration costs are measured like Go's `DecodeFunc` walk.
 fn drain<S: BatchPhase>(codec: &mut BatchCodec<S>, wire: Bytes) {
     match codec
         .decode_with(wire, |packet| {

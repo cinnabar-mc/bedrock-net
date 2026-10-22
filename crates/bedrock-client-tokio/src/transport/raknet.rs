@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 
-//! Established RakNet admission and retained finite local retirement.
+//! Established `RakNet` admission and retained finite local retirement.
 
 use super::Inbox;
 use bedrock_net::raknet::{ClosingRakNetConnection, RakNetConnection, RakNetError};

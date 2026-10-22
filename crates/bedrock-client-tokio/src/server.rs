@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 
-//! Caller-driven accepting wire ownership over an established NetherNet association.
+//! Caller-driven accepting wire ownership over an established transport association.
 
 use crate::connection::send::{PreparedSend, SendRetirement};
 use crate::{
@@ -8,9 +8,11 @@ use crate::{
     transport::Transport,
 };
 
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(all(test, feature = "raknet"))]
+mod raknet_tests;
+#[cfg(all(feature = "nethernet", any(test, feature = "test-support")))]
 pub mod test_support;
-#[cfg(test)]
+#[cfg(all(test, feature = "nethernet"))]
 mod tests;
 use bedrock_client::server::{ServerHandshake, ServerHandshakeOptions};
 use bedrock_net::encryption::{BatchDecryptor, BatchEncryptor};
@@ -35,10 +37,39 @@ pub struct RetiredAcceptingConnection {
 }
 
 impl AcceptingConnection {
+    /// Takes the original established `RakNet` listener handoff and enables Bedrock Login.
+    /// The caller supplies its own proof key and Login/world admission policy.
+    /// This creates no socket, provider session, account authority or hosted membership.
+    #[cfg(feature = "raknet")]
+    pub fn from_raknet(
+        accepted: raknet_tokio::prelude::RakSession<raknet_tokio::prelude::Established>,
+        key: Arc<SigningKey>,
+        options: ServerHandshakeOptions,
+        max_deferred_bytes: usize,
+        deadline: Instant,
+    ) -> io::Result<(Self, ServerHandshake)> {
+        let handshake = ServerHandshake::new(
+            key,
+            None,
+            options,
+            deadline,
+            tokio::time::Instant::now().into_std(),
+        )
+        .map_err(|_| denied())?;
+        Ok((
+            Self::from_transport(
+                Transport::from_accepted_raknet(accepted),
+                max_deferred_bytes,
+            ),
+            handshake,
+        ))
+    }
+
     /// Takes an actual Ready association and binds Login to its original authenticated SDP key.
     /// The caller must have configured its server's real transport identity/signaling policy and
     /// supply that same server proof key. The deferred-byte bound belongs to the caller.
     /// This performs no dial or provider/account acquisition.
+    #[cfg(feature = "nethernet")]
     pub async fn from_nether(
         accepted: nethernet_tokio::AcceptedSession,
         key: Arc<SigningKey>,
@@ -60,24 +91,28 @@ impl AcceptingConnection {
             tokio::time::Instant::now().into_std(),
         )
         .map_err(|_| denied())?;
+        Ok((
+            Self::from_transport(Transport::from_accepted(accepted), max_deferred_bytes),
+            handshake,
+        ))
+    }
+
+    /// Binds the same accepted wire/count limits before either transport's first packet.
+    fn from_transport(transport: Transport, max_deferred_bytes: usize) -> Self {
         let defaults = BatchLimits::default();
-        // Accepted sessions retain their incoming packet-count limit.
         let limits = BatchLimits {
             max_incoming_packets: Some(defaults.max_packets),
             ..defaults
         };
-        Ok((
-            Self {
-                connection: Connection::new(
-                    Transport::from_accepted(accepted),
-                    limits,
-                    wire::Limits::receiving_from(wire::Peer::Client),
-                    max_deferred_bytes,
-                ),
-                skipped: 0,
-            },
-            handshake,
-        ))
+        Self {
+            connection: Connection::new(
+                transport,
+                limits,
+                wire::Limits::receiving_from(wire::Peer::Client),
+                max_deferred_bytes,
+            ),
+            skipped: 0,
+        }
     }
 
     /// Reads one primary generated packet while retaining every original batch sibling.
@@ -212,7 +247,7 @@ impl AcceptingConnection {
     }
 
     /// Seals new local commits and caps settlement by the first cleanup and original send cutoffs.
-    /// This does not close the association. Settle its receipt before calling begin_close.
+    /// This does not close the association. Settle its receipt before calling `begin_close`.
     pub fn begin_send_retirement(&mut self, deadline: Instant) -> SendRetirement<'_> {
         self.connection.begin_send_retirement(deadline)
     }

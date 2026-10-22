@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 
-//! Parallel RakNet setup over caller-resolved alternatives.
+//! Parallel `RakNet` setup over caller-resolved alternatives.
 
 use crate::transport::Transport;
 use bedrock_net::raknet::{RakNetConnection, RakNetOptions};

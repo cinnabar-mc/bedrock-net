@@ -15,7 +15,7 @@ const DEFLATE_ID: u8 = 0;
 const SNAPPY_ID: u8 = 1;
 const UNCOMPRESSED_ID: u8 = u8::MAX;
 
-/// Algorithms accepted in NetworkSettings and batch compression headers.
+/// Algorithms accepted in `NetworkSettings` and batch compression headers.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum CompressionAlgorithm {
     /// Raw DEFLATE, named Zlib by the protocol.
@@ -27,7 +27,7 @@ pub enum CompressionAlgorithm {
 }
 
 impl CompressionAlgorithm {
-    /// Returns the algorithm's NetworkSettings identifier.
+    /// Returns the algorithm's `NetworkSettings` identifier.
     pub const fn network_id(self) -> u16 {
         match self {
             Self::Deflate => DEFLATE_ID as u16,
@@ -59,7 +59,7 @@ impl TryFrom<u16> for CompressionAlgorithm {
     }
 }
 
-/// An unsupported NetworkSettings compression identifier.
+/// An unsupported `NetworkSettings` compression identifier.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
 #[error("unknown network compression algorithm {0}")]
 pub struct UnknownCompressionAlgorithm(pub u16);

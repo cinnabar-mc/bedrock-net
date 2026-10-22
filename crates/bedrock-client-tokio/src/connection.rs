@@ -17,9 +17,7 @@ pub mod identity;
 mod pending;
 use codec::Codec;
 use pending::PendingPackets;
-#[cfg(feature = "nethernet")]
 pub mod send;
-#[cfg(feature = "nethernet")]
 use send::{PendingSend, RetirementState};
 
 /// One caller-driven codec, cipher and original received FIFO.
@@ -33,9 +31,7 @@ pub struct Connection {
     deferred: DeferredFrames,
     receive_limits: wire::Limits,
     ciphers: Option<(BatchEncryptor, BatchDecryptor)>,
-    #[cfg(feature = "nethernet")]
     pending_send: Option<PendingSend>,
-    #[cfg(feature = "nethernet")]
     send_retirement: Option<RetirementState>,
     send_sealed: bool,
     negotiation_skips: u64,
@@ -78,9 +74,7 @@ impl Connection {
             deferred: DeferredFrames::new(max_deferred_bytes),
             receive_limits,
             ciphers: None,
-            #[cfg(feature = "nethernet")]
             pending_send: None,
-            #[cfg(feature = "nethernet")]
             send_retirement: None,
             send_sealed: false,
             negotiation_skips: 0,
@@ -129,7 +123,6 @@ impl Connection {
                 "native accepting send is sealed",
             ));
         }
-        #[cfg(feature = "nethernet")]
         if self.pending_send.is_some() {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
@@ -449,7 +442,6 @@ impl Connection {
     }
 
     /// Reads the original FIFO under the accepting caller's absolute runtime cutoff.
-    #[cfg(feature = "nethernet")]
     pub(crate) async fn next_raw_before(
         &mut self,
         deadline: std::time::Instant,
@@ -464,7 +456,6 @@ impl Connection {
     }
 
     /// Applies the accepting cutoff to the original completed raw read.
-    #[cfg(feature = "nethernet")]
     fn finish_raw_read(
         &mut self,
         result: io::Result<Bytes>,
@@ -664,7 +655,6 @@ impl PacketIo for Connection {
 mod tests;
 
 /// Uses one static timeout cause without identity-bearing values.
-#[cfg(feature = "nethernet")]
 pub(super) fn expired() -> io::Error {
     io::Error::new(io::ErrorKind::TimedOut, "native accepting deadline expired")
 }

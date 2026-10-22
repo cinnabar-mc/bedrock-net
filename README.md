@@ -28,6 +28,25 @@ no socket, HTTP, filesystem or clock I/O and create no runtime. Callers supply
 time to operations that need it. A Bevy or custom-executor application can drive
 these owners directly; enabling an optional Tokio edge is a separate choice.
 
+## Library releases
+
+Use a pinned Git revision while a package's registry dependencies are not yet
+released. Publication eligibility is declared in each package manifest; examples
+remain unpublished. A path dependency also declares its registry version, which
+Cargo checks against the local package. Before publishing a dependent package,
+release its prerequisites and verify the packaged archive against the registry.
+Git dependencies need compatible registry releases containing the required fixes;
+a similarly named upstream package is not a substitute for the pinned fork.
+Preserve each package's declared license when preparing an archive.
+
+Registry releases still need the protocolgen, service and transport prerequisites.
+The `raknet` name on crates.io belongs to another repository; resolve ownership
+or choose a publication name before adding its registry fallback.
+
+The workspace opts into selected pedantic Clippy checks for documentation,
+patterns and underscore-prefixed bindings. CI enforces that policy across all
+targets and features with warnings denied.
+
 ## Batch codec
 
 Pass encoded packets, including their packet headers. The codec adds batch
@@ -48,7 +67,7 @@ match plain.decode(batches[0].clone())? {
 # Ok::<(), bedrock_net::BatchError>(())
 ```
 
-After actual NetworkSettings, consume `plain.negotiate(settings)` to obtain a
+After actual `NetworkSettings`, consume `plain.negotiate(settings)` to obtain a
 `BatchCodec<Negotiated>`. That owner cannot renegotiate or reset compression.
 Raw DEFLATE and Snappy are supported; the protocol's Zlib name means raw DEFLATE.
 Incoming negotiated batches select their declared algorithm independently of the
@@ -56,7 +75,7 @@ outgoing threshold.
 
 Native DEFLATE encoding uses libdeflate at level 6 for complete batches. Its
 bundled C code builds through the `cc` crate and requires a C compiler; no Perl or
-CMake is needed for this dependency. DEFLATE decoding uses portable zlib-rs;
+`CMake` is needed for this dependency. DEFLATE decoding uses portable zlib-rs;
 WebAssembly also uses zlib-rs level 6 for encoding without a C dependency.
 DEFLATE engines remain temporary per-call state. Snappy lazily reuses bounded
 matching tables and initialized output scratch per connection to avoid repeated
@@ -107,7 +126,7 @@ probe applies these operations on its original codec and directional streams.
 | Accepting Login | `ServerHandshake` → settings/verification/authorization/exchange owners → `ServerPacksReady<Grant>` or Login-only `AcceptedLogin<Grant>` |
 | Accepting packs | `ServerPacks<Grant>` → owned chunk read/write continuations → `ServerWorldReady<Grant>` |
 | Accepting startup | `ServerSpawning<Grant>` → `ServerInitialized<Grant>` → `AcceptedSession<Grant>` |
-| Packless upstream relay | `ServerPacksReady<Grant>` → pending LoginSuccess flush → `ServerRelaying<Grant>` → actual forwarded initialization |
+| Packless upstream relay | `ServerPacksReady<Grant>` → pending `LoginSuccess` flush → `ServerRelaying<Grant>` → actual forwarded initialization |
 
 Methods consume the current phase and return its continuation. Install returned
 compression or ciphers and dispatch effects before advancing that continuation.
@@ -129,7 +148,7 @@ original memory archive or adapter-owned external source through sequential
 read/write continuations. Startup requires the actual caller-selected world
 packet definitions; completion does not attach that world to a player.
 
-The verifier can retain signed name, canonical UUID and PlayFab identifiers with
+The verifier can retain signed name, canonical UUID and `PlayFab` identifiers with
 `TrustedIdentity::with_player_identity`; `AuthenticatedLogin::player_identity`
 borrows them and revalidation rejects changes. Missing presentation stays absent.
 
@@ -144,7 +163,7 @@ The accepting APIs provide protocol continuations through `AcceptedSession`.
 The application supplies its listener, current authorization and running-world
 attachment. It can also stop at the Login-only handoff.
 An upstream without a pack phase uses `relay_without_packs`; it creates no pack
-metadata or acknowledgment. The caller flushes its LoginSuccess before forwarding
+metadata or acknowledgment. The caller flushes its `LoginSuccess` before forwarding
 the real startup. Runtime, registry, radius/spawn and Initialized checks remain.
 
 See the [integration guide](docs/integration.md) for packet routing, cipher
@@ -156,12 +175,12 @@ ordering, pack/startup handoffs and owner-preserving error/close handling. The
 | Root feature | Provides |
 | --- | --- |
 | Default | Synchronous batch codec and directional batch ciphers. |
-| `login` | Offline/acquired-credential request formatting, server exchange, accepting verification and pure ClientData validation. |
-| `provider-verification` | Pure configured issuer/JWK verification for Login and signed SDP, using caller-supplied UTC; includes `login` and NetherNet identity primitives. |
-| `raknet` | `RakNetConnection`, a caller-polled Tokio socket driver over the Cinnabar RakNet fork. |
-| `messaging` | `PreparedMessaging`/`MessagingConnection` and `messaging::server`, composing a supplied SDK service socket with connecting or accepting NetherNet. |
+| `login` | Offline/acquired-credential request formatting, server exchange, accepting verification and pure `ClientData` validation. |
+| `provider-verification` | Pure configured issuer/JWK verification for Login and signed SDP, using caller-supplied UTC; includes `login` and `NetherNet` identity primitives. |
+| `raknet` | `RakNetConnection`, a caller-polled Tokio socket driver over the Cinnabar `RakNet` fork. |
+| `messaging` | `PreparedMessaging`/`MessagingConnection` and `messaging::server`, composing a supplied SDK service socket with connecting or accepting `NetherNet`. |
 
-The optional edges start no runtime or task of their own. RakNet owns one socket;
+The optional edges start no runtime or task of their own. `RakNet` owns one socket;
 keep `recv` or `maintain` polled for protocol progress, use `queue_send` for admission and drive
 `flush` for local emission. `wait_send_capacity` services that same connection
 when its send budget is full. `maintain` retains accepted input and defers new
@@ -169,7 +188,7 @@ reliable input when aggregate capacity is full; drain the FIFO and its terminal
 through `recv`. One original message head may wait outside the FIFO, while a
 message exceeding the whole configured byte allowance still fails. Messaging
 needs `recv` or `maintain` polled; its
-underlying NetherNet Tokio adapter owns its bounded transport workers. Accepting
+underlying `NetherNet` Tokio adapter owns its bounded transport workers. Accepting
 `MessagingServer` needs `accept` or `maintain` polled and takes caller-supplied
 ICE configuration. It publishes no world or activity and does not authorize Login.
 
@@ -252,7 +271,7 @@ running-world attachment and ongoing play belong to the application.
 
 The root crate offers MIT or Apache-2.0. Extracted `bedrock-client`,
 `bedrock-client-tokio` and `bedrock-packs` code retains its separately identified
-[PolyForm Noncommercial license](LICENSE-CINNABAR). See
+[`PolyForm` Noncommercial license](LICENSE-CINNABAR). See
 [NOTICE](https://github.com/cinnabar-mc/bedrock-net/blob/dev/NOTICE) for
 implementation references and the retained dependency/adaptation notices.
 

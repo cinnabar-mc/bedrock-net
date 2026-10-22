@@ -1,4 +1,4 @@
-//! A single-owner Tokio driver for the pinned RakNet protocol engine.
+//! A single-owner Tokio driver for the pinned `RakNet` protocol engine.
 //!
 //! No background task is spawned. Keep [`RakNetConnection::recv`] or
 //! [`RakNetConnection::maintain`] polled to service protocol control and timers.

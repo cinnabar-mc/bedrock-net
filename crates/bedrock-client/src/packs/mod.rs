@@ -501,7 +501,7 @@ fn resource_id(name: &bedrock_protocol::wire::Str) -> Result<uuid::Uuid, PackErr
     pack_id(prefix)
 }
 
-/// Accepts UUID or UUID_version names without interpreting server text as a path.
+/// Accepts UUID or `UUID_version` names without interpreting server text as a path.
 fn pack_id(name: &str) -> Result<uuid::Uuid, PackError> {
     uuid::Uuid::parse_str(name.split('_').next().unwrap_or(name))
         .map_err(|_| invalid("pack identity is not a UUID"))

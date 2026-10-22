@@ -243,7 +243,7 @@ pub struct BatchCodec<S = Plain> {
 }
 
 impl BatchCodec<Plain> {
-    /// Creates a codec for a new connection before NetworkSettings.
+    /// Creates a codec for a new connection before `NetworkSettings`.
     pub const fn new(header: BatchHeader, limits: BatchLimits) -> Self {
         Self {
             header,

@@ -17,7 +17,7 @@ use sha2::{Digest, Sha256};
 
 const VERSION: &str = "1.0.0";
 
-/// Drives one offered pack from DataInfo through every in-order chunk and the final stack.
+/// Drives one offered pack from `DataInfo` through every in-order chunk and the final stack.
 fn assemble(id: uuid::Uuid, archive: &Bytes, hash: &Bytes, chunk_size: usize) {
     let mut info = PackInfoData::default();
     info.pack_id_version.pack_uuid = id;

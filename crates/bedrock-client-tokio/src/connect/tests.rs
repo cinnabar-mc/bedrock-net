@@ -327,7 +327,7 @@ async fn native_lan_discovery_preserves_the_configured_ice_port() {
     .expect("finite configured ICE LAN fixture stalled");
 }
 
-/// The actual pending RakNet socket is dropped on either cancellation or the original cutoff.
+/// The actual pending `RakNet` socket is dropped on either cancellation or the original cutoff.
 #[tokio::test]
 async fn native_candidate_cancellation_and_original_deadline_release_actual_sockets() {
     let _spawn = CHILD_SPAWN.lock().await;

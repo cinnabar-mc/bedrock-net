@@ -20,7 +20,7 @@ use std::{
     time::{Duration, Instant, SystemTime},
 };
 
-/// Explicit fixture authority data; never a HostedApproval or real membership claim.
+/// Explicit fixture authority data; never a `HostedApproval` or real membership claim.
 pub(super) struct Grant {
     xuid: String,
     nonce: String,

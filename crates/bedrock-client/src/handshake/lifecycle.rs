@@ -233,7 +233,7 @@ pub enum LoginEvent {
         /// The actual admitted offer and original late Login control.
         packs: ClientPackOffer,
     },
-    /// Begin startup from an actual StartGame when no pack offer was received.
+    /// Begin startup from an actual `StartGame` when no pack offer was received.
     /// Preserve this packet on the caller's original bounded FIFO; no pack acknowledgment is due.
     Startup {
         /// The actual received packet; it does not grant spawn or presentation readiness.

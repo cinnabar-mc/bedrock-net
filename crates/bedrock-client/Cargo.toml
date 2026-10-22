@@ -7,11 +7,10 @@ license-file = "../../LICENSE-CINNABAR"
 description = "Caller-driven generated-packet Bedrock client negotiation"
 repository = "https://github.com/cinnabar-mc/bedrock-net"
 readme = "README.md"
-publish = false
 
 [dependencies]
-bedrock-net = { path = "../..", features = ["login"] }
-bedrock-packs = { path = "../bedrock-packs" }
+bedrock-net = { path = "../..", version = "0.1.0", features = ["login"] }
+bedrock-packs = { path = "../bedrock-packs", version = "0.1.0" }
 bedrock-protocol.workspace = true
 bytes = "1"
 p384.workspace = true

@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
-//! Provider policy over the existing pure NetherNet JWS/JWK/claims implementation.
+//! Provider policy over the existing pure `NetherNet` JWS/JWK/claims implementation.
 //!
 //! Acquisition, service clocks and refresh policy belong to the caller. Verification
 //! performs no I/O and uses only explicitly supplied provider UTC.
@@ -37,7 +37,7 @@ impl ProviderVerifier {
     /// Bounds configured issuer and public key-discovery URLs before HTTP or token verification.
     pub const MAX_PROVIDER_URL_BYTES: usize = 4096;
 
-    /// Admits bounded HTTPS-acquired OpenID metadata. The issuer comes from service discovery,
+    /// Admits bounded HTTPS-acquired `OpenID` metadata. The issuer comes from service discovery,
     /// never token claims; the caller normalizes it as the configured environment requires.
     /// Only RS256 is currently supported; another advertised algorithm fails explicitly.
     ///

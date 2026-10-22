@@ -1,4 +1,4 @@
-//! A real post-Login StartGame can begin startup without an advertised pack phase.
+//! A real post-Login `StartGame` can begin startup without an advertised pack phase.
 
 use super::*;
 use bedrock_protocol::types::ActorRuntimeID;
@@ -61,7 +61,7 @@ fn verified_login(batch_encryption: bool) -> ClientLogin {
     login
 }
 
-/// Covers both absent and already-observed LoginSuccess without inventing an offer or stack.
+/// Covers both absent and already-observed `LoginSuccess` without inventing an offer or stack.
 fn packless_start_game(batch_encryption: bool) {
     for login_success in [false, true] {
         let mut login = verified_login(batch_encryption);

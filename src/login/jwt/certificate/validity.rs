@@ -11,7 +11,7 @@ pub(super) fn valid(mut data: &[u8]) -> Option<()> {
     Some(())
 }
 
-/// Checks the exact round-trip grammar of UTC or GeneralizedTime without constructing an instant.
+/// Checks the exact round-trip grammar of UTC or `GeneralizedTime` without constructing an instant.
 fn time(tag: u8, value: &[u8]) -> Option<()> {
     let year_width = match tag {
         23 => 2,

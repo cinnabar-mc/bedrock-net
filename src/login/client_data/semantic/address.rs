@@ -5,7 +5,7 @@
 use super::super::decode_url_host;
 use std::net::Ipv6Addr;
 
-/// Checks shape only; the actual selected target and socket supply the final signed ServerAddress.
+/// Checks shape only; the actual selected target and socket supply the final signed `ServerAddress`.
 pub(super) fn valid(address: &str) -> bool {
     if address.contains("://") {
         return echoed_url_port(address);
@@ -105,7 +105,7 @@ fn echoed_url_port(address: &str) -> bool {
     port.is_some_and(|port| !port.is_empty() && port == challenge)
 }
 
-/// Path, userinfo and fragment decoding checks escapes; RawQuery deliberately bypasses this check.
+/// Path, userinfo and fragment decoding checks escapes; `RawQuery` deliberately bypasses this check.
 fn escaped(value: &str) -> bool {
     let mut bytes = value.bytes();
     while let Some(byte) = bytes.next() {

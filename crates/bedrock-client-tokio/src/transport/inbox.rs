@@ -3,9 +3,7 @@
 //! Bounded wire input retained while its original transport keeps progressing.
 
 use bytes::Bytes;
-#[cfg(any(test, feature = "nethernet", feature = "test-support"))]
 use futures::{Stream, StreamExt};
-#[cfg(any(test, feature = "nethernet", feature = "test-support"))]
 use std::future::Future;
 use std::{collections::VecDeque, io};
 
@@ -85,7 +83,6 @@ impl Inbox {
 
     /// Keeps a just-read legal head outside the full FIFO without accepting a successor.
     /// Callers stop application reads until pop releases this same retained body.
-    #[cfg(any(test, feature = "nethernet", feature = "test-support"))]
     pub fn retain(&mut self, message: Bytes) -> io::Result<()> {
         if self.pending_message.is_some() {
             return Err(Self::full_error());
@@ -95,11 +92,10 @@ impl Inbox {
     }
 
     /// Shares the original write-side EOF diagnostic between the concrete input owners.
-    #[cfg(any(test, feature = "nethernet", feature = "test-support"))]
     pub fn closed_during_write() -> io::Error {
         io::Error::new(
             io::ErrorKind::UnexpectedEof,
-            "NetherNet peer closed during write",
+            "transport peer closed during write",
         )
     }
 
@@ -109,7 +105,6 @@ impl Inbox {
     }
 
     /// Polls the same write while its independently driven actor retains paused input.
-    #[cfg(any(test, feature = "nethernet", feature = "test-support"))]
     pub async fn send<T>(
         &mut self,
         sending: impl Future<Output = io::Result<T>> + Send,

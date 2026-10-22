@@ -1,4 +1,4 @@
-//! Transport integration against Cinnabar's pinned Go RakNet implementation.
+//! Transport integration against Cinnabar's pinned Go `RakNet` implementation.
 #![cfg(feature = "raknet")]
 
 use std::net::{Ipv4Addr, SocketAddr};

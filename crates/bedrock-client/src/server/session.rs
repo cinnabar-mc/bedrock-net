@@ -49,9 +49,9 @@ pub enum ServerSessionError {
 enum ServerSessionEvent {
     /// Send these generated packets in order before reading another owned transition.
     Send(Vec<packets::Packet>),
-    /// Flush this chunk, then call chunk_flushed with the actual completion time.
+    /// Flush this chunk, then call `chunk_flushed` with the actual completion time.
     Chunk(packets::ResourcePackChunkData),
-    /// Read this bounded original external range, then supply_chunk once under the original deadline.
+    /// Read this bounded original external range, then `supply_chunk` once under the original deadline.
     /// The adapter retains its source lease; read failure/cancellation ends the connection.
     ReadChunk(ServerChunkRequest),
     /// Packs are acknowledged. Supply the actual selected world; this is not world authorization.
@@ -130,7 +130,7 @@ impl<A, L> SessionEngine<A, L> {
     }
 
     /// Records actual chunk flush before advancing the original archive.
-    /// Send any returned next-pack DataInfo before retrying retained input.
+    /// Send any returned next-pack `DataInfo` before retrying retained input.
     ///
     /// # Errors
     /// Rejects expiry or a missing/repeated chunk acknowledgment.

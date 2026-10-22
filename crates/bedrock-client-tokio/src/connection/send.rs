@@ -1,12 +1,12 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 
-//! One prepared accepted-Nether effect, retained on the original codec/cipher owner.
+//! One prepared accepting effect, retained on the original codec/cipher owner.
 
 use super::Connection;
+use crate::transport::SendPermit;
 use bedrock_protocol::wire;
 use bytes::Bytes;
 use futures::future::BoxFuture;
-use nethernet_tokio::{SendPermit, session::Channel};
 use std::{io, sync::Arc, time::Instant, vec::IntoIter};
 
 /// The original effect's local admission result after new sends have been sealed.
@@ -56,7 +56,7 @@ impl Connection {
     ) -> io::Result<()> {
         self.ensure_send_idle()?;
         check_deadline(deadline)?;
-        drop(self.transport.accepted_sender()?);
+        self.transport.check_prepared_send()?;
         let messages = encode(self)?.into_iter();
         let phase = if messages.as_slice().is_empty() {
             Phase::Complete
@@ -108,13 +108,18 @@ impl Connection {
                         pending.phase = Phase::Complete;
                         continue;
                     }
-                    let sender = self.transport.accepted_sender()?;
-                    pending.phase = Phase::Reserving(Box::pin(async move {
-                        sender
-                            .reserve_send(Some(deadline))
-                            .await
-                            .map_err(io::Error::other)
-                    }));
+                    let message = pending
+                        .messages
+                        .as_slice()
+                        .first()
+                        .expect("original message");
+                    let bytes = match &self.ciphers {
+                        Some((encryptor, _)) => encryptor
+                            .ciphertext_len(message.len())
+                            .map_err(io::Error::other)?,
+                        None => message.len(),
+                    };
+                    pending.phase = Phase::Reserving(self.transport.reserve_send(bytes, deadline)?);
                 }
                 Phase::Reserving(reservation) => {
                     let result = tokio::time::timeout_at(
@@ -196,26 +201,22 @@ impl Connection {
             .messages
             .next()
             .expect("reserved capacity has one original message");
-        let result = self.encrypt_message(message).and_then(|message| {
-            permit
-                .commit(Channel::Reliable, message)
-                .map_err(io::Error::other)
-        });
+        let result = self
+            .encrypt_message(message)
+            .and_then(|message| permit.commit(message));
         match result {
             Ok(receipt) => {
                 self.pending_send
                     .as_mut()
                     .expect("one retained effect")
-                    .phase = Phase::Receipt(Box::pin(async move {
-                    receipt.acknowledged().await.map_err(io::Error::other)
-                }));
+                    .phase = Phase::Receipt(receipt);
                 Ok(())
             }
             Err(error) => Err(self.fail_send(error)),
         }
     }
 
-    /// Releases only a fully acknowledged original effect, including after local sealing.
+    /// Releases only a fully admitted original effect, including after local sealing.
     pub fn finish_send(&mut self) -> io::Result<()> {
         let pending = self
             .pending_send
@@ -361,7 +362,7 @@ impl Connection {
     }
 }
 
-/// Uses the same native adapter clock as the original Nether command admission.
+/// Uses the same native adapter clock as the original command admission.
 fn check_deadline(deadline: Instant) -> io::Result<()> {
     if tokio::time::Instant::now().into_std() >= deadline {
         Err(expired())

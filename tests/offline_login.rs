@@ -9,7 +9,7 @@ use p384::ecdsa::SigningKey;
 use serde_json::value::RawValue;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-/// Returns synthetic metadata accepted by the shared signed ClientData validator.
+/// Returns synthetic metadata accepted by the shared signed `ClientData` validator.
 fn metadata() -> Box<RawValue> {
     RawValue::from_string(
         r#"{"DeviceOS":1,"GameVersion":"1.26.51","LanguageCode":"en_US","SkinId":"synthetic","ThirdPartyName":"MetadataName","Nonce":"original"}"#.into(),

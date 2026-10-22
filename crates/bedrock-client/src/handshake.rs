@@ -97,7 +97,7 @@ enum EngineEvent {
     },
     /// The server began startup without advertising a resource-pack phase.
     Startup(Box<packets::StartGame>),
-    /// The packet is owned by the caller, including early PlayerSpawn, Disconnect and Transfer.
+    /// The packet is owned by the caller, including early `PlayerSpawn`, Disconnect and Transfer.
     Unhandled(Box<packets::Packet>),
 }
 
@@ -117,7 +117,7 @@ enum Phase {
 /// Send `start()`, pass received packets to `receive`, and install the returned
 /// compression before calling one of the Login methods. They sign with this
 /// same key. After the offer, drive the returned [`PackOffer`]; route its
-/// unhandled packets through this handshake so late LoginSuccess and key
+/// unhandled packets through this handshake so late `LoginSuccess` and key
 /// exchange remain on the same owner. Retain returned startup packets for the
 /// spawn owner; handle Disconnect and Transfer at the application boundary.
 /// Any received-packet error ends this handshake.
@@ -341,7 +341,7 @@ impl Engine {
         }
     }
 
-    /// Emits the connection capability exactly once regardless of LoginSuccess/offer order.
+    /// Emits the connection capability exactly once regardless of `LoginSuccess`/offer order.
     fn cache_status(&mut self) -> Option<packets::ClientCacheStatus> {
         if std::mem::replace(&mut self.cache_sent, true) {
             None

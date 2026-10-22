@@ -32,7 +32,7 @@ pub enum Observation<'a> {
     Sent(&'a [packets::Packet]),
 }
 
-/// Caller-validated Login input, signed with the proof key retained by ClientLoginReady.
+/// Caller-validated Login input, signed with the proof key retained by `ClientLoginReady`.
 pub enum LoginData<'a> {
     /// Account/issuer/key binding and this absolute credential deadline remain caller authority.
     Authenticated {
@@ -87,8 +87,8 @@ pub async fn settings(
     }
 }
 
-/// Signs and sends Login once, then retains the same key/ciphers/FIFO through offer or StartGame.
-/// Metadata is supplied only after `settings` returned the real LoginReady continuation.
+/// Signs and sends Login once, then retains the same key/ciphers/FIFO through offer or `StartGame`.
+/// Metadata is supplied only after `settings` returned the real `LoginReady` continuation.
 pub async fn login(
     connection: &mut Connection,
     ready: ClientLoginReady,

@@ -44,7 +44,7 @@ pub enum EncryptionError {
     /// Adding the checksum would overflow the payload length.
     #[error("encrypted batch length overflow")]
     LengthOverflow,
-    /// A RakNet batch has no valid transport marker.
+    /// A `RakNet` batch has no valid transport marker.
     #[error("invalid encrypted batch transport marker")]
     InvalidBatchHeader,
 }
@@ -63,6 +63,16 @@ impl BatchEncryptor {
     /// for erasing any copy of the key it retains.
     pub fn new(key: [u8; 32]) -> Self {
         Self(CipherState::new(key))
+    }
+
+    /// Computes the complete ciphertext length without advancing this stream.
+    ///
+    /// # Errors
+    /// Returns an error if the checksum cannot fit in the payload length.
+    pub fn ciphertext_len(&self, plaintext_len: usize) -> Result<usize, EncryptionError> {
+        plaintext_len
+            .checked_add(CHECKSUM_BYTES)
+            .ok_or(EncryptionError::LengthOverflow)
     }
 
     /// Appends the checksum and encrypts one body, excluding the transport marker.

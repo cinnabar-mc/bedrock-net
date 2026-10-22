@@ -238,7 +238,7 @@ pub(in crate::login) fn standard_json_values(raw: &RawValue) -> bool {
     scan_json(raw, JsonContext::StandardStruct)
 }
 
-/// Scans all JSON contexts iteratively; the RawValue owner has already checked their syntax.
+/// Scans all JSON contexts iteratively; the `RawValue` owner has already checked their syntax.
 fn scan_json(raw: &RawValue, context: JsonContext) -> bool {
     use std::collections::BTreeSet;
     struct Object {

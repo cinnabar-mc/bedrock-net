@@ -197,7 +197,7 @@ async fn join(
     closed.map_err(Into::into)
 }
 
-/// Preserves the original late LoginSuccess wait before starting actual pack acquisition.
+/// Preserves the original late `LoginSuccess` wait before starting actual pack acquisition.
 async fn login_phase(
     session: &mut Connection,
     mut offer: bedrock_client::handshake::ClientPackOffer,

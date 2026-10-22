@@ -50,9 +50,9 @@ pub struct OfflineIdentity<'a> {
     pub identity: &'a str,
     /// Explicit Xbox identifier, normally empty for an offline identity.
     pub xuid: &'a str,
-    /// Explicit PlayFab master-player identifier, normally empty offline.
+    /// Explicit `PlayFab` master-player identifier, normally empty offline.
     pub playfab_id: &'a str,
-    /// Explicit PlayFab title identifier, normally empty offline.
+    /// Explicit `PlayFab` title identifier, normally empty offline.
     pub playfab_title_id: &'a str,
 }
 
