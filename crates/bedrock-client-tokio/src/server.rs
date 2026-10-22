@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 
-//! Packet I/O for an accepted RakNet or NetherNet session.
+//! Packet I/O for an accepted `RakNet` or `NetherNet` session.
 //!
 //! [`AcceptingConnection`] retains batching, ciphers and unread packets while the
 //! application drives [`ServerHandshake`]. Use [`prepare_packets`](AcceptingConnection::prepare_packets)
@@ -71,7 +71,7 @@ impl AcceptingConnection {
         ))
     }
 
-    /// Wraps an accepted NetherNet association and binds Login to its verified SDP key.
+    /// Wraps an accepted `NetherNet` association and binds Login to its verified SDP key.
     /// Supply the server proof key used by signaling. DTLS protects this association,
     /// so the returned handshake disables the additional Bedrock batch cipher.
     #[cfg(feature = "nethernet")]
