@@ -65,6 +65,16 @@ impl BatchEncryptor {
         Self(CipherState::new(key))
     }
 
+    /// Computes the complete ciphertext length without advancing this stream.
+    ///
+    /// # Errors
+    /// Returns an error if the checksum cannot fit in the payload length.
+    pub fn ciphertext_len(&self, plaintext_len: usize) -> Result<usize, EncryptionError> {
+        plaintext_len
+            .checked_add(CHECKSUM_BYTES)
+            .ok_or(EncryptionError::LengthOverflow)
+    }
+
     /// Appends the checksum and encrypts one body, excluding the transport marker.
     ///
     /// The input includes the compression marker when compression is enabled.

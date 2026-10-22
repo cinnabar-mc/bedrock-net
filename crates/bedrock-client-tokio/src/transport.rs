@@ -4,6 +4,10 @@
 
 #[cfg(feature = "nethernet")]
 mod accepted;
+#[cfg(feature = "raknet")]
+mod accepted_raknet;
+mod admission;
+pub(crate) use admission::SendPermit;
 #[cfg(feature = "test-support")]
 pub mod inbox;
 #[cfg(not(feature = "test-support"))]
@@ -15,14 +19,16 @@ mod raknet;
 use super::RoundTripTime;
 #[cfg(feature = "nethernet")]
 use accepted::AcceptedTransport;
+#[cfg(feature = "raknet")]
+use accepted_raknet::AcceptedRakNetTransport;
 use bedrock_net::BatchHeader;
 use bytes::Bytes;
+use futures::future::BoxFuture;
 use inbox::Inbox;
 #[cfg(feature = "nethernet")]
 use messaging::MessagingTransport;
 #[cfg(feature = "raknet")]
 use raknet::RakNetTransport;
-#[cfg(feature = "nethernet")]
 use std::future::Future;
 use std::{io, time::Instant};
 use zeroize::Zeroizing;
@@ -37,6 +43,8 @@ pub struct Transport {
 enum State {
     #[cfg(feature = "raknet")]
     RakNet(RakNetTransport),
+    #[cfg(feature = "raknet")]
+    AcceptedRakNet(Box<AcceptedRakNetTransport>),
     #[cfg(feature = "nethernet")]
     Messaging(Box<MessagingTransport>),
     #[cfg(feature = "nethernet")]
@@ -53,6 +61,8 @@ impl Transport {
         match &mut self.state {
             #[cfg(feature = "raknet")]
             State::RakNet(connection) => connection.configure_limits(limits),
+            #[cfg(feature = "raknet")]
+            State::AcceptedRakNet(connection) => connection.configure_limits(limits),
             #[cfg(feature = "nethernet")]
             State::Messaging(connection) => connection.configure_limits(limits),
             #[cfg(feature = "nethernet")]
@@ -62,11 +72,21 @@ impl Transport {
         }
     }
 
-    /// Retains the caller's original negotiated RakNet socket without resolving again.
+    /// Retains the caller's original negotiated `RakNet` socket without resolving again.
     #[cfg(feature = "raknet")]
     pub fn from_raknet(connection: bedrock_net::raknet::RakNetConnection) -> Self {
         Self {
             state: State::RakNet(RakNetTransport::new(connection)),
+            nonce: Zeroizing::new(String::new()),
+        }
+    }
+    /// Retains an actual established server handoff from its original `RakNet` listener.
+    #[cfg(feature = "raknet")]
+    pub fn from_accepted_raknet(
+        session: raknet_tokio::prelude::RakSession<raknet_tokio::prelude::Established>,
+    ) -> Self {
+        Self {
+            state: State::AcceptedRakNet(Box::new(AcceptedRakNetTransport::new(session))),
             nonce: Zeroizing::new(String::new()),
         }
     }
@@ -119,6 +139,8 @@ impl Transport {
         match &self.state {
             #[cfg(feature = "raknet")]
             State::RakNet(connection) => connection.observe_rtt(),
+            #[cfg(feature = "raknet")]
+            State::AcceptedRakNet(_) => None,
             #[cfg(feature = "nethernet")]
             State::Messaging(connection) => connection.observe_rtt(),
             #[cfg(feature = "nethernet")]
@@ -135,7 +157,7 @@ impl Transport {
     pub fn header(&self) -> BatchHeader {
         match &self.state {
             #[cfg(feature = "raknet")]
-            State::RakNet(_) => BatchHeader::RakNet,
+            State::RakNet(_) | State::AcceptedRakNet(_) => BatchHeader::RakNet,
             #[cfg(feature = "nethernet")]
             State::Messaging(_) | State::Accepted(_) | State::Lan(_) | State::Http(_) => {
                 BatchHeader::NetherNet
@@ -155,6 +177,8 @@ impl Transport {
         match &mut self.state {
             #[cfg(feature = "raknet")]
             State::RakNet(connection) => connection.send_until(message, deadline).await,
+            #[cfg(feature = "raknet")]
+            State::AcceptedRakNet(connection) => connection.send_until(message, deadline).await,
             #[cfg(feature = "nethernet")]
             State::Messaging(connection) => connection.send_until(message, deadline).await,
             #[cfg(feature = "nethernet")]
@@ -185,6 +209,8 @@ impl Transport {
         match &mut self.state {
             #[cfg(feature = "raknet")]
             State::RakNet(connection) => connection.recv().await,
+            #[cfg(feature = "raknet")]
+            State::AcceptedRakNet(connection) => connection.recv().await,
             #[cfg(feature = "nethernet")]
             State::Messaging(connection) => connection.recv().await,
             #[cfg(feature = "nethernet")]
@@ -198,6 +224,8 @@ impl Transport {
         match &mut self.state {
             #[cfg(feature = "raknet")]
             State::RakNet(connection) => connection.maintain().await,
+            #[cfg(feature = "raknet")]
+            State::AcceptedRakNet(_) => std::future::pending().await,
             #[cfg(feature = "nethernet")]
             State::Messaging(connection) => connection.maintain().await,
             #[cfg(feature = "nethernet")]
@@ -209,6 +237,11 @@ impl Transport {
         match &mut self.state {
             #[cfg(feature = "raknet")]
             State::RakNet(connection) => connection.close().await,
+            #[cfg(feature = "raknet")]
+            State::AcceptedRakNet(connection) => {
+                connection.close();
+                Ok(())
+            }
             #[cfg(feature = "nethernet")]
             State::Messaging(connection) => {
                 connection.close();
@@ -228,6 +261,8 @@ impl Transport {
         match &mut self.state {
             #[cfg(feature = "raknet")]
             State::RakNet(connection) => connection.close().await,
+            #[cfg(feature = "raknet")]
+            State::AcceptedRakNet(connection) => connection.finish_close().await,
             #[cfg(feature = "nethernet")]
             State::Messaging(connection) => connection.finish_close().await,
             #[cfg(feature = "nethernet")]
@@ -237,39 +272,85 @@ impl Transport {
         }
     }
     /// Synchronously retires only a server association, preserving its same receive prefix.
-    #[cfg(feature = "nethernet")]
     pub fn retire_accepted(&mut self) {
-        if let State::Accepted(connection) = &mut self.state {
-            connection.close();
+        match &mut self.state {
+            #[cfg(feature = "raknet")]
+            State::AcceptedRakNet(connection) => connection.close(),
+            #[cfg(feature = "nethernet")]
+            State::Accepted(connection) => connection.close(),
+            _ => {}
         }
     }
-    #[cfg(feature = "nethernet")]
-    pub(super) fn accepted_sender(&self) -> io::Result<nethernet_tokio::SessionSender> {
+    /// Checks actual established accepted admission before encoding any retained effect.
+    pub(super) fn check_prepared_send(&self) -> io::Result<()> {
         match &self.state {
+            #[cfg(feature = "raknet")]
+            State::AcceptedRakNet(connection) => connection.sender().map(drop),
+            #[cfg(feature = "nethernet")]
             State::Accepted(connection) | State::Http(connection) | State::Lan(connection) => {
-                connection.sender()
+                connection.sender().map(drop)
             }
             _ => Err(prepared_unsupported()),
         }
     }
-    #[cfg(feature = "nethernet")]
+    /// Reserves the same bounded transport capacity without owning a payload or cipher effect.
+    pub(super) fn reserve_send(
+        &self,
+        bytes: usize,
+        deadline: Instant,
+    ) -> io::Result<BoxFuture<'static, io::Result<SendPermit>>> {
+        #[cfg(not(feature = "raknet"))]
+        let _ = bytes;
+        #[cfg(not(feature = "nethernet"))]
+        let _ = deadline;
+        match &self.state {
+            #[cfg(feature = "raknet")]
+            State::AcceptedRakNet(connection) => {
+                let sender = connection.sender()?;
+                Ok(Box::pin(async move {
+                    sender
+                        .reserve_send(bytes)
+                        .await
+                        .map(SendPermit::RakNet)
+                        .map_err(io::Error::other)
+                }))
+            }
+            #[cfg(feature = "nethernet")]
+            State::Accepted(connection) | State::Http(connection) | State::Lan(connection) => {
+                let sender = connection.sender()?;
+                Ok(Box::pin(async move {
+                    sender
+                        .reserve_send(Some(deadline))
+                        .await
+                        .map(SendPermit::NetherNet)
+                        .map_err(io::Error::other)
+                }))
+            }
+            _ => Err(prepared_unsupported()),
+        }
+    }
     pub(super) async fn progress_accepted<T: Send>(
         &mut self,
         progress: impl Future<Output = T> + Send,
     ) -> io::Result<T> {
         match &mut self.state {
+            #[cfg(feature = "raknet")]
+            State::AcceptedRakNet(connection) => connection.progress(progress).await,
+            #[cfg(feature = "nethernet")]
             State::Accepted(connection) | State::Http(connection) | State::Lan(connection) => {
                 connection.progress(progress).await
             }
             _ => Err(prepared_unsupported()),
         }
     }
-    #[cfg(feature = "nethernet")]
     pub(super) async fn settle_accepted<T: Send>(
         &mut self,
         progress: impl Future<Output = T> + Send,
     ) -> io::Result<T> {
         match &mut self.state {
+            #[cfg(feature = "raknet")]
+            State::AcceptedRakNet(connection) => connection.settle(progress).await,
+            #[cfg(feature = "nethernet")]
             State::Accepted(connection) | State::Http(connection) | State::Lan(connection) => {
                 connection.settle(progress).await
             }
@@ -296,10 +377,9 @@ fn ensure_current(deadline: Instant, now: Instant) -> io::Result<()> {
 fn closing() -> io::Error {
     io::Error::new(io::ErrorKind::NotConnected, "native transport is closing")
 }
-#[cfg(feature = "nethernet")]
 fn prepared_unsupported() -> io::Error {
     io::Error::new(
         io::ErrorKind::InvalidInput,
-        "prepared send requires accepted NetherNet",
+        "prepared send requires an accepted transport",
     )
 }
