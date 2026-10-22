@@ -247,7 +247,7 @@ impl AcceptingConnection {
     }
 
     /// Seals new local commits and caps settlement by the first cleanup and original send cutoffs.
-    /// This does not close the association. Settle its receipt before calling begin_close.
+    /// This does not close the association. Settle its receipt before calling `begin_close`.
     pub fn begin_send_retirement(&mut self, deadline: Instant) -> SendRetirement<'_> {
         self.connection.begin_send_retirement(deadline)
     }

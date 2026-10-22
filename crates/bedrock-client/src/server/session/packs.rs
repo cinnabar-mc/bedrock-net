@@ -81,7 +81,7 @@ impl ServerChunkRequest {
     pub(super) fn offset(&self) -> u64 {
         self.position.offset
     }
-    /// Exact nonzero bytes required, bounded by chunk_size and the original archive tail.
+    /// Exact nonzero bytes required, bounded by `chunk_size` and the original archive tail.
     pub(super) fn byte_len(&self) -> usize {
         self.position.bytes
     }
