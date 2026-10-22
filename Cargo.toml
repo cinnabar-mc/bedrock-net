@@ -13,8 +13,8 @@ bedrock-services = { git = "https://github.com/cinnabar-mc/bedrock-services", re
 nethernet = { git = "https://github.com/cinnabar-mc/nethernet", rev = "fed09fc05afb3b0fe34d0e7b18702f7ea86c3290" }
 nethernet-tokio = { git = "https://github.com/cinnabar-mc/nethernet", rev = "fed09fc05afb3b0fe34d0e7b18702f7ea86c3290" }
 p384 = { version = "0.14", default-features = false, features = ["alloc", "ecdsa", "ecdh", "pkcs8"] }
-raknet = { git = "https://github.com/cinnabar-mc/raknet", rev = "1e88e33011eb0f746eaf67b4330a1dd60d900cb0" }
-raknet-tokio = { git = "https://github.com/cinnabar-mc/raknet", rev = "1e88e33011eb0f746eaf67b4330a1dd60d900cb0" }
+raknet = { git = "https://github.com/cinnabar-mc/raknet", rev = "4d9f23a47d55c4c39aa2952d1b3f540f347b530f" }
+raknet-tokio = { git = "https://github.com/cinnabar-mc/raknet", rev = "4d9f23a47d55c4c39aa2952d1b3f540f347b530f" }
 
 [package]
 name = "bedrock-net"
