@@ -16,7 +16,7 @@ is unchanged. Retained third-party code and notices keep their original terms.
 
 The built-in resource-pack identity catalog follows the public Gophertunnel
 behavior reference pinned in tools/go-oracle/go.mod. Its MIT notice is retained in
-LICENSE-MIT-gophertunnel.
+THIRD_PARTY_NOTICES.md#gophertunnel.
 
 The batch codec is an original Rust implementation informed by public code in:
 
@@ -54,14 +54,14 @@ The ClientData validator and Go field-fold/URL behavior follow the pinned
 Gophertunnel Login owner (MIT) and Go encoding/json, net/url, unicode and x/text
 (BSD-3-Clause). The actual Go generator checks the reflected schema and finite
 Unicode/locale/JSON data on every oracle test run. These upstream notices are
-retained in LICENSE-MIT-gophertunnel and LICENSE-BSD-Go.
+retained in THIRD_PARTY_NOTICES.md#gophertunnel and THIRD_PARTY_NOTICES.md#go-standard-library-and-xtext.
 
-URL-reference parsing follows the Go net/url package under its BSD license; see LICENSE-BSD-Go.
+URL-reference parsing follows the Go net/url package under its BSD license; see THIRD_PARTY_NOTICES.md#go-standard-library-and-xtext.
 
 Auxiliary certificate decoding follows Go crypto/x509 and the cryptobyte
-ASN.1 integer, framing and time rules under LICENSE-BSD-Go.
+ASN.1 integer, framing and time rules under THIRD_PARTY_NOTICES.md#go-standard-library-and-xtext.
 The protected x5c chain shape follows go-jose (Copyright 2014 Square Inc.) under Apache-2.0.
 
 JOSE protected-header and public JWK decoding follow go-jose (Copyright 2014 Square Inc.), under Apache-2.0.
 
-Legacy time comparison follows the Go time package under its BSD license; see LICENSE-BSD-Go.
+Legacy time comparison follows the Go time package under its BSD license; see THIRD_PARTY_NOTICES.md#go-standard-library-and-xtext.

@@ -1,6 +1,6 @@
 //! Shape decoding for JOSE headers, without modern signature or critical-header policy.
 // Copyright 2014 Square Inc.
-// The decoding rules follow go-jose, under Apache-2.0; see LICENSE-APACHE and NOTICE.
+// The decoding rules follow go-jose, under Apache-2.0; see `THIRD_PARTY_NOTICES.md#apache-20` and NOTICE.
 
 use super::client_data::jose_values;
 use super::{ClientExchangeKey, LoginError, Object, decode};

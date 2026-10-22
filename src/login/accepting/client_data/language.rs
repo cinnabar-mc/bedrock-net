@@ -1,4 +1,4 @@
-//! Acceptance and byte rewrites from golang.org/x/text v0.35.0; see LICENSE-GO.
+//! Acceptance and byte rewrites from golang.org/x/text v0.35.0; see `THIRD_PARTY_NOTICES.md#go-standard-library-and-xtext`.
 // Copyright 2013 The Go Authors. All rights reserved.
 // Byte allocation classes follow Go 1.26.1's BSD-licensed runtime.
 // Copyright 2009 The Go Authors. All rights reserved.

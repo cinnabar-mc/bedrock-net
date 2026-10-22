@@ -17,5 +17,6 @@ The workspace pins protocolgen, bedrock-services and transport dependencies in
 Preserve each package's declared license and its attribution files when packaging.
 Each client and pack crate includes its own `LICENSE-MIT`; `bedrock-client` also
 includes `LICENSE-AXOLOTL` and `LICENSE-MIT-gophertunnel`. Check these files with
-`cargo package --list` before publishing. The root package retains its Apache,
-BSD and MIT third-party notices.
+`cargo package --list` before publishing. The root package includes `NOTICE` and
+[THIRD_PARTY_NOTICES.md](../THIRD_PARTY_NOTICES.md), which retain its Apache, BSD
+and MIT third-party notices in one document.
