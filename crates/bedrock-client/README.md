@@ -1,224 +1,99 @@
 # bedrock-client
 
-Caller-driven Bedrock negotiation over protocolgen's generated packets. The pure
-owners create no runtime, socket, HTTP client, task, thread or clock. Applications
-own actual I/O, deadlines, cancellation, account/world authority and presentation.
+Client and server negotiation for Minecraft Bedrock, driven one packet at a time.
+Use it with your own transport and scheduler, or use
+[`bedrock-client-tokio`](https://github.com/cinnabar-mc/bedrock-net/blob/dev/crates/bedrock-client-tokio/README.md) for Tokio network adapters.
 
-The public client capabilities are consumed at each handoff:
+This crate handles settings, Login, resource packs and startup. It uses
+protocolgen's generated packet types and performs no socket, HTTP, filesystem or
+clock I/O. Your application sends the returned packets and supplies time,
+credentials, authorization, pack storage and world data.
 
-| Owner | Available work | Next owner |
-| --- | --- | --- |
-| `ClientHandshake` | Retain the original proof key; start once | `ClientSettings` |
-| `ClientSettings` | Observe actual settings; preserve unrelated input | `ClientLoginReady` |
-| `ClientLoginReady` | Format one offline or acquired-credential Login | `ClientLogin` |
-| `ClientLogin` | Observe post-Login controls and verified exchange | `ClientPackOffer` or actual packless startup |
-| `ClientPackOffer` | Supply validated cache/CDN preloads; start once | `ClientPacks` |
-| `ClientPacks` | Transfer packs and handle late Login controls | `PackComplete` |
-| `SpawnNegotiation` | Observe first definitions and `PlayerSpawn`; defer radius updates | `SpawnReady` |
-| `SpawnReady` | Consume one presentation-ready initialization | Generated acknowledgment |
+## Install
 
-`ClientHandshake::new` accepts the caller's owned signing key or an existing
-`Arc<SigningKey>`. The same underlying key signs Login and verifies the server
-exchange; signed transports share that allocation without copying private key
-material. Key generation and its platform entropy source remain caller-owned.
+For the example below, add these direct dependencies:
 
-`start` returns the uncompressed request and settings owner. `SettingsEvent::Ready`
-returns actual negotiated compression and Login readiness. Install compression on
-the same retained codec before constructing/sending Login. Formatting errors retain
-Login readiness through `LoginPreparationError::into_parts`; no Login was dispatched.
-The authenticated formatter preserves the acquired token but does not verify its
-issuer/account/proof/expiry. The account owner checks those again immediately before
-actual transport admission, including any capacity wait.
+```toml
+[dependencies]
+bedrock-client = { git = "https://github.com/cinnabar-mc/bedrock-net", branch = "dev" }
+bedrock-protocol = { package = "bedrock-protocol-1-26-51", git = "https://github.com/cinnabar-mc/protocolgen", rev = "4e9626abbb51b8fa842f49b4aea0fb4d3c01a682" }
+p384 = { version = "0.14", default-features = false, features = ["alloc", "ecdsa", "ecdh", "pkcs8"] }
+```
 
-A `ClientKeyExchange` owns the verified streams, acknowledgment and continuation.
-Move them with `into_parts`, install both directions, then send the acknowledgment
-before reading through the continuation. Transports that already encrypt the
-application stream omit the additional ciphers but still verify the server token.
-This is an explicit adapter contract, not a claim that a pure packet owner proved
-a real socket operation. Retain the same ciphers throughout the connection and
-never discard outgoing ciphertext after advancing the stream.
+The packet and key requirements match this crate's [workspace manifest](https://github.com/cinnabar-mc/bedrock-net/blob/dev/Cargo.toml).
+Keep dependencies from this repository on one revision and commit `Cargo.lock`.
 
-The pack handoff retains the original late Login/key-exchange owner. Cache status
-is sent at most once before transfer. `ClientPackOffer` admits caller-validated
-preloads, then its consuming `start` removes preload permission. `ClientPacks`
-handles both resource packets and late Login controls; it returns startup and
-terminal input unchanged. The standalone `PackOffer`→`PackNegotiation` API reuses
-the same bounded transfer implementation when no Login control is needed.
+## Start a client
 
-When the server sends `StartGame` without an earlier offer, `LoginEvent::Startup`
-consumes Login and returns that actual packet. Keep its original encoded header/body
-ahead of unread siblings on the caller's bounded FIFO. This path creates no offer,
-stack, pack acknowledgment or spawn readiness. The same startup prerequisites still
-apply; an advertised pack transfer keeps its original completion path.
+Give `ClientHandshake` the P-384 key used for this connection. It can share an
+`Arc<SigningKey>` with account authentication or signed transport setup:
 
-`PackTransferLimits` defaults its archive count and byte caps to `None`, so
-network selections do not inherit local import limits. Callers can select explicit
-`Some` caps. In-band transfers still check framing, representable lengths,
-identity, SHA-256 and the bounded chunk-request window. Preloads require caller
-archive/manifest validation against the offer; the offer contains no archive
-hash, and `supply_preloaded` checks byte bounds rather than authenticating content.
-The final stack's required bit controls rejection of unavailable selected entries;
-the archive handoff retains the offer-or-stack required policy.
+```rust
+use bedrock_client::handshake::{ClientHandshake, ClientSettings, HandshakeError, HandshakeOptions};
+use bedrock_protocol::packets::RequestNetworkSettings;
+use p384::ecdsa::SigningKey;
 
-Actual final-stack processing creates `PackComplete`, which has no public
-constructor. Send its original stack acknowledgment before entering startup.
-An early stack returns `PackEvent::DeferredStack` (or `PacksEvent::DeferredStack`
-for the typed lifecycle). Keep it in the caller's pending FIFO and continue the
-same transfer. Send each transfer response immediately. When `ready_for_stack()`
-is true, release shared cache-write references and replay the stack through
-`receive` before waiting for more network input. Completion then supplies the
-ordinary stack acknowledgment. Deferred stacks own their fields without keeping
-unrelated decoded batch storage alive.
+fn start_client(
+    key: SigningKey,
+) -> Result<(ClientSettings, RequestNetworkSettings), HandshakeError> {
+    ClientHandshake::new(key, HandshakeOptions::default())?.start()
+}
+```
 
-`start_spawn` transfers the exact ordered archives and configures the startup
-observer. `into_parts` supports callers stopping at the pack boundary. Ordinary
-`ResourcePackHandoff`/archive inputs are data, not constructors for protocol
-completion. Cache writers release shared archive references before the final stack.
+Drive the returned states in this order:
 
-Startup returns the first `StartGame`/item registry as soon as both arrive and
-requests the caller-selected radius once. Preserve returned `deferred` packets
-in the caller's bounded FIFO ahead of unread input; handle Disconnect, Transfer
-and non-spawn `PlayStatus` promptly. `StartGame`, the first item registry and
-`PlayerSpawn` produce the non-cloneable `SpawnReady`; a radius reply can arrive
-later during play. Retain readiness until presentation completes,
-then consume `finish_loading` once. Loading-screen policy remains application-owned.
+| State | What to do |
+| --- | --- |
+| `ClientSettings` | Call `receive` until `SettingsEvent::Ready`; install its compression settings. |
+| `ClientLoginReady` | Build metadata, then call `login_authenticated` or `login_offline` and send Login. |
+| `ClientLogin` | Call `receive`; send responses and install any verified key-exchange ciphers. |
+| `ClientPackOffer` | Supply validated preloads if available, then call `start`. |
+| `ClientPacks` | Transfer packs until `PackComplete`; send each returned response. |
+| `SpawnNegotiation` | Process startup packets and prepare presentation from the returned definitions. |
+| `SpawnReady` | Once presentation is ready, call `finish_loading` and send its acknowledgment. |
 
-Adapters with externally prepared handoffs may configure `SpawnNegotiation::new`
-directly. That creates only a prerequisite observer and claims no Login, pack or
-world authority; the actual incoming prerequisites must still produce readiness.
-`receive_deferred` accepts only unrelated raw packet IDs, retaining a terrain fact
-while the caller keeps original bytes. `StartGame`, `ItemRegistry`, `PlayStatus` and
-`ChunkRadiusUpdated` require decoded bodies. Packet schemas/codecs remain in
-protocolgen; the byte codec and directional ciphers remain in `bedrock-net`.
+Each transition consumes the old state and returns the next one. Keep unrelated
+packets and unread batch entries in order; handle Disconnect and Transfer promptly.
+A server may send `StartGame` without offering packs. In that case, Login returns
+the startup packet directly for the same startup checks.
 
-Malformed-wire handling, endpoint trust, credential persistence, cache/CDN I/O,
-deferred byte bounds and ongoing play stay with callers.
-The extracted Cinnabar implementation retains its
-[`PolyForm` Noncommercial license](../../LICENSE-CINNABAR); the spawn adaptation
-preserves [Jolyne's MIT notice](LICENSE-AXOLOTL).
+The [client guide](https://github.com/cinnabar-mc/bedrock-net/blob/dev/docs/client.md) covers Login formatting, key exchange,
+pack validation, early stack packets and startup. The
+[probe](https://github.com/cinnabar-mc/bedrock-net/blob/dev/examples/client/src/main.rs) shows these states through the Tokio
+adapter.
 
-Accepting Login uses its own consumed capabilities:
+## Accept a client
 
-| Owner | Available work | Next owner |
-| --- | --- | --- |
-| `ServerHandshake` | Observe the actual settings request | `PendingServerSettings` |
-| `PendingServerSettings` | Dispatch/flush plaintext and install compression | `ServerLogin` |
-| `ServerLogin` | Verify actual provider/client/transport proof | `VerifiedLogin` |
-| `VerifiedLogin` | Run explicit caller authorization | `ApprovedLogin<Grant>` |
-| `ApprovedLogin<Grant>` | Revalidate and create the sole exchange | Pending exchange or `ServerPacksReady<Grant>` |
-| `PendingServerKeyExchange<Grant>` | Flush plaintext; transfer exact cipher streams | `ServerAcknowledgment<Grant>` |
-| `ServerAcknowledgment<Grant>` | Observe actual encrypted acknowledgment | `ServerPacksReady<Grant>` |
-| `ServerPacksReady<Grant>` | Revalidate Login; retain the grant for caller checks; stop or start pack delivery | `AcceptedLogin<Grant>` or `ServerPacks<Grant>` |
+Start with `server::ServerHandshake`, using your server key, settings and an
+absolute deadline. Supply a `bedrock_net::login::LoginVerifier` configured for your
+provider. For a local application that explicitly permits offline identities,
+use `ServerHandshake::new_offline` with `OfflinePolicy`; account claims remain
+untrusted on that path.
 
-Supply one server key, original absolute deadline, any caller-verified transport
-peer key and required `bedrock_net::login::LoginVerifier`. The verifier uses the
-existing configured provider authority: signature, issuer, audience, dates, XUID
-and `cpk`; there is no default or permissive verifier. Only actual verification
-creates the default `VerifiedLogin<AuthenticatedLogin>`.
+| Stage | What your application supplies |
+| --- | --- |
+| Settings | Send the plaintext response, enable compression, then call `flushed`. |
+| Login | Verify the request and authorize the player through `VerifiedLogin::authorize`. |
+| Key exchange | Fresh salt; flush the server token before installing its ciphers. |
+| Packs | The selected world's `ServerPackSnapshot` and archive sources. |
+| Startup | The selected world's generated definitions and radius policy. |
+| Accepted session | Recheck authorization and attach the player to the running world. |
 
-For explicit offline admission, use `ServerHandshake::new_offline` and an
-`OfflinePolicy::new` cached address resolver. All accepting owners retain a
-second Login type parameter, defaulting to `AuthenticatedLogin` for existing
-callers. Offline authorization receives `&OfflineLogin`; packs, external reads,
-world startup and both relay paths preserve it through the final `into_parts`.
-Its claimed account and UUID values stay untrusted. Modern identity signature,
-time and audience checks are disabled in this policy; legacy chains are checked
-once during parsing. Signed `ClientData`, final exchange-key binding, actual cipher
-acknowledgment, caller authorization and the original deadline remain required.
-Wire guest mode 1 remains unsupported.
+You may stop at `AcceptedLogin` or continue through `AcceptedSession`. Relay paths
+observe an upstream world's startup without generating replacement world data.
+See the [server guide](https://github.com/cinnabar-mc/bedrock-net/blob/dev/docs/server.md) for each transition and the
+[Tokio accepting example](https://github.com/cinnabar-mc/bedrock-net/blob/dev/crates/bedrock-client-tokio/README.md#accept-a-client) for I/O.
 
-`VerifiedLogin::authorize` runs the caller's actual policy callback against the
-original authenticated player and signed nonce, retaining its concrete grant.
-That grant is caller-trusted authority, not library-proven hosted membership.
-For hosted worlds, use the real current directory/world/account/proof owner;
-service cards, invites, SDP and client metadata alone do not authorize a player.
-Recheck the grant after each wait before actual later dispatch/attachment.
+## Integration rules
 
-Borrow the pending settings packet for uncompressed send/flush, install its
-compression on the retained codec, then consume `flushed`. For encryption, provide
-fresh caller-owned sixteen-byte salt, send/flush the pending server token in
-plaintext, then consume its continuation and install both returned streams before
-reading the encrypted acknowledgment. An explicitly encrypted transport skips the
-additional cipher. Pending continuations have private constructors and retain the
-exact output/owner on transition failure. They assert the adapter's explicit I/O
-contract; a pure owner cannot prove a real socket flush. No unchecked Installed or
-Approved marker constructor exists.
+Keep one key, codec and cipher pair for the connection. Send effects in order,
+preserve unread packets across state changes, and keep the original deadline.
+Check credentials and application authorization after I/O waits, before admission.
+The [integration guide](https://github.com/cinnabar-mc/bedrock-net/blob/dev/docs/integration.md) explains buffering, cancellation
+and error handling; the [batch guide](https://github.com/cinnabar-mc/bedrock-net/blob/dev/docs/batches.md) covers the byte layer.
 
-The original deadline never restarts. Provider identity/key/presentation are
-revalidated at exchange, acknowledgment and final handoff. `ServerTransitionError`
-returns the retained owner/cause for retirement; it never resets a failed owner.
-The Login-only `finish` emits no `LoginSuccess` or pack advertisement.
-Prepare the actual world and exact pack snapshot before calling `start_packs`.
-`AcceptedLogin` proves consumed Login completion, not world attachment/spawn.
-The caller preserves decoded siblings, handles terminal packets immediately and
-closes on failed transitions. No accepting listener or running-world bridge is
-provided by this API.
+## License
 
-Accepting pack delivery and startup continue through owned capabilities:
-
-| Owner | Available work | Next owner |
-| --- | --- | --- |
-| `ServerPacks<Grant>` | Observe actual download/stack input | Send effects, pending read/write or `ServerWorldReady<Grant>` |
-| `PendingServerChunkRead<Grant>` | Read only the bounded original source range | `PendingServerChunk<Grant>` |
-| `PendingServerChunk<Grant>` | Send/flush its exact packet once | Original `ServerPacks<Grant>` |
-| `ServerWorldReady<Grant>` | Supply actual selected-world definitions | `ServerSpawning<Grant>` |
-| `ServerSpawning<Grant>` | Observe radius and original runtime-ID initialization | `ServerInitialized<Grant>` |
-| `ServerInitialized<Grant>` | Final provider/grant handoff | `AcceptedSession<Grant>` |
-
-`ServerPacksReady::start_packs` validates a `ServerPackSnapshot` before emitting
-`LoginSuccess` and its original offer. The snapshot contains exact offer/stack
-metadata plus original `ServerPackContent` archives in offer order. Memory content
-shares immutable compressed bytes; external content asserts prevalidated size/SHA
-and keeps the actual immutable file/source lease in the adapter. The core performs
-no filesystem access or archive loading. Supply the bounded range from the same
-lease when `ReadChunk` owns the continuation; it checks exact length and the full
-external SHA before emitting the final fragment. It never requires disk archives
-to be retained wholly in RAM.
-
-The original sequential chunk/flush contract applies to both storage kinds. A
-pending read or write owns the entire session, so it cannot consume another peer
-packet. Keep already decoded pipelined siblings in the adapter's existing bounded
-FIFO until the exact original chunk flush completes. No request queue or arbitrary
-`chunk_flushed` marker exists. Unrelated and terminal input is returned intact.
-Delivery bounds and chunk indexing belong to the retained snapshot/delivery
-configuration; the core adds no pacing delay.
-
-Only the actual final stack acknowledgment permits `ServerWorldReady::start_world`.
-`ServerWorld` requires original generated `StartGame`/items/creative data and the
-selected world's radius policy; it has no default world constructor. Exact
-runtime-ID initialization creates the sole final handoff owner. Provider
-revalidation remains at advertisement, world startup and final transfer; the
-original deadline never restarts. Retain and recheck the real caller grant at
-actual writes/attachment after waits. `ServerSessionTransitionError::into_parts`
-retains the failed continuation/output; a failed protocol owner stays sealed.
-Local snapshot-validation errors before advertisement retain original Login
-readiness for a corrected local snapshot.
-
-`AcceptedSession` carries original authenticated player/nonce, caller grant and
-observed cache/radius. The application rechecks its authority before attaching
-the player to its running world. See the
-[integration guide](../../docs/integration.md#accepting-packs-and-startup) for the
-adapter's packet, source and pending-write responsibilities.
-
-For an existing upstream world, `ServerWorldReady::relay_world` retains the same
-Login, grant and deadline without generating world or spawn responses. Pass its
-actual startup controls to `forward_server` or `forward_client`, forward the
-original packet, and consume `PendingServerRelay::flushed` only after that exact
-write finishes. The adapter keeps original raw headers and unread siblings.
-The continuation observes `StartGame`, item/radius/spawn controls and the matching
-client Initialized; it returns `AcceptedSession` only after the final upstream
-forward and provider revalidation. Application authority still belongs to the
-adapter at every real write and final attachment.
-
-`ClientHandshake::retain_pack_metadata` or `PackOffer::new_with_metadata` opts
-into full admitted offer/stack metadata at the original acquisition owner.
-`PackComplete::into_parts_with_metadata` moves that metadata with the ordinary
-acknowledgment and archive handoff. Offer entries keep offer order and verified
-sizes; stack entries keep application order and original metadata. Original
-data-information packets stay aligned with offer order; caller-preloaded content
-has no invented classification or premium information. The default path retains
-its ordinary archive handoff without metadata copies. No relay I/O is started.
-
-`transfer::TransferTarget` normalizes a decoded server target under the shared
-byte/character/port bounds. It does not resolve, authorize or follow that target;
-those decisions and presentation remain caller-owned.
+This crate retains Cinnabar's
+[PolyForm Noncommercial license](https://github.com/cinnabar-mc/bedrock-net/blob/dev/LICENSE-CINNABAR). The spawn adaptation
+also preserves [Jolyne's MIT notice](https://github.com/cinnabar-mc/bedrock-net/blob/dev/crates/bedrock-client/LICENSE-AXOLOTL).

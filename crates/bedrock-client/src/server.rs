@@ -1,4 +1,9 @@
-//! Caller-driven accepting Login; owned pack/world startup continues in [`session`].
+//! Server settings, Login verification and application authorization.
+//!
+//! Start with [`ServerHandshake`] and supply your configured
+//! [`LoginVerifier`]. Verification returns [`VerifiedLogin`]; its authorization
+//! callback must approve the player before key exchange and pack delivery.
+//! Pack delivery and world startup continue in [`session`].
 
 use bedrock_net::{
     CompressionAlgorithm, CompressionSettings,

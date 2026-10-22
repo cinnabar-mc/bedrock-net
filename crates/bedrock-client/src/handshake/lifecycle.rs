@@ -12,14 +12,18 @@ use p384::ecdsa::SigningKey;
 use serde_json::value::RawValue;
 use std::{fmt, sync::Arc, time::SystemTime};
 
-/// Configuration for one original proof-key lifetime, before settings negotiation.
+/// Starts client negotiation with the proof key used for Login and key exchange.
+///
+/// Call [`start`](Self::start), send the returned request uncompressed, then feed
+/// incoming generated packets to [`ClientSettings::receive`].
 #[must_use]
 pub struct ClientHandshake {
     engine: Box<Engine>,
 }
 
 impl ClientHandshake {
-    /// Validates options and retains the original key allocation without cloning private material.
+    /// Retains the connection's proof key and validates the Login byte limit.
+    /// An `Arc<SigningKey>` can be shared with account or transport authentication.
     pub fn new(
         key: impl Into<Arc<SigningKey>>,
         options: HandshakeOptions,
@@ -41,7 +45,7 @@ impl ClientHandshake {
         self
     }
 
-    /// Consumes configuration into the single uncompressed settings request.
+    /// Returns the uncompressed settings request and the state that receives its response.
     ///
     /// ```compile_fail
     /// fn start_twice(configured: bedrock_client::handshake::ClientHandshake) {

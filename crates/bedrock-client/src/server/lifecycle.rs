@@ -11,7 +11,11 @@ use std::{
     time::{Instant, SystemTime},
 };
 
-/// Awaiting the actual network settings request under one original accepting deadline.
+/// Waits for a client's settings request under the supplied setup deadline.
+///
+/// Feed incoming generated packets to [`receive`](Self::receive). Send the
+/// resulting settings response uncompressed, install compression, then call
+/// [`PendingServerSettings::flushed`] to begin receiving Login.
 ///
 /// ```compile_fail
 /// fn accept_before_verification(pending: bedrock_client::server::ServerHandshake) {
@@ -24,8 +28,9 @@ pub struct ServerHandshake<L = AuthenticatedLogin> {
 }
 
 impl ServerHandshake {
-    /// Validates configuration and retains the original server proof/transport binding.
-    /// Transport binding is caller-trusted input, not inferred from an unverified SDP/header.
+    /// Starts provider-authenticated Login with the server key and setup deadline.
+    /// Supply `transport_key` only when the transport has verified the peer key.
+    /// Use [`new_offline`](ServerHandshake::new_offline) for explicit offline admission.
     pub fn new(
         key: impl Into<Arc<SigningKey>>,
         transport_key: Option<VerifyingKey>,
