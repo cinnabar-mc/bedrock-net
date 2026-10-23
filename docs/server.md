@@ -144,4 +144,5 @@ and nonstandard IP spellings use the resolver.
 `RawClientData::validate` applies application title, version and presentation
 policy to relay metadata. Accepting signed Login uses the wire-admission checks
 above. These parsing adaptations retain the
-[gophertunnel](../LICENSE-GOPHERTUNNEL) and [Go](../LICENSE-GO) notices.
+[gophertunnel](../THIRD_PARTY_NOTICES.md#gophertunnel) and
+[Go](../THIRD_PARTY_NOTICES.md#go-standard-library) notices.

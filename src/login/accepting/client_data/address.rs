@@ -1,6 +1,6 @@
 //! Address syntax checks for the pure accepting verifier, without DNS or service lookups.
 // Copyright 2009 The Go Authors. All rights reserved.
-// Address parsing follows Go's BSD-licensed net and net/url packages; see LICENSE-GO.
+// Address parsing follows Go's BSD-licensed net and net/url packages; see `THIRD_PARTY_NOTICES.md#go-standard-library`.
 
 use std::net::{IpAddr, Ipv6Addr};
 

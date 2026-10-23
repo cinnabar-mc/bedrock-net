@@ -1,5 +1,5 @@
 //! Validates standard client-signed claims without changing their original representation.
-// Validation rules follow gophertunnel's MIT-licensed ClientData.Validate; see LICENSE-GOPHERTUNNEL.
+// Validation rules follow gophertunnel's MIT-licensed ClientData.Validate; see `THIRD_PARTY_NOTICES.md#gophertunnel`.
 
 use super::super::{LoginError, client_data::schema_generated::Record};
 use base64::Engine as _;

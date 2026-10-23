@@ -1,5 +1,5 @@
 //! Offline Login capability, with account claims kept separate from provider authority.
-// Chain rules follow gophertunnel under MIT; see LICENSE-GOPHERTUNNEL.
+// Chain rules follow gophertunnel under MIT; see `THIRD_PARTY_NOTICES.md#gophertunnel`.
 
 use super::{ClientExchangeKey, LoginError, client_data, jwt};
 use std::time::SystemTime;

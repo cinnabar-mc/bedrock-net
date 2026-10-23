@@ -1,5 +1,5 @@
 //! Go URL-reference admission for auxiliary JOSE data; no address is fetched or authorized.
-// Source-attributed Go net/url syntax; see NOTICE and LICENSE-BSD-Go.
+// Source-attributed Go net/url syntax; see NOTICE and `THIRD_PARTY_NOTICES.md#go-standard-library-and-xtext`.
 
 /// Returns the decoded host bytes for certificate URI checks, retaining relative and opaque forms.
 pub(super) fn parse(value: &str) -> Option<Vec<u8>> {

@@ -1,5 +1,5 @@
 //! Signed client key updates with Go-compatible PKIX ECDSA curve acceptance.
-// PKIX parsing follows Go's BSD-licensed crypto/x509 package; see LICENSE-GO.
+// PKIX parsing follows Go's BSD-licensed crypto/x509 package; see `THIRD_PARTY_NOTICES.md#go-standard-library`.
 
 use super::LoginError;
 use num_bigint::BigUint;
