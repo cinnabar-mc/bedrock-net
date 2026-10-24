@@ -221,6 +221,13 @@ async fn native_lan_discovery_preserves_the_configured_ice_port() {
             std::sync::Arc::clone(&signaling),
             ConnectionConfig {
                 allow_unsigned_answers: true,
+                // Both ICE peers use loopback independently of the host's default route.
+                server_ice: Some(nethernet_tokio::ServerIceConfig {
+                    turn_streams: Vec::new(),
+                    turn_tls: None,
+                    ice: Default::default(),
+                    bind_addr: SocketAddr::new(address.ip(), 0),
+                }),
                 ..Default::default()
             },
         )
