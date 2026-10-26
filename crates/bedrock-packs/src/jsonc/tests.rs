@@ -287,3 +287,48 @@ fn empty_objects_are_not_charged_a_map_node() {
     assert!(fits_parse_budget(b"[{},{},{}]", budget));
     assert!(!fits_parse_budget(br#"[{"":0}]"#, budget));
 }
+
+#[test]
+fn raw_string_controls_keep_their_decoded_values() {
+    for control in 0..=0x1f {
+        let mut bytes = b"{\"key".to_vec();
+        bytes.push(control);
+        bytes.extend_from_slice(b"\":\"before");
+        bytes.push(control);
+        bytes.extend_from_slice(b"after\"}");
+        let expected = json!({format!("key{}", char::from(control)): format!("before{}after", char::from(control))});
+        assert_eq!(parse_jsonc::<Value>(&bytes).unwrap(), expected);
+        assert!(validate_jsonc(&bytes).is_ok());
+        let normalized = normalize_jsonc(&bytes).unwrap();
+        assert_eq!(
+            serde_json::from_slice::<Value>(&normalized).unwrap(),
+            expected
+        );
+    }
+}
+
+#[test]
+fn multiline_strings_preserve_comments_quotes_and_existing_escapes() {
+    let bytes =
+        b"\xef\xbb\xbf{/* comment */\"text\":\"first\r\n\xa7r\t// /* ,} \\\" \\n \\\\\nlast\",}";
+    let expected = json!({"text": "first\r\n§r\t// /* ,} \" \n \\\nlast"});
+    assert_eq!(parse_jsonc::<Value>(bytes).unwrap(), expected);
+    assert_eq!(
+        serde_json::from_slice::<Value>(&normalize_jsonc(bytes).unwrap()).unwrap(),
+        expected
+    );
+}
+
+#[test]
+fn raw_controls_do_not_repair_invalid_escapes_or_non_string_tokens() {
+    for bytes in [
+        b"{\"text\":\"backslash\\\nnewline\"}".as_slice(),
+        b"{\"text\":\"bad\\q\ntext\"}",
+        b"{\"text\":\"unterminated\n}",
+        b"{\"text\":true\x01}",
+    ] {
+        assert!(parse_jsonc::<Value>(bytes).is_err(), "{bytes:?}");
+        assert!(validate_jsonc(bytes).is_err(), "{bytes:?}");
+        assert!(normalize_jsonc(bytes).is_none(), "{bytes:?}");
+    }
+}

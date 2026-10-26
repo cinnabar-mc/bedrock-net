@@ -107,7 +107,7 @@ fn fits_parse_budget(bytes: &[u8], budget: usize) -> bool {
 }
 
 /// Parses one complete pack document, accepting comments, a BOM and trailing
-/// commas. The requested type keeps its own shape and duplicate-key validation.
+/// commas and raw string controls. The requested type keeps its own shape and duplicate-key validation.
 /// A document whose value tree could exceed [`MAX_PARSED_BYTES`] is an error.
 pub fn parse_jsonc<T: DeserializeOwned>(bytes: &[u8]) -> Result<T, serde_json::Error> {
     if !fits_parse_budget(bytes, MAX_PARSED_BYTES) {
@@ -155,7 +155,7 @@ pub fn normalize_jsonc(bytes: &[u8]) -> Option<Vec<u8>> {
     Some(normalized)
 }
 
-/// Converts pack text and replaces comments and trailing commas with whitespace.
+/// Converts pack text, blanks comments and trailing commas, and escapes raw string controls.
 fn prepare_jsonc(bytes: &[u8]) -> Result<Vec<u8>, serde_json::Error> {
     #[cfg(test)]
     tests::PREPARE_CALLS.with(|calls| calls.set(calls.get() + 1));
@@ -163,7 +163,31 @@ fn prepare_jsonc(bytes: &[u8]) -> Result<Vec<u8>, serde_json::Error> {
     let stripped = strip_comments(text.as_bytes(), true).ok_or_else(|| {
         <serde_json::Error as serde::de::Error>::custom("unterminated string or block comment")
     })?;
-    Ok(strip_trailing_commas(&stripped))
+    Ok(escape_string_controls(&strip_trailing_commas(&stripped)))
+}
+
+/// Escapes unescaped control bytes in quoted strings while retaining existing escapes.
+fn escape_string_controls(bytes: &[u8]) -> Vec<u8> {
+    let mut output = Vec::with_capacity(bytes.len());
+    let mut quoted = false;
+    let mut escape = false;
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    for &byte in bytes {
+        if quoted && !escape && byte < b' ' {
+            output.extend_from_slice(b"\\u00");
+            output.push(HEX[usize::from(byte >> 4)]);
+            output.push(HEX[usize::from(byte & 15)]);
+        } else {
+            output.push(byte);
+            match byte {
+                _ if escape => escape = false,
+                b'\\' if quoted => escape = true,
+                b'"' => quoted = !quoted,
+                _ => {}
+            }
+        }
+    }
+    output
 }
 
 /// Replaces comments outside strings with spaces while preserving line breaks.
