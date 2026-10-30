@@ -16,6 +16,17 @@ use rand::rngs::SysRng;
 
 use crate::{HANDSHAKE_TIMEOUT, OFFLINE_IDENTITY_LIFETIME};
 
+/// Retains the same signing owner for a self-signed SDP offer and the later offline Login.
+fn offline_proof() -> Result<(Arc<SigningKey>, Arc<SelfSignedIdentity>), Box<dyn Error>> {
+    let key = Arc::new(SigningKey::try_generate_from_rng(&mut SysRng).map_err(io::Error::other)?);
+    let identity = Arc::new(SelfSignedIdentity::from_key(
+        Arc::clone(&key),
+        SystemTime::now(),
+        OFFLINE_IDENTITY_LIFETIME,
+    )?);
+    Ok((key, identity))
+}
+
 /// Establishes transport and retains the proof key used by its application Login.
 pub(super) async fn connect(
     kind: &str,
@@ -31,15 +42,9 @@ pub(super) async fn connect(
                 .timeout(HANDSHAKE_TIMEOUT)
                 .build()?;
             let signaling = HttpSignaling::with_client(rand::random::<u64>().to_string(), http);
-            let key =
-                Arc::new(SigningKey::try_generate_from_rng(&mut SysRng).map_err(io::Error::other)?);
-            let identity = Arc::new(SelfSignedIdentity::from_key(
-                Arc::clone(&key),
-                SystemTime::now(),
-                OFFLINE_IDENTITY_LIFETIME,
-            )?);
+            let (key, identity) = offline_proof()?;
             let config = ConnectionConfig {
-                identity: Some(identity.clone()),
+                identity: Some(identity),
                 server_trust: Some(TokenTrust::Any),
                 client_ice: address.ip().is_loopback().then(|| ClientIceConfig {
                     turn_streams: Vec::new(),
@@ -80,8 +85,16 @@ async fn connect_lan(
         )
         .into());
     }
+    let (key, identity) = offline_proof()?;
     let options = bedrock_client_tokio::connect::lan::DirectedLanConfig {
         connection: ConnectionConfig {
+            identity: Some(identity),
+            client_ice: Some(ClientIceConfig {
+                turn_streams: Vec::new(),
+                turn_tls: None,
+                ice: Default::default(),
+                bind_addr: Some(SocketAddr::new(address.ip(), 0)),
+            }),
             allow_unsigned_answers: true,
             attempts: 1,
             ..Default::default()
@@ -92,7 +105,6 @@ async fn connect_lan(
     };
     let (transport, _) =
         bedrock_client_tokio::connect::lan::connect_directed(address, &options, deadline).await?;
-    let key = Arc::new(SigningKey::try_generate_from_rng(&mut SysRng).map_err(io::Error::other)?);
     Ok((transport, key))
 }
 
