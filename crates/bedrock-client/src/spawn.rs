@@ -215,7 +215,7 @@ impl SpawnNegotiation {
                     self.item_registry = Some(registry);
                 }
             }
-            packets::Packet::PlayStatus(status) if status.status == PlayStatusType::Playerspawn => {
+            packets::Packet::PlayStatus(status) if status.status == PlayStatusType::PlayerSpawn => {
                 self.player_spawn_received = true;
             }
             packets::Packet::ChunkRadiusUpdated(radius) => {

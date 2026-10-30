@@ -2,7 +2,7 @@
 
 Build Minecraft Bedrock clients, servers and proxies in Rust. These libraries
 handle Login, resource-pack transfer and session startup, with Tokio adapters
-for `RakNet` and `NetherNet` connections.
+for `NetherNet` connections.
 
 ## Connect to a server
 
@@ -11,7 +11,7 @@ Run the included client against a listening peer that permits offline Login:
 ```sh
 git clone https://github.com/cinnabar-mc/bedrock-net
 cd bedrock-net
-cargo run --locked -p bedrock-probe -- raknet 127.0.0.1:19132 --offline-login
+cargo run --locked -p bedrock-probe -- nethernet 127.0.0.1:19132 --offline-login
 ```
 
 The probe connects, negotiates compression, sends Login with synthetic player
@@ -26,7 +26,7 @@ with the [client guide](https://github.com/cinnabar-mc/bedrock-net/blob/dev/docs
 The [probe source](https://github.com/cinnabar-mc/bedrock-net/blob/dev/examples/client/src/main.rs) shows metadata construction and
 connection cleanup.
 
-The probe also supports HTTP signaling and directed LAN discovery:
+The probe uses HTTP signaling and also supports directed LAN discovery:
 
 ```sh
 cargo run --locked -p bedrock-probe -- nethernet 127.0.0.1:19132 --offline-login
@@ -38,9 +38,8 @@ The LAN probe requires an IPv4 loopback discovery endpoint. See the
 
 ## Accept clients or build a proxy
 
-Start a listener with [`raknet-tokio`](https://github.com/cinnabar-mc/raknet) and
-pass an accepted session to `AcceptingConnection::from_raknet`. For `NetherNet`,
-use `AcceptingConnection::from_nether`. The
+Start a listener with [`nethernet-tokio`](https://github.com/cinnabar-mc/nethernet) and
+pass an accepted association to `AcceptingConnection::from_nether`. The
 [accepting example](https://github.com/cinnabar-mc/bedrock-net/blob/dev/docs/tokio.md#accept-a-client) reads a
 settings request, sends its response and prepares the connection for Login.
 
@@ -73,7 +72,7 @@ and service requests come from
 For the client, server and packet examples, copy the complete
 [Tokio dependency block](https://github.com/cinnabar-mc/bedrock-net/blob/dev/docs/tokio.md#dependencies). It declares every direct
 dependency and feature used by those functions, including the generated packet
-crate and accepting `RakNet` types. The individual crate READMEs have setup for
+crate and accepting `NetherNet` types. The individual crate READMEs have setup for
 their examples too.
 
 Use Git dependencies while the required registry releases are unavailable.
@@ -83,7 +82,7 @@ revisions. Native DEFLATE encoding requires a C compiler.
 
 | If you need… | Use |
 | --- | --- |
-| Connections on your Tokio runtime | [`bedrock-client-tokio`](https://github.com/cinnabar-mc/bedrock-net/blob/dev/crates/bedrock-client-tokio/README.md), with `raknet` or `nethernet`. |
+| Connections on your Tokio runtime | [`bedrock-client-tokio`](https://github.com/cinnabar-mc/bedrock-net/blob/dev/crates/bedrock-client-tokio/README.md), with the `nethernet` feature. |
 | Negotiation on another runtime or an existing network loop | [`bedrock-client`](https://github.com/cinnabar-mc/bedrock-net/blob/dev/crates/bedrock-client/README.md). |
 | Batching and encryption for encoded packets | [`bedrock-net`](https://github.com/cinnabar-mc/bedrock-net/blob/dev/src/lib.rs). |
 | Pack JSONC parsing and archive handoffs | [`bedrock-packs`](https://github.com/cinnabar-mc/bedrock-net/blob/dev/crates/bedrock-packs/README.md). |

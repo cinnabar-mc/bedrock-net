@@ -61,7 +61,7 @@ fn negotiated(
     algorithm: CompressionAlgorithm,
     threshold: u16,
 ) -> BatchCodec<bedrock_net::Negotiated> {
-    BatchCodec::new(BatchHeader::RakNet, BatchLimits::default()).negotiate(CompressionSettings {
+    BatchCodec::new(BatchHeader::Prefixed, BatchLimits::default()).negotiate(CompressionSettings {
         algorithm,
         threshold,
     })
@@ -98,7 +98,7 @@ fn unlimited() -> BatchLimits {
 
 /// A negotiated codec that reads back any benchmark output.
 fn reader(algorithm: CompressionAlgorithm) -> BatchCodec<bedrock_net::Negotiated> {
-    BatchCodec::new(BatchHeader::RakNet, unlimited())
+    BatchCodec::new(BatchHeader::Prefixed, unlimited())
         .negotiate(CompressionSettings {
             algorithm,
             threshold: 0,
@@ -186,8 +186,8 @@ fn framing(c: &mut Criterion) {
     codec_group(
         c,
         "BatchFraming",
-        || BatchCodec::new(BatchHeader::RakNet, BatchLimits::default()),
-        || BatchCodec::new(BatchHeader::RakNet, unlimited()),
+        || BatchCodec::new(BatchHeader::Prefixed, BatchLimits::default()),
+        || BatchCodec::new(BatchHeader::Prefixed, unlimited()),
     );
 }
 
@@ -232,7 +232,7 @@ fn encrypt_into<P: AsRef<[u8]>>(
     codec.encode_into(packets, frames).unwrap();
     for message in frames {
         *message = encryptor
-            .encrypt_batch(BatchHeader::RakNet, std::mem::take(message))
+            .encrypt_batch(BatchHeader::Prefixed, std::mem::take(message))
             .unwrap();
     }
 }
@@ -254,7 +254,7 @@ fn encryption(c: &mut Criterion) {
             .flat_map(|_| encrypt_message(&codec, &mut check, &packets))
             .map(|message| {
                 decryptor
-                    .decrypt_batch(BatchHeader::RakNet, message)
+                    .decrypt_batch(BatchHeader::Prefixed, message)
                     .unwrap()
             })
             .collect();
@@ -290,7 +290,7 @@ fn encryption(c: &mut Criterion) {
                             // Keep the in-place decrypted queue alive until the untimed refill.
                             for message in &mut frames {
                                 let plain = decryptor
-                                    .decrypt_batch(BatchHeader::RakNet, std::mem::take(message))
+                                    .decrypt_batch(BatchHeader::Prefixed, std::mem::take(message))
                                     .unwrap();
                                 drain(&mut codec, plain.clone());
                                 *message = plain;

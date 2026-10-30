@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 
-//! Packet I/O for an accepted `RakNet` or `NetherNet` session.
+//! Packet I/O for an accepted `NetherNet` session.
 //!
 //! [`AcceptingConnection`] retains batching, ciphers and unread packets while the
 //! application drives [`ServerHandshake`]. Use [`prepare_packets`](AcceptingConnection::prepare_packets)
@@ -12,8 +12,6 @@ use crate::{
     transport::Transport,
 };
 
-#[cfg(all(test, feature = "raknet"))]
-mod raknet_tests;
 #[cfg(all(feature = "nethernet", any(test, feature = "test-support")))]
 pub mod test_support;
 #[cfg(all(test, feature = "nethernet"))]
@@ -43,34 +41,6 @@ pub struct RetiredAcceptingConnection {
 }
 
 impl AcceptingConnection {
-    /// Wraps a session returned by `RakServer::accept` and starts Bedrock settings negotiation.
-    /// Supply the server key, limits and an absolute setup deadline. Drive the
-    /// returned [`ServerHandshake`] with your configured Login verifier.
-    #[cfg(feature = "raknet")]
-    pub fn from_raknet(
-        accepted: raknet_tokio::prelude::RakSession<raknet_tokio::prelude::Established>,
-        key: Arc<SigningKey>,
-        options: ServerHandshakeOptions,
-        max_deferred_bytes: usize,
-        deadline: Instant,
-    ) -> io::Result<(Self, ServerHandshake)> {
-        let handshake = ServerHandshake::new(
-            key,
-            None,
-            options,
-            deadline,
-            tokio::time::Instant::now().into_std(),
-        )
-        .map_err(|_| denied())?;
-        Ok((
-            Self::from_transport(
-                Transport::from_accepted_raknet(accepted),
-                max_deferred_bytes,
-            ),
-            handshake,
-        ))
-    }
-
     /// Wraps an accepted `NetherNet` association and binds Login to its verified SDP key.
     /// Supply the server proof key used by signaling. DTLS protects this association,
     /// so the returned handshake disables the additional Bedrock batch cipher.

@@ -358,7 +358,7 @@ impl Settings {
         if self.nethernet {
             BatchHeader::NetherNet
         } else {
-            BatchHeader::RakNet
+            BatchHeader::Prefixed
         }
     }
 
@@ -501,7 +501,7 @@ fn rust_batch(header: BatchHeader, name: &str, packets: &[Vec<u8>]) -> Vec<u8> {
     batches.pop().unwrap().to_vec()
 }
 
-/// Encrypts consecutive plaintext `RakNet` messages with one outgoing stream.
+/// Encrypts consecutive plaintext prefixed messages with one outgoing stream.
 fn encrypt_all(messages: &[Vec<u8>]) -> Vec<Vec<u8>> {
     let mut encryptor = BatchEncryptor::new(KEY);
     messages
@@ -542,9 +542,9 @@ fn uncompressed(packets: &[&[u8]]) -> Vec<u8> {
 fn decode_corpus() -> Vec<(&'static str, Settings, Vec<Vec<u8>>)> {
     let n = Settings::NEGOTIATED;
     let sample = sample();
-    let flate = rust_batch(BatchHeader::RakNet, "flate", &sample);
-    let snappy = rust_batch(BatchHeader::RakNet, "snappy", &sample);
-    let none = rust_batch(BatchHeader::RakNet, "none", &sample);
+    let flate = rust_batch(BatchHeader::Prefixed, "flate", &sample);
+    let snappy = rust_batch(BatchHeader::Prefixed, "snappy", &sample);
+    let none = rust_batch(BatchHeader::Prefixed, "none", &sample);
     let one_byte: Vec<&[u8]> = vec![&[1]; 1601];
     let big = vec![0x42; 16 * 1024 * 1024 + 512 * 1024];
     let mut corpus = vec![
@@ -613,7 +613,7 @@ fn decode_corpus() -> Vec<(&'static str, Settings, Vec<Vec<u8>>)> {
                 max_decompressed: Some(1024),
                 ..n
             },
-            vec![rust_batch(BatchHeader::RakNet, "flate", &[vec![3; 4096]])],
+            vec![rust_batch(BatchHeader::Prefixed, "flate", &[vec![3; 4096]])],
         ),
         (
             "uncompressed_over_limit",
@@ -649,7 +649,7 @@ fn decode_corpus() -> Vec<(&'static str, Settings, Vec<Vec<u8>>)> {
             "plain_multi",
             Settings::default(),
             vec![
-                BatchCodec::new(BatchHeader::RakNet, BatchLimits::default())
+                BatchCodec::new(BatchHeader::Prefixed, BatchLimits::default())
                     .encode(&sample)
                     .unwrap()[0]
                     .to_vec(),
@@ -710,7 +710,7 @@ fn decode_corpus() -> Vec<(&'static str, Settings, Vec<Vec<u8>>)> {
         ),
     ];
     let keyed = Settings { key: true, ..n };
-    let snappy_small = rust_batch(BatchHeader::RakNet, "snappy", &sample[..1]);
+    let snappy_small = rust_batch(BatchHeader::Prefixed, "snappy", &sample[..1]);
     corpus.extend([
         (
             "encrypted_consecutive",
@@ -781,7 +781,7 @@ fn rust_encode(case: &EncodeCase) -> Vec<Vec<Vec<u8>>> {
     let header = if case.nethernet {
         BatchHeader::NetherNet
     } else {
-        BatchHeader::RakNet
+        BatchHeader::Prefixed
     };
     let plain = BatchCodec::new(header, BatchLimits::default());
     let mut encryptor = case.key.then(|| BatchEncryptor::new(KEY));

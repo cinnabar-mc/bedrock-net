@@ -19,7 +19,7 @@ fn packless_relay_preserves_login_flush_and_real_initialized_gates() {
         assert_eq!(pending.login().nonce(), "original-nonce");
         let success = on_wire(pending.packet().clone(), wire::Peer::Server);
         assert!(matches!(&success, packets::Packet::PlayStatus(status)
-            if status.status == PlayStatusType::Loginsuccess));
+            if status.status == PlayStatusType::LoginSuccess));
         let LoginEvent::Send {
             login: client,
             packets,

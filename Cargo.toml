@@ -8,13 +8,11 @@ rust-version = "1.93"
 
 [workspace.dependencies]
 criterion = { version = "0.8", default-features = false, features = ["cargo_bench_support"] }
-bedrock-protocol = { package = "bedrock-protocol-1-26-51", git = "https://github.com/cinnabar-mc/protocolgen", rev = "4e9626abbb51b8fa842f49b4aea0fb4d3c01a682" }
+bedrock-protocol = { package = "bedrock-protocol-1-26-60", git = "https://github.com/cinnabar-mc/protocolgen", rev = "d47f818fc6511ef622a4f37bada23e0cf14ca889" }
 bedrock-services = { git = "https://github.com/cinnabar-mc/bedrock-services", rev = "0ef085c09c0124fefc3cc935deb68dbe66ebaaaa", features = ["signaling-tokio"] }
-nethernet = { git = "https://github.com/cinnabar-mc/nethernet", rev = "fed09fc05afb3b0fe34d0e7b18702f7ea86c3290" }
-nethernet-tokio = { git = "https://github.com/cinnabar-mc/nethernet", rev = "fed09fc05afb3b0fe34d0e7b18702f7ea86c3290" }
+nethernet = { git = "https://github.com/cinnabar-mc/nethernet", rev = "a756e40632f3564408f2cf1e2bb9119017e6bc30" }
+nethernet-tokio = { git = "https://github.com/cinnabar-mc/nethernet", rev = "a756e40632f3564408f2cf1e2bb9119017e6bc30" }
 p384 = { version = "0.14", default-features = false, features = ["alloc", "ecdsa", "ecdh", "pkcs8"] }
-raknet = { git = "https://github.com/cinnabar-mc/raknet", rev = "4d9f23a47d55c4c39aa2952d1b3f540f347b530f" }
-raknet-tokio = { git = "https://github.com/cinnabar-mc/raknet", rev = "4d9f23a47d55c4c39aa2952d1b3f540f347b530f" }
 
 [package]
 name = "bedrock-net"
@@ -30,7 +28,6 @@ readme = "README.md"
 default = []
 login = ["dep:base64", "dep:md-5", "dep:p384", "dep:p224", "dep:p256", "dep:p521", "dep:serde", "dep:serde_json", "dep:uuid", "sha2/zeroize", "dep:num-bigint", "dep:sha1"]
 provider-verification = ["login", "dep:nethernet"]
-raknet = ["dep:raknet", "dep:tokio"]
 messaging = ["dep:bedrock-services", "dep:futures", "dep:nethernet", "dep:nethernet-tokio", "dep:tokio", "dep:uuid", "uuid/v4"]
 
 [dependencies]
@@ -49,7 +46,6 @@ p224 = { version = "0.13.2", default-features = false, features = ["ecdsa"], opt
 p256 = { version = "0.14", default-features = false, features = ["ecdsa"], optional = true }
 p384 = { workspace = true, optional = true }
 p521 = { version = "0.14", default-features = false, features = ["ecdsa"], optional = true }
-raknet = { workspace = true, optional = true }
 serde = { version = "1", features = ["derive"], optional = true }
 serde_json = { version = "1", features = ["raw_value"], optional = true }
 sha2 = "0.11"
@@ -70,7 +66,6 @@ rsa = { version = "0.10.0-rc.19", default-features = false, features = ["std", "
 base64 = "0.22"
 criterion.workspace = true
 bedrock-services = { workspace = true, features = ["test-support"] }
-raknet = { workspace = true, features = ["test-support"] }
 serde_json = "1"
 tokio = { version = "1", features = ["rt", "macros", "net", "time", "test-util", "process", "io-util"] }
 tokio-websockets = { version = "0.13", default-features = false, features = ["client", "server", "aws_lc_rs", "getrandom"] }

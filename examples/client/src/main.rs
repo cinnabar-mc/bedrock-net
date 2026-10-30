@@ -28,8 +28,7 @@ const PROBE_UUID: &str = "00000000-0000-4000-8000-000000000001";
 const SKIN_SIDE: usize = 64;
 const SKIN_PIXEL: [u8; 4] = [0x80, 0x80, 0x80, 0xff];
 const SKIN_GEOMETRY: &str = r#"{"format_version":"1.12.0","minecraft:geometry":[{"description":{"identifier":"geometry.humanoid.custom","texture_width":64,"texture_height":64},"bones":[{"name":"root","pivot":[0,0,0],"cubes":[{"origin":[-4,0,-2],"size":[8,24,4],"uv":[0,0]}]}]}]}"#;
-const USAGE: &str =
-    "usage: bedrock-probe <raknet|nethernet|nethernet-lan> IP:PORT [--offline-login]";
+const USAGE: &str = "usage: bedrock-probe <nethernet|nethernet-lan> IP:PORT [--offline-login]";
 
 /// Runs a bounded probe with synthetic metadata and no account credentials.
 #[tokio::main(flavor = "current_thread")]
@@ -198,7 +197,7 @@ fn observe(event: Observation<'_>, accepted: &mut bool) {
 fn is_login_success(packet: &packets::Packet) -> bool {
     if let packets::Packet::PlayStatus(status) = packet {
         println!("login_status={}", status.status.to_raw());
-        status.status == PlayStatusType::Loginsuccess
+        status.status == PlayStatusType::LoginSuccess
     } else {
         false
     }

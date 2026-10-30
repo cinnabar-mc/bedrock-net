@@ -7,8 +7,9 @@ use std::sync::Arc;
 use std::time::SystemTime;
 
 use bedrock_client_tokio::transport::Transport;
-use bedrock_net::raknet::RakNetOptions;
-use nethernet_tokio::{ConnectionConfig, HttpSignaling, SelfSignedIdentity, TokenTrust};
+use nethernet_tokio::{
+    ClientIceConfig, ConnectionConfig, HttpSignaling, SelfSignedIdentity, TokenTrust,
+};
 use p384::ecdsa::SigningKey;
 use p384::elliptic_curve::Generate;
 use rand::rngs::SysRng;
@@ -22,17 +23,6 @@ pub(super) async fn connect(
     deadline: tokio::time::Instant,
 ) -> Result<(Transport, Arc<SigningKey>), Box<dyn Error>> {
     match kind {
-        "raknet" => {
-            let key =
-                Arc::new(SigningKey::try_generate_from_rng(&mut SysRng).map_err(io::Error::other)?);
-            let transport = bedrock_client_tokio::connect::raknet::connect_resolved(
-                std::iter::once(address),
-                RakNetOptions::default(),
-                deadline,
-            )
-            .await?;
-            Ok((transport, key))
-        }
         "nethernet-lan" => connect_lan(address, deadline).await,
         "nethernet" => {
             let _ = rustls::crypto::ring::default_provider().install_default();
@@ -51,6 +41,12 @@ pub(super) async fn connect(
             let config = ConnectionConfig {
                 identity: Some(identity.clone()),
                 server_trust: Some(TokenTrust::Any),
+                client_ice: address.ip().is_loopback().then(|| ClientIceConfig {
+                    turn_streams: Vec::new(),
+                    turn_tls: None,
+                    ice: Default::default(),
+                    bind_addr: Some(SocketAddr::new(address.ip(), 0)),
+                }),
                 attempts: 1,
                 ..ConnectionConfig::default()
             };
@@ -66,7 +62,7 @@ pub(super) async fn connect(
         }
         _ => Err(io::Error::new(
             io::ErrorKind::InvalidInput,
-            "transport must be raknet, nethernet or nethernet-lan",
+            "transport must be nethernet or nethernet-lan",
         )
         .into()),
     }

@@ -56,7 +56,7 @@ fn early_player_spawn_survives_pack_and_handshake_owners_until_startup() {
             time: wire::ZigZag32(1),
         }),
         packets::Packet::PlayStatus(packets::PlayStatus {
-            status: PlayStatusType::Playerspawn,
+            status: PlayStatusType::PlayerSpawn,
         }),
         packets::Packet::SetTime(packets::SetTime {
             time: wire::ZigZag32(2),
@@ -79,7 +79,7 @@ fn early_player_spawn_survives_pack_and_handshake_owners_until_startup() {
         packets: sent,
     } = negotiation
         .receive(packets::Packet::PlayStatus(packets::PlayStatus {
-            status: PlayStatusType::Loginsuccess,
+            status: PlayStatusType::LoginSuccess,
         }))
         .unwrap()
     else {

@@ -30,7 +30,7 @@ impl<A, L> ServerPacksReady<A, L> {
             ));
         }
         let success = packets::PlayStatus {
-            status: PlayStatusType::Loginsuccess,
+            status: PlayStatusType::LoginSuccess,
         };
         if let Err(cause) = bounded_metadata(&success, packets::PlayStatus::ID, max_metadata_bytes)
         {
@@ -169,7 +169,7 @@ impl<A, L> ServerRelaying<A, L> {
                     Effect::Radius(radius.chunk_radius.0)
                 }
                 packets::Packet::PlayStatus(status)
-                    if status.status == PlayStatusType::Playerspawn =>
+                    if status.status == PlayStatusType::PlayerSpawn =>
                 {
                     Effect::Spawned
                 }

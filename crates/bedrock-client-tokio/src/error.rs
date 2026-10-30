@@ -15,7 +15,7 @@ pub struct DeferredLimit {
     pub maximum: usize,
 }
 
-#[cfg(any(feature = "raknet", feature = "nethernet"))]
+#[cfg(feature = "nethernet")]
 /// A retained protocol/transport cause at the caller's negotiation boundary.
 #[derive(Debug, thiserror::Error)]
 pub enum NegotiationError {

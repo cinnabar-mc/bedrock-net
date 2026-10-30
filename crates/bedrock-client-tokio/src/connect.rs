@@ -6,8 +6,6 @@
 pub mod http;
 #[cfg(feature = "nethernet")]
 pub mod lan;
-#[cfg(feature = "raknet")]
-pub mod raknet;
 
 use futures::{StreamExt, stream::FuturesUnordered};
 use std::{collections::HashSet, future::Future, io, net::SocketAddr, time::Instant};
@@ -86,5 +84,5 @@ fn timed_out() -> io::Error {
     io::Error::new(io::ErrorKind::TimedOut, "native join timed out")
 }
 
-#[cfg(all(test, feature = "raknet", feature = "nethernet"))]
+#[cfg(all(test, feature = "nethernet"))]
 mod tests;

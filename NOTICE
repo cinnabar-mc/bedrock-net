@@ -29,11 +29,6 @@ The batch codec is an original Rust implementation informed by public code in:
 No source files from those projects are included. Their licenses continue to
 apply to their respective projects. Dependencies carry their own licenses.
 
-The optional RakNet driver uses bedrock-crustaceans/raknet (Apache-2.0), with a
-Cinnabar ordering-window and offline negotiation fixes pinned in Cargo.toml.
-The Go loopback fixture uses HashimTheArab/go-raknet (MIT), pinned in
-tools/raknet-peer/go.mod. Neither dependency's source is vendored here.
-
 The standalone probe consumes protocolgen's generated packet crate and uses
 bedrock-crustaceans/nethernet (Apache-2.0), with Cinnabar client identity support
 pinned in its manifest. It also uses bedrock-rs bedrock_auth for the caller-owned

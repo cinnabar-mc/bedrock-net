@@ -37,7 +37,7 @@ fn verified_login(batch_encryption: bool) -> ClientLogin {
         )
         .unwrap();
     let early_spawn = packets::Packet::PlayStatus(packets::PlayStatus {
-        status: PlayStatusType::Playerspawn,
+        status: PlayStatusType::PlayerSpawn,
     });
     let LoginEvent::Unhandled { login, packet } = login.receive(early_spawn.clone()).unwrap()
     else {
@@ -72,7 +72,7 @@ fn packless_start_game(batch_encryption: bool) {
             } = login
                 .receive(
                     packets::PlayStatus {
-                        status: PlayStatusType::Loginsuccess,
+                        status: PlayStatusType::LoginSuccess,
                     }
                     .into(),
                 )

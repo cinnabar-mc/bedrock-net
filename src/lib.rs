@@ -8,8 +8,6 @@ mod error;
 pub mod login;
 #[cfg(feature = "messaging")]
 pub mod messaging;
-#[cfg(feature = "raknet")]
-pub mod raknet;
 
 pub use batch::{
     BatchCodec, BatchHeader, BatchLimits, BatchPackets, BatchPhase, DecodeOutcome, Negotiated,

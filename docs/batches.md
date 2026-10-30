@@ -6,7 +6,7 @@ headers and bodies with the matching generated protocol crate.
 ## Encode and decode
 
 Each encoded input includes its packet header and omits the batch entry's length
-prefix. `BatchHeader::RakNet` includes the transport marker;
+prefix. `BatchHeader::Prefixed` includes the transport marker;
 `BatchHeader::NetherNet` has no marker. One transport message carries one batch.
 
 Start with `BatchCodec<Plain>`. `encode` splits packets under the configured byte

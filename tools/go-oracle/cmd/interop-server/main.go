@@ -16,7 +16,6 @@ import (
 	"os"
 	"time"
 
-	"github.com/sandertv/go-raknet"
 	"github.com/sandertv/gophertunnel/minecraft"
 	"github.com/sandertv/gophertunnel/minecraft/protocol"
 	"github.com/sandertv/gophertunnel/minecraft/protocol/login"
@@ -135,7 +134,7 @@ func listen(scenario string) error {
 		cfg.ResourcePacks = []*resource.Pack{pack}
 		cfg.TexturePacksRequired = true
 	}
-	l, err := cfg.Listen("raknet", "127.0.0.1:0")
+	l, err := cfg.Listen("nethernet", "127.0.0.1:0")
 	if err != nil {
 		return err
 	}
@@ -168,7 +167,7 @@ func listen(scenario string) error {
 	}
 }
 
-// scriptedConn frames generated Go packets over one go-raknet connection without encryption.
+// scriptedConn frames generated Go packets over one NetherNet connection without encryption.
 type scriptedConn struct {
 	conn net.Conn
 	enc  *packet.Encoder
@@ -223,7 +222,7 @@ func (s *scriptedConn) drain() error {
 }
 
 func scripted(scenario string) error {
-	l, err := raknet.Listen("127.0.0.1:0")
+	l, err := (minecraft.NetherNet{}).Listen("127.0.0.1:0")
 	if err != nil {
 		return err
 	}

@@ -305,9 +305,9 @@ impl<L> Engine<L> {
                 if request.client_network_version.0 != PROTOCOL_VERSION {
                     self.phase = Phase::Failed;
                     let status = if request.client_network_version.0 > PROTOCOL_VERSION {
-                        PlayStatusType::LoginfailedServerold
+                        PlayStatusType::LoginFailedServerOld
                     } else {
-                        PlayStatusType::LoginfailedClientold
+                        PlayStatusType::LoginFailedClientOld
                     };
                     return Ok(EngineEvent::Refused(packets::PlayStatus { status }));
                 }

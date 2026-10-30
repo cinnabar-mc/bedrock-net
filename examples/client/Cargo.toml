@@ -8,8 +8,8 @@ publish = false
 
 [dependencies]
 bedrock-client = { path = "../../crates/bedrock-client" }
-bedrock-client-tokio = { path = "../../crates/bedrock-client-tokio", features = ["raknet", "nethernet"] }
-bedrock-net = { path = "../..", features = ["raknet", "login"] }
+bedrock-client-tokio = { path = "../../crates/bedrock-client-tokio", features = ["nethernet"] }
+bedrock-net = { path = "../..", features = ["login"] }
 bedrock-protocol.workspace = true
 bedrock_auth = { git = "https://github.com/bedrock-crustaceans/bedrock-rs", rev = "ab7bb9521af078d4094c86da8b127d5f53cf0d31" }
 bytes = "1"
@@ -22,9 +22,6 @@ rustls = { version = "0.23", default-features = false, features = ["ring"] }
 serde_json = { version = "1", features = ["raw_value"] }
 tokio = { version = "1", features = ["rt", "macros", "time"] }
 uuid = "1"
-
-[dev-dependencies]
-raknet.workspace = true
 
 [lints]
 workspace = true

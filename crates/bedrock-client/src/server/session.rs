@@ -108,7 +108,7 @@ impl<A, L> SessionEngine<A, L> {
             },
             vec![
                 packets::PlayStatus {
-                    status: PlayStatusType::Loginsuccess,
+                    status: PlayStatusType::LoginSuccess,
                 }
                 .into(),
                 offer.into(),
