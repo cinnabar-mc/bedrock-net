@@ -1413,6 +1413,25 @@ mod login {
             "https://example.invalid:19132:19132",
             "HTTPS://example.invalid:1:1",
             "https://example.invalid:19132",
+            "http://example.invalid:19132",
+            "http://:19132",
+            "http://:19132:19132",
+            "HTTPS://example.invalid:01",
+            "https://example.invalid:",
+            "https://example.invalid",
+            "https://example.invalid:65536",
+            "https://example.invalid:1/path",
+            "https://example.invalid:1/?bad%zz",
+            "https://example.invalid:1/#fragment",
+            "https://example.invalid:1/#bad%zz",
+            "https://example.invalid:1/#line\n",
+            "https://example.invalid:1/?line\n",
+            "https://[::1]:19132",
+            "https://[::1]:19132:19132",
+            "https://[fe80::1%25eth0]:19132",
+            "https://[fe80::1%25]:19132",
+            "https://[invalid]:19132",
+            "https://host]:19132",
             "https://example.invalid:1:2",
             "https://:1:1",
             "https://example.invalid::",
@@ -1457,6 +1476,25 @@ mod login {
                 now,
                 LIMIT,
             );
+            if matches!(
+                address,
+                "https://example.invalid:19132:19132"
+                    | "https://example.invalid:19132"
+                    | "http://example.invalid:19132"
+                    | "https://[::1]:19132"
+                    | "https://[::1]:19132:19132"
+            ) {
+                assert_eq!(
+                    go["accepted"], true,
+                    "Go must accept current and legacy HTTP Login addresses: {address}"
+                );
+            }
+            if matches!(address, "http://:19132" | "http://:19132:19132") {
+                assert_eq!(
+                    go["accepted"], false,
+                    "Go must reject an empty HTTP Login hostname: {address}"
+                );
+            }
             if rust.is_ok() != go["accepted"].as_bool().unwrap() {
                 mismatches.push(format!(
                     "{address:?}: Rust {:?}, Go {}",

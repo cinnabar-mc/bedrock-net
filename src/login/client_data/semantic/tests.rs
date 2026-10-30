@@ -80,6 +80,30 @@ fn metadata_validation_retains_version_and_independent_refusals() {
         "GameVersion":"fixture-version", "DeviceOS":1, "LanguageCode":"en_US",
         "ServerAddress":"127.0.0.1:19132", "ThirdPartyName":"Fixture", "SkinId":"fixture"
     });
+    for (address, expected) in [
+        ("https://example.invalid:19132", true),
+        ("https://example.invalid:19132:19132", true),
+        ("http://[::1]:19132", true),
+        ("http://[::1]:19132:19132", true),
+        ("https://[fe80::1%25eth0]:19132", true),
+        ("http://:19132", false),
+        ("http://:19132:19132", false),
+        ("https://example.invalid", false),
+        ("https://example.invalid:1:2", false),
+        ("https://[invalid]:19132", false),
+        ("https://example.invalid:1/#bad%zz", false),
+    ] {
+        let mut data = baseline.clone();
+        data["ServerAddress"] = json!(address);
+        assert_eq!(
+            RawClientData::from_value(&data)
+                .unwrap()
+                .validate(7, 7, "fixture-version")
+                .is_ok(),
+            expected,
+            "metadata URL: {address}"
+        );
+    }
     let accepted = RawClientData::from_value(&baseline)
         .unwrap()
         .validate(7, 7, "fixture-version")
