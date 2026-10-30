@@ -85,12 +85,15 @@ jobs:
         env:
           GOTOOLCHAIN: go1.26.1
         run: go run -mod=readonly ./cmd/accepting-client-data ../../src/login/accepting/client_data
+      - name: Regenerate built-in pack catalog
+        working-directory: tools/go-oracle
+        run: go run -mod=readonly ./cmd/builtin-packs ../../crates/bedrock-client/data/builtin-packs.json
       - working-directory: tools/go-oracle
         run: go vet ./... && go test -run . -bench '^$' ./...
       - working-directory: tools/bench-compare
         run: go vet ./... && go test ./...
       - run: cargo fmt --all
-      - run: git diff --exit-code -- tests/fixtures/go_batches.rs testdata/bench src/login/accepting/client_data/language_data.rs src/login/accepting/client_data/name_letters.rs
+      - run: git diff --exit-code -- tests/fixtures/go_batches.rs testdata/bench src/login/accepting/client_data/language_data.rs src/login/accepting/client_data/name_letters.rs crates/bedrock-client/data/builtin-packs.json
   # Go and Rust benchmarks on one runner, joined by tools/bench-compare. Not a required check.
   bench:
     runs-on: ubuntu-latest
