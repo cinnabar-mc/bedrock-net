@@ -204,7 +204,7 @@ dependencies = [
  "base64 0.22.1",
  "bedrock-net",
  "bedrock-packs",
- "bedrock-protocol-1-26-60",
+ "bedrock-protocol-contract-1-26-60",
  "bytes",
  "criterion",
  "p384",
@@ -223,7 +223,7 @@ dependencies = [
  "bedrock-client",
  "bedrock-net",
  "bedrock-packs",
- "bedrock-protocol-1-26-60",
+ "bedrock-protocol-contract-1-26-60",
  "bytes",
  "futures",
  "nethernet",
@@ -292,7 +292,7 @@ dependencies = [
  "bedrock-client",
  "bedrock-client-tokio",
  "bedrock-net",
- "bedrock-protocol-1-26-60",
+ "bedrock-protocol-contract-1-26-60",
  "bedrock_auth",
  "bytes",
  "nethernet-tokio",
@@ -306,9 +306,9 @@ dependencies = [
 ]
 
 [[package]]
-name = "bedrock-protocol-1-26-60"
+name = "bedrock-protocol-contract-1-26-60"
 version = "0.1.0"
-source = "git+https://github.com/cinnabar-mc/protocolgen?rev=d47f818fc6511ef622a4f37bada23e0cf14ca889#d47f818fc6511ef622a4f37bada23e0cf14ca889"
+source = "git+https://github.com/cinnabar-mc/protocolgen?rev=6bbb5226582dbcf510df90a6ebadb6cc26d0c403#6bbb5226582dbcf510df90a6ebadb6cc26d0c403"
 dependencies = [
  "bytes",
  "glam",

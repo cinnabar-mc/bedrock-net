@@ -16,7 +16,7 @@ For the example below, add these direct dependencies:
 ```toml
 [dependencies]
 bedrock-client = { git = "https://github.com/cinnabar-mc/bedrock-net", branch = "dev" }
-bedrock-protocol = { package = "bedrock-protocol-1-26-60", git = "https://github.com/cinnabar-mc/protocolgen", rev = "d47f818fc6511ef622a4f37bada23e0cf14ca889" }
+bedrock-protocol = { package = "bedrock-protocol-contract-1-26-60", git = "https://github.com/cinnabar-mc/protocolgen", rev = "6bbb5226582dbcf510df90a6ebadb6cc26d0c403" }
 p384 = { version = "0.14", default-features = false, features = ["alloc", "ecdsa", "ecdh", "pkcs8"] }
 ```
 
