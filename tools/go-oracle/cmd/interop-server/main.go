@@ -101,7 +101,7 @@ func syntheticPack() ([]byte, error) {
 	return buf.Bytes(), nil
 }
 
-func listen(scenario string) error {
+func listen(scenario string) (err error) {
 	cfg := minecraft.ListenConfig{
 		AuthenticationDisabled: true,
 		Compression:            packet.FlateCompression,
@@ -134,7 +134,12 @@ func listen(scenario string) error {
 		cfg.ResourcePacks = []*resource.Pack{pack}
 		cfg.TexturePacksRequired = true
 	}
-	l, err := cfg.Listen("nethernet", "127.0.0.1:0")
+	network, closeNetwork, err := loopbackNetwork()
+	if err != nil {
+		return err
+	}
+	defer func() { err = errors.Join(err, closeNetwork()) }()
+	l, err := cfg.ListenNetwork(network, "127.0.0.1:0")
 	if err != nil {
 		return err
 	}
@@ -221,8 +226,13 @@ func (s *scriptedConn) drain() error {
 	}
 }
 
-func scripted(scenario string) error {
-	l, err := (minecraft.NetherNet{}).Listen("127.0.0.1:0")
+func scripted(scenario string) (err error) {
+	network, closeNetwork, err := loopbackNetwork()
+	if err != nil {
+		return err
+	}
+	defer func() { err = errors.Join(err, closeNetwork()) }()
+	l, err := network.Listen("127.0.0.1:0")
 	if err != nil {
 		return err
 	}
