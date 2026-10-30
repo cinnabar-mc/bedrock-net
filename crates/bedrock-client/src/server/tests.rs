@@ -325,9 +325,9 @@ fn accepting_rejects_version_and_transport_proof_before_application_admission() 
         assert_eq!(
             status.status,
             if difference < 0 {
-                PlayStatusType::LoginfailedClientold
+                PlayStatusType::LoginFailedClientOld
             } else {
-                PlayStatusType::LoginfailedServerold
+                PlayStatusType::LoginFailedServerOld
             }
         );
         assert!(matches!(

@@ -8,15 +8,15 @@ the accepting listener come from your application.
 
 Add this complete block to a Rust 2024 application's `Cargo.toml`. It declares
 every direct dependency used below, including the generated packet crate and
-the accepting RakNet session type:
+the accepting NetherNet session type:
 
 ```toml
 [dependencies]
-bedrock-client-tokio = { git = "https://github.com/cinnabar-mc/bedrock-net", branch = "dev", features = ["raknet"] }
+bedrock-client-tokio = { git = "https://github.com/cinnabar-mc/bedrock-net", branch = "dev", features = ["nethernet"] }
 bedrock-client = { git = "https://github.com/cinnabar-mc/bedrock-net", branch = "dev" }
 bedrock-net = { git = "https://github.com/cinnabar-mc/bedrock-net", branch = "dev" }
-bedrock-protocol = { package = "bedrock-protocol-1-26-51", git = "https://github.com/cinnabar-mc/protocolgen", rev = "4e9626abbb51b8fa842f49b4aea0fb4d3c01a682" }
-raknet-tokio = { git = "https://github.com/cinnabar-mc/raknet", rev = "4d9f23a47d55c4c39aa2952d1b3f540f347b530f" }
+bedrock-protocol = { package = "bedrock-protocol-contract-1-26-60", git = "https://github.com/cinnabar-mc/protocolgen", rev = "9eed056998235e4c01e0f3befabed651021dea77" }
+nethernet-tokio = { git = "https://github.com/cinnabar-mc/nethernet", rev = "cfcbf4868e20650c4af78346794710568c0b1b9c" }
 p384 = { version = "0.14", default-features = false, features = ["alloc", "ecdsa", "ecdh", "pkcs8"] }
 serde_json = { version = "1", features = ["raw_value"] }
 tokio = { version = "1", features = ["rt", "time", "macros", "sync"] }
@@ -27,8 +27,8 @@ The registry requirements and external Git revisions match this workspace's
 [adapter manifest](../crates/bedrock-client-tokio/Cargo.toml). Keep crates from this
 repository on one revision, commit your `Cargo.lock`, and use `rev` instead of
 `branch` when you need manifest-level pins. The `raw_value` feature exposes the
-client metadata type. Enable `nethernet` on the adapter for HTTP, LAN or messaging
-instead of these RakNet functions.
+client metadata type. Configure HTTP signaling, identity and server trust before
+connecting; the same proof key must sign the transport offer and application Login.
 
 ## Connect a client
 
@@ -37,16 +37,19 @@ The metadata callback builds client claims after settings using your schema; the
 [probe](../examples/client/src/main.rs) shows a concrete metadata builder.
 
 ```rust,no_run
-use std::{error::Error, net::SocketAddr, sync::Arc, time::{Duration, Instant}};
+use std::{error::Error, sync::Arc, time::{Duration, Instant}};
 use bedrock_client::handshake::{ClientHandshake, ClientPackOffer, HandshakeOptions};
-use bedrock_client_tokio::{connect, connection::Connection, handshake::{self, LoginData}};
-use bedrock_net::{BatchLimits, raknet::RakNetOptions};
+use bedrock_client_tokio::{connect, connection::Connection, transport::Transport, handshake::{self, LoginData}};
+use nethernet_tokio::{ConnectionConfig, HttpSignaling};
+use bedrock_net::BatchLimits;
 use bedrock_protocol::wire::{Limits, Peer};
 use p384::ecdsa::SigningKey;
 use serde_json::value::RawValue;
 
 async fn connect_client(
-    address: SocketAddr,
+    signaling: HttpSignaling,
+    endpoint: String,
+    config: ConnectionConfig,
     key: Arc<SigningKey>,
     token: &str,
     credential_deadline: Instant,
@@ -54,11 +57,15 @@ async fn connect_client(
 ) -> Result<(Connection, Option<ClientPackOffer>), Box<dyn Error>> {
     let deadline = (tokio::time::Instant::now() + Duration::from_secs(30))
         .min(credential_deadline.into());
-    let transport = connect::raknet::connect_resolved(
-        std::iter::once(address), RakNetOptions::default(), deadline,
+    let ready = connect::http::connect(
+        signaling, endpoint, config, deadline, Some(credential_deadline),
     ).await?;
+    let transport = Transport::from_http(ready);
     let limits = BatchLimits::default();
-    let configured = ClientHandshake::new(key, HandshakeOptions::default())?;
+    let configured = ClientHandshake::new(key, HandshakeOptions {
+        batch_encryption: transport.batch_encryption(),
+        ..Default::default()
+    })?;
     let mut connection = Connection::new(
         transport, limits, Limits::receiving_from(Peer::Server),
         limits.max_decoded_bytes,
@@ -109,7 +116,7 @@ let a proxy retain original packet headers and bytes.
 
 ## Accept a client
 
-Pass a session returned by `raknet_tokio::prelude::RakServer::accept`. This
+Pass an association returned by `nethernet_tokio::NetherServer::accept`. This
 function answers settings and returns the connection ready to verify Login.
 Supply your provider verifier, server key and setup deadline; it does not
 independently authorize a player or start a world.
@@ -120,18 +127,18 @@ use bedrock_client::server::{ServerHandshakeOptions, ServerLogin, ServerSettings
 use bedrock_client_tokio::server::AcceptingConnection;
 use bedrock_net::{BatchLimits, login::LoginVerifier};
 use p384::ecdsa::SigningKey;
-use raknet_tokio::prelude::{Established, RakSession};
+use nethernet_tokio::AcceptedSession;
 
 async fn accept_settings(
-    accepted: RakSession<Established>,
+    accepted: AcceptedSession,
     key: Arc<SigningKey>,
     verifier: &impl LoginVerifier,
     deadline: Instant,
 ) -> Result<(AcceptingConnection, ServerLogin), Box<dyn Error>> {
-    let (mut wire, mut handshake) = AcceptingConnection::from_raknet(
+    let (mut wire, mut handshake) = AcceptingConnection::from_nether(
         accepted, key, ServerHandshakeOptions::default(),
         BatchLimits::default().max_decoded_bytes, deadline,
-    )?;
+    ).await?;
     loop {
         let packet = wire.receive(deadline).await?;
         match handshake.receive(packet, verifier, Instant::now(), SystemTime::now())? {

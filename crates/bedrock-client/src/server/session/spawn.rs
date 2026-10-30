@@ -79,7 +79,7 @@ impl Startup {
                     }
                     .into(),
                     packets::PlayStatus {
-                        status: PlayStatusType::Playerspawn,
+                        status: PlayStatusType::PlayerSpawn,
                     }
                     .into(),
                     self.creative

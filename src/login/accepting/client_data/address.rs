@@ -7,7 +7,7 @@ use std::net::{IpAddr, Ipv6Addr};
 /// Checks pure syntax and identifies the normalized UDP address that still needs resolution.
 pub(super) fn resolution(address: &str) -> Option<Option<String>> {
     if address.contains("://") {
-        return valid_url(address).then_some(None);
+        return crate::login::url::server_address(address).then_some(None);
     }
     if !address.contains(':') {
         return Some(None);
@@ -71,25 +71,4 @@ pub(super) fn resolution(address: &str) -> Option<Option<String>> {
     } else {
         Some(normalized)
     })
-}
-
-/// Adds the metadata owner's HTTP scheme and duplicated-port requirements to Go URL syntax.
-fn valid_url(address: &str) -> bool {
-    let Some((inner, outer_port)) = address.rsplit_once(':') else {
-        return false;
-    };
-    let Some((scheme, _)) = inner.split_once("://") else {
-        return false;
-    };
-    if !scheme.eq_ignore_ascii_case("http") && !scheme.eq_ignore_ascii_case("https") {
-        return false;
-    }
-    let Some(host) = crate::login::url::parse(inner) else {
-        return false;
-    };
-    let Some(colon) = host.iter().rposition(|byte| *byte == b':') else {
-        return false;
-    };
-    let port = &host[colon + 1..];
-    !port.is_empty() && port.iter().all(u8::is_ascii_digit) && port == outer_port.as_bytes()
 }

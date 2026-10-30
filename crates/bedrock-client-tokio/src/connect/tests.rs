@@ -2,21 +2,15 @@
 
 use super::*;
 use bedrock_net::BatchHeader;
-use bedrock_net::raknet::RakNetOptions;
 use bytes::Bytes;
 use lan::{DirectedLanConfig, LanSelection};
 use nethernet_tokio::{ConnectionConfig, LanConfig, LanSignaling, NetherServer, ServerData};
 use std::{
     net::{Ipv6Addr, SocketAddr},
-    process::Stdio,
     time::Duration,
 };
+use tokio::net::UdpSocket;
 use tokio::time::Instant;
-use tokio::{
-    io::{AsyncBufReadExt, BufReader},
-    net::UdpSocket,
-    process::Command,
-};
 
 const TEST_TIMEOUT: Duration = Duration::from_secs(20);
 
@@ -332,81 +326,6 @@ async fn native_lan_discovery_preserves_the_configured_ice_port() {
     })
     .await
     .expect("finite configured ICE LAN fixture stalled");
-}
-
-/// The actual pending `RakNet` socket is dropped on either cancellation or the original cutoff.
-#[tokio::test]
-async fn native_candidate_cancellation_and_original_deadline_release_actual_sockets() {
-    let _spawn = CHILD_SPAWN.lock().await;
-    for expires in [false, true] {
-        let blackhole = UdpSocket::bind("127.0.0.1:0").await.unwrap();
-        let address = blackhole.local_addr().unwrap();
-        let deadline = Instant::now() + Duration::from_secs(10);
-        let mut connecting = Box::pin(raknet::connect_resolved(
-            std::iter::once(address),
-            RakNetOptions::default(),
-            deadline,
-        ));
-        let mut datagram = [0; 2048];
-        let (_, source) = tokio::select! {
-            result = blackhole.recv_from(&mut datagram) => result.unwrap(),
-            _ = &mut connecting => panic!("a silent loopback peer completed a handshake"),
-        };
-        if expires {
-            tokio::time::pause();
-            tokio::time::advance(deadline.saturating_duration_since(Instant::now())).await;
-            assert_eq!(
-                connecting.await.err().unwrap().kind(),
-                io::ErrorKind::TimedOut
-            );
-        } else {
-            drop(connecting);
-        }
-        let _released = UdpSocket::bind(source)
-            .await
-            .expect("original candidate socket retired");
-    }
-}
-
-/// Reuses the library's real bounded Go peer, while a first live UDP endpoint stays silent.
-#[tokio::test]
-async fn native_raknet_alternative_progresses_past_a_silent_first_endpoint() {
-    let Some(binary) = std::env::var_os("BEDROCK_NET_RAKNET_PEER") else {
-        eprintln!("missing fixture: BEDROCK_NET_RAKNET_PEER; build bedrock-net tools/raknet-peer");
-        return;
-    };
-    tokio::time::timeout(TEST_TIMEOUT, async {
-        let mut child = {
-            let _spawn = CHILD_SPAWN.lock().await;
-            Command::new(binary)
-                .args(["-close-after=0", "-ipv6=false"])
-                .stdout(Stdio::piped())
-                .stderr(Stdio::inherit())
-                .kill_on_drop(true)
-                .spawn()
-                .expect("start existing loopback RakNet fixture")
-        };
-        let mut lines = BufReader::new(child.stdout.take().unwrap()).lines();
-        let peer: SocketAddr = lines.next_line().await.unwrap().unwrap().parse().unwrap();
-        assert!(peer.ip().is_loopback());
-        let blackhole = UdpSocket::bind("127.0.0.1:0").await.unwrap();
-        let deadline = Instant::now() + TEST_TIMEOUT;
-        let resolved = tokio::net::lookup_host(("localhost", peer.port()))
-            .await
-            .unwrap();
-        let addresses = std::iter::once(blackhole.local_addr().unwrap()).chain(resolved);
-        let mut connected = raknet::connect_resolved(addresses, RakNetOptions::default(), deadline)
-            .await
-            .unwrap();
-        assert_eq!(connected.header(), BatchHeader::RakNet);
-        let message = Bytes::from_static(b"\xfefallback");
-        connected.send_until(message.clone(), None).await.unwrap();
-        assert_eq!(connected.recv().await.unwrap(), message);
-        connected.close().await.unwrap();
-        assert!(child.wait().await.unwrap().success());
-    })
-    .await
-    .expect("finite alternative RakNet fixture stalled");
 }
 
 /// An empty compatible set cannot start LAN discovery or manufacture a transport owner.

@@ -39,7 +39,7 @@ fn forward(
 fn startup(mut relay: ServerRelaying<Grant>, now: Instant) -> ServerRelaying<Grant> {
     for packet in [
         packets::PlayStatus {
-            status: PlayStatusType::Playerspawn,
+            status: PlayStatusType::PlayerSpawn,
         }
         .into(),
         packets::Packet::StartGame(Box::new(packets::StartGame {

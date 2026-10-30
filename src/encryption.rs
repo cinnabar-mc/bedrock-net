@@ -44,7 +44,7 @@ pub enum EncryptionError {
     /// Adding the checksum would overflow the payload length.
     #[error("encrypted batch length overflow")]
     LengthOverflow,
-    /// A `RakNet` batch has no valid transport marker.
+    /// A prefixed batch has no valid transport marker.
     #[error("invalid encrypted batch transport marker")]
     InvalidBatchHeader,
 }
@@ -449,7 +449,7 @@ mod tests {
 
     #[test]
     fn consecutive_decryption_preserves_block_and_checksum_boundaries() {
-        for header in [BatchHeader::RakNet, BatchHeader::NetherNet] {
+        for header in [BatchHeader::Prefixed, BatchHeader::NetherNet] {
             let mut encryptor = BatchEncryptor::new([9; 32]);
             let mut decryptor = BatchDecryptor::new([9; 32]);
             let mut reference =

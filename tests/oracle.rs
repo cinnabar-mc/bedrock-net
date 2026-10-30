@@ -358,7 +358,7 @@ impl Settings {
         if self.nethernet {
             BatchHeader::NetherNet
         } else {
-            BatchHeader::RakNet
+            BatchHeader::Prefixed
         }
     }
 
@@ -501,7 +501,7 @@ fn rust_batch(header: BatchHeader, name: &str, packets: &[Vec<u8>]) -> Vec<u8> {
     batches.pop().unwrap().to_vec()
 }
 
-/// Encrypts consecutive plaintext `RakNet` messages with one outgoing stream.
+/// Encrypts consecutive plaintext prefixed messages with one outgoing stream.
 fn encrypt_all(messages: &[Vec<u8>]) -> Vec<Vec<u8>> {
     let mut encryptor = BatchEncryptor::new(KEY);
     messages
@@ -542,9 +542,9 @@ fn uncompressed(packets: &[&[u8]]) -> Vec<u8> {
 fn decode_corpus() -> Vec<(&'static str, Settings, Vec<Vec<u8>>)> {
     let n = Settings::NEGOTIATED;
     let sample = sample();
-    let flate = rust_batch(BatchHeader::RakNet, "flate", &sample);
-    let snappy = rust_batch(BatchHeader::RakNet, "snappy", &sample);
-    let none = rust_batch(BatchHeader::RakNet, "none", &sample);
+    let flate = rust_batch(BatchHeader::Prefixed, "flate", &sample);
+    let snappy = rust_batch(BatchHeader::Prefixed, "snappy", &sample);
+    let none = rust_batch(BatchHeader::Prefixed, "none", &sample);
     let one_byte: Vec<&[u8]> = vec![&[1]; 1601];
     let big = vec![0x42; 16 * 1024 * 1024 + 512 * 1024];
     let mut corpus = vec![
@@ -613,7 +613,7 @@ fn decode_corpus() -> Vec<(&'static str, Settings, Vec<Vec<u8>>)> {
                 max_decompressed: Some(1024),
                 ..n
             },
-            vec![rust_batch(BatchHeader::RakNet, "flate", &[vec![3; 4096]])],
+            vec![rust_batch(BatchHeader::Prefixed, "flate", &[vec![3; 4096]])],
         ),
         (
             "uncompressed_over_limit",
@@ -649,7 +649,7 @@ fn decode_corpus() -> Vec<(&'static str, Settings, Vec<Vec<u8>>)> {
             "plain_multi",
             Settings::default(),
             vec![
-                BatchCodec::new(BatchHeader::RakNet, BatchLimits::default())
+                BatchCodec::new(BatchHeader::Prefixed, BatchLimits::default())
                     .encode(&sample)
                     .unwrap()[0]
                     .to_vec(),
@@ -710,7 +710,7 @@ fn decode_corpus() -> Vec<(&'static str, Settings, Vec<Vec<u8>>)> {
         ),
     ];
     let keyed = Settings { key: true, ..n };
-    let snappy_small = rust_batch(BatchHeader::RakNet, "snappy", &sample[..1]);
+    let snappy_small = rust_batch(BatchHeader::Prefixed, "snappy", &sample[..1]);
     corpus.extend([
         (
             "encrypted_consecutive",
@@ -781,7 +781,7 @@ fn rust_encode(case: &EncodeCase) -> Vec<Vec<Vec<u8>>> {
     let header = if case.nethernet {
         BatchHeader::NetherNet
     } else {
-        BatchHeader::RakNet
+        BatchHeader::Prefixed
     };
     let plain = BatchCodec::new(header, BatchLimits::default());
     let mut encryptor = case.key.then(|| BatchEncryptor::new(KEY));
@@ -1413,6 +1413,25 @@ mod login {
             "https://example.invalid:19132:19132",
             "HTTPS://example.invalid:1:1",
             "https://example.invalid:19132",
+            "http://example.invalid:19132",
+            "http://:19132",
+            "http://:19132:19132",
+            "HTTPS://example.invalid:01",
+            "https://example.invalid:",
+            "https://example.invalid",
+            "https://example.invalid:65536",
+            "https://example.invalid:1/path",
+            "https://example.invalid:1/?bad%zz",
+            "https://example.invalid:1/#fragment",
+            "https://example.invalid:1/#bad%zz",
+            "https://example.invalid:1/#line\n",
+            "https://example.invalid:1/?line\n",
+            "https://[::1]:19132",
+            "https://[::1]:19132:19132",
+            "https://[fe80::1%25eth0]:19132",
+            "https://[fe80::1%25]:19132",
+            "https://[invalid]:19132",
+            "https://host]:19132",
             "https://example.invalid:1:2",
             "https://:1:1",
             "https://example.invalid::",
@@ -1457,6 +1476,25 @@ mod login {
                 now,
                 LIMIT,
             );
+            if matches!(
+                address,
+                "https://example.invalid:19132:19132"
+                    | "https://example.invalid:19132"
+                    | "http://example.invalid:19132"
+                    | "https://[::1]:19132"
+                    | "https://[::1]:19132:19132"
+            ) {
+                assert_eq!(
+                    go["accepted"], true,
+                    "Go must accept current and legacy HTTP Login addresses: {address}"
+                );
+            }
+            if matches!(address, "http://:19132" | "http://:19132:19132") {
+                assert_eq!(
+                    go["accepted"], false,
+                    "Go must reject an empty HTTP Login hostname: {address}"
+                );
+            }
             if rust.is_ok() != go["accepted"].as_bool().unwrap() {
                 mismatches.push(format!(
                     "{address:?}: Rust {:?}, Go {}",

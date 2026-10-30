@@ -277,17 +277,17 @@ impl Engine {
                     response: packets::ClientToServerHandshake {},
                 })
             }
-            packets::Packet::PlayStatus(status) if status.status == PlayStatusType::Playerspawn => {
+            packets::Packet::PlayStatus(status) if status.status == PlayStatusType::PlayerSpawn => {
                 Ok(EngineEvent::Unhandled(Box::new(status.into())))
             }
             packets::Packet::PlayStatus(status)
-                if status.status == PlayStatusType::Loginsuccess
+                if status.status == PlayStatusType::LoginSuccess
                     && !matches!(self.phase, Phase::Login | Phase::Packs) =>
             {
                 Ok(EngineEvent::Unhandled(Box::new(status.into())))
             }
             packets::Packet::PlayStatus(status) => {
-                if status.status != PlayStatusType::Loginsuccess {
+                if status.status != PlayStatusType::LoginSuccess {
                     return Err(HandshakeError::LoginRefused(status.status));
                 }
                 self.require_login_sent()?;

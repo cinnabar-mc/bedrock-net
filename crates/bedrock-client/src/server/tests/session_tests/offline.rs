@@ -212,7 +212,7 @@ fn offline_packless_relay_keeps_actual_forward_flush_and_original_cutoff() {
             ),
             (
                 packets::PlayStatus {
-                    status: bedrock_protocol::enums::PlayStatusType::Playerspawn,
+                    status: bedrock_protocol::enums::PlayStatusType::PlayerSpawn,
                 }
                 .into(),
                 wire::Peer::Server,

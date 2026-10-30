@@ -145,7 +145,7 @@ async fn join(
     observed: &mut Observed,
     deadline: tokio::time::Instant,
 ) -> Result<(), Box<dyn Error>> {
-    let (transport, key) = crate::transport::connect("raknet", address, deadline).await?;
+    let (transport, key) = crate::transport::connect("nethernet", address, deadline).await?;
     let configured = ClientHandshake::new(
         key,
         HandshakeOptions {
@@ -165,7 +165,7 @@ async fn join(
     })
     .await?;
     observed.compression = Some(format!("{:?}", compression.algorithm));
-    let metadata = client_data("raknet", address, session.transport().nonce())?;
+    let metadata = client_data("nethernet", address, session.transport().nonce())?;
     let result = handshake::login(
         &mut session,
         ready,
@@ -328,7 +328,7 @@ fn spawned_join(name: &str, compression: &str) {
     };
     assert_eq!(verdict["result"], "ok", "{name}: {verdict}; {observed:?}");
     assert_eq!(observed.compression.as_deref(), Some(compression));
-    assert!(observed.encrypted && observed.login_success && observed.spawned);
+    assert!(!observed.encrypted && observed.login_success && observed.spawned);
 }
 
 #[test]

@@ -5,7 +5,7 @@ use bytes::{Buf, Bytes};
 use crate::compression::{self, CompressionAlgorithm, CompressionSettings};
 use crate::{BatchError, DropReason};
 
-const RAKNET_BATCH_HEADER: u8 = 0xfe;
+const PREFIXED_BATCH_HEADER: u8 = 0xfe;
 const DEFAULT_DECODED_BYTES: usize = 16 * 1024 * 1024;
 const DEFAULT_PACKET_COUNT: usize = 1600;
 
@@ -13,7 +13,7 @@ const DEFAULT_PACKET_COUNT: usize = 1600;
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum BatchHeader {
     /// A leading `0xfe` byte precedes the batch payload.
-    RakNet,
+    Prefixed,
     /// The transport carries the payload without a batch marker.
     NetherNet,
 }
@@ -22,7 +22,7 @@ impl BatchHeader {
     /// Returns the transport marker excluded from encrypted batch bodies.
     pub const fn marker(self) -> Option<u8> {
         match self {
-            Self::RakNet => Some(RAKNET_BATCH_HEADER),
+            Self::Prefixed => Some(PREFIXED_BATCH_HEADER),
             Self::NetherNet => None,
         }
     }
@@ -450,9 +450,9 @@ impl<S: BatchPhase> BatchCodec<S> {
     /// Checks the wire ceiling and removes transport and negotiated algorithm markers.
     fn strip_envelope(&self, mut message: Bytes) -> Result<(Option<u8>, Bytes), BatchError> {
         self.check_encoded_size(message.len())?;
-        if self.header == BatchHeader::RakNet {
+        if self.header == BatchHeader::Prefixed {
             match message.first().copied() {
-                Some(RAKNET_BATCH_HEADER) => message.advance(1),
+                Some(PREFIXED_BATCH_HEADER) => message.advance(1),
                 Some(actual) => return Err(BatchError::InvalidBatchHeader(actual)),
                 None => return Err(BatchError::MissingBatchHeader),
             }
@@ -506,8 +506,8 @@ impl<S: BatchPhase> BatchCodec<S> {
             .map(Vec::from)
             .unwrap_or_default();
         message.clear();
-        if self.header == BatchHeader::RakNet {
-            message.push(RAKNET_BATCH_HEADER);
+        if self.header == BatchHeader::Prefixed {
+            message.push(PREFIXED_BATCH_HEADER);
         }
         if self.phase.compression().is_some() {
             message.push(CompressionAlgorithm::None.batch_id());
@@ -523,7 +523,7 @@ impl<S: BatchPhase> BatchCodec<S> {
         index: usize,
     ) -> Result<(), BatchError> {
         if let Some(settings) = self.phase.compression() {
-            let marker = usize::from(self.header == BatchHeader::RakNet);
+            let marker = usize::from(self.header == BatchHeader::Prefixed);
             let body = &message[marker + 1..];
             if body.len() >= usize::from(settings.threshold)
                 && settings.algorithm != CompressionAlgorithm::None
@@ -647,7 +647,7 @@ mod tests {
     /// Creates a codec whose outgoing scratch limit matches one small Snappy block.
     fn bounded(algorithm: CompressionAlgorithm) -> BatchCodec<Negotiated> {
         BatchCodec::new(
-            BatchHeader::RakNet,
+            BatchHeader::Prefixed,
             BatchLimits {
                 max_decoded_bytes: 65536,
                 ..BatchLimits::default()

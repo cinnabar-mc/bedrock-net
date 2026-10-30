@@ -2,7 +2,7 @@
 
 For a Tokio application, start with
 [`bedrock-client-tokio`](../crates/bedrock-client-tokio). It connects the generated
-packet codec to RakNet or NetherNet and drives settings, Login and pack transfer.
+packet codec to NetherNet and drives settings, Login and pack transfer.
 The [probe](../examples/client/src/main.rs) is a small client that uses these APIs.
 
 For another runtime, use [`bedrock-client`](../crates/bedrock-client) and drive

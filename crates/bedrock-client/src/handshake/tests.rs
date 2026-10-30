@@ -158,7 +158,7 @@ fn pack_offer_and_login_success_in_either_order_emit_one_cache_status() {
         let signed_login = login(&mut client);
         let success = || {
             packets::Packet::PlayStatus(packets::PlayStatus {
-                status: PlayStatusType::Loginsuccess,
+                status: PlayStatusType::LoginSuccess,
             })
         };
         let mut statuses = Vec::new();
@@ -237,10 +237,10 @@ fn early_refusal_and_terminal_packets_preserve_their_meaning() {
     );
     assert!(matches!(
         client.receive(packets::Packet::PlayStatus(packets::PlayStatus {
-            status: PlayStatusType::LoginfailedClientold,
+            status: PlayStatusType::LoginFailedClientOld,
         })),
         Err(HandshakeError::LoginRefused(
-            PlayStatusType::LoginfailedClientold
+            PlayStatusType::LoginFailedClientOld
         ))
     ));
 }
@@ -250,7 +250,7 @@ fn deferred_spawn_neither_sends_cache_status_nor_consumes_the_verified_exchange(
     let mut client = handshake(true);
     let signed_login = login(&mut client);
     let spawn = packets::Packet::PlayStatus(packets::PlayStatus {
-        status: PlayStatusType::Playerspawn,
+        status: PlayStatusType::PlayerSpawn,
     });
     assert!(
         matches!(client.receive(spawn.clone()).unwrap(), EngineEvent::Unhandled(packet) if *packet == spawn)
@@ -270,7 +270,7 @@ fn deferred_spawn_neither_sends_cache_status_nor_consumes_the_verified_exchange(
     ));
     let success = || {
         packets::Packet::PlayStatus(packets::PlayStatus {
-            status: PlayStatusType::Loginsuccess,
+            status: PlayStatusType::LoginSuccess,
         })
     };
     let EngineEvent::Send(sent) = client.receive(success()).unwrap() else {
@@ -301,7 +301,7 @@ fn deferred_spawn_neither_sends_cache_status_nor_consumes_the_verified_exchange(
 #[test]
 fn refusal_and_unknown_statuses_still_end_the_handshake_during_packs() {
     for status in [
-        PlayStatusType::LoginfailedServerfullsubclient,
+        PlayStatusType::LoginFailedServerFullSubClient,
         PlayStatusType::Unknown(i32::MAX),
     ] {
         let mut client = handshake(true);
@@ -325,7 +325,7 @@ fn refusal_and_unknown_statuses_still_end_the_handshake_during_packs() {
         ));
         assert!(matches!(
             client.receive(packets::Packet::PlayStatus(packets::PlayStatus {
-                status: PlayStatusType::Playerspawn,
+                status: PlayStatusType::PlayerSpawn,
             })),
             Err(HandshakeError::InvalidState)
         ));
@@ -337,7 +337,7 @@ fn deferred_spawn_does_not_admit_login_before_settings_or_login_construction() {
     let mut client = handshake(true);
     client.start().unwrap();
     let spawn = packets::Packet::PlayStatus(packets::PlayStatus {
-        status: PlayStatusType::Playerspawn,
+        status: PlayStatusType::PlayerSpawn,
     });
     assert!(
         matches!(client.receive(spawn.clone()).unwrap(), EngineEvent::Unhandled(packet) if *packet == spawn)
@@ -353,7 +353,7 @@ fn deferred_spawn_does_not_admit_login_before_settings_or_login_construction() {
     );
     assert!(matches!(
         client.receive(packets::Packet::PlayStatus(packets::PlayStatus {
-            status: PlayStatusType::Loginsuccess,
+            status: PlayStatusType::LoginSuccess,
         })),
         Ok(EngineEvent::Unhandled(_))
     ));
@@ -374,7 +374,7 @@ fn packless_startup_returns_the_actual_packet_and_retires_login() {
     assert!(matches!(
         client.receive(
             packets::PlayStatus {
-                status: PlayStatusType::Loginsuccess,
+                status: PlayStatusType::LoginSuccess,
             }
             .into()
         ),
@@ -415,7 +415,7 @@ fn unexpected_login_controls_do_not_consume_the_original_transition() {
             handshake_web_token: "unexpected".into(),
         }),
         packets::Packet::PlayStatus(packets::PlayStatus {
-            status: PlayStatusType::Loginsuccess,
+            status: PlayStatusType::LoginSuccess,
         }),
     ] {
         assert!(

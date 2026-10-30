@@ -32,6 +32,19 @@ JSON cases. It copies no reference table. Build it, then provide
 `BEDROCK_NET_PACK_DELIVERY_ORACLE` when testing bedrock-client; CI does this
 for the workspace tests. This checks identified Go policy, not vanilla behavior.
 
+`cmd/builtin-packs` regenerates the client's version-bound built-in pack catalog:
+
+```sh
+go run -mod=readonly ./cmd/builtin-packs ../../crates/bedrock-client/data/builtin-packs.json
+```
+
+It reads the complete exemption list from the checksum-pinned module selected by
+this directory's `go.mod`, checks that the compiled Go dependency is identical,
+and verifies every identity against `minecraft.IsBuiltinResourcePack`. The
+protocol and baseline version come from that same dependency. CI regenerates
+the catalog and checks the committed bytes; update the Go module pin and this
+catalog together. Rust also checks the catalog's protocol and module binding.
+
 `go run . serve` answers length-prefixed JSON requests on stdin (batch decode/encode
 with compression and key, cipher checksums, Login build/parse) for `tests/oracle.rs`;
 build it and set `BEDROCK_NET_GO_ORACLE`. `cmd/interop-server SCENARIO` accepts one

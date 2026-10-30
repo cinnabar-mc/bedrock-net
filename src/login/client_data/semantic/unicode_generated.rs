@@ -5,10 +5,10 @@
 pub(super) const CLIENT_MODULE: &str = "github.com/hashimthearab/gophertunnel";
 
 #[cfg(test)]
-pub(super) const CLIENT_VERSION: &str = "v1.25.3-0.20261019151115-85d4022854e1";
+pub(super) const CLIENT_VERSION: &str = "v1.25.3-0.20261028172540-f8448d729edd";
 
 #[cfg(test)]
-pub(super) const CLIENT_SUM: &str = "h1:o0uCvBBvuSDpG75KbSFPkGLtDR3G0j5R+G9dUwtxrxA=";
+pub(super) const CLIENT_SUM: &str = "h1:KizPe8oz268LPv9n308oHzpYFPzA0eRoRHBvIiLaZnY=";
 
 #[cfg(test)]
 pub(super) const LOCALE_MODULE: &str = "golang.org/x/text";

@@ -136,13 +136,13 @@ fn parse_unbudgeted<T: DeserializeOwned>(bytes: &[u8]) -> Result<T, serde_json::
 }
 
 /// Parses the first JSONC value in a pack manifest, ignoring trailing data.
-/// Hash line comments and an unfinished trailing comment are accepted. Syntax inside
-/// the first value must still form valid JSON after comment and trailing-comma removal.
+/// Hash line comments, an unfinished trailing comment and raw string controls are accepted.
+/// The first value must still form valid JSON after comment, comma and string normalization.
 pub fn parse_jsonc_lenient<T: DeserializeOwned>(bytes: &[u8]) -> Result<T, serde_json::Error> {
     let text = decode_text(bytes);
     let stripped =
         strip_comments(text.as_bytes(), false).expect("lenient comment stripping retains input");
-    let prepared = strip_trailing_commas(&stripped);
+    let prepared = escape_string_controls(&strip_trailing_commas(&stripped));
     let mut decoder = serde_json::Deserializer::from_slice(&prepared);
     T::deserialize(&mut decoder)
 }

@@ -43,7 +43,7 @@ fn radius(value: i32) -> packets::Packet {
 /// Completes the server's spawn indication independently of the radius response.
 fn player_spawn() -> packets::Packet {
     packets::Packet::PlayStatus(packets::PlayStatus {
-        status: PlayStatusType::Playerspawn,
+        status: PlayStatusType::PlayerSpawn,
     })
 }
 
@@ -138,8 +138,8 @@ fn startup_returns_non_spawn_play_status_without_claiming_readiness() {
     client.receive(registry("first")).unwrap();
     client.receive(radius(8)).unwrap();
     for status in [
-        PlayStatusType::LoginfailedServerfullsubclient,
-        PlayStatusType::Loginsuccess,
+        PlayStatusType::LoginFailedServerFullSubClient,
+        PlayStatusType::LoginSuccess,
         PlayStatusType::Unknown(999),
     ] {
         let packet = packets::Packet::PlayStatus(packets::PlayStatus { status });
