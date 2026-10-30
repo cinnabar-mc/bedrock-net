@@ -1,6 +1,7 @@
 use super::{
     MAX_PARSED_BYTES, PARSED_BYTES_PER_OBJECT, PARSED_BYTES_PER_VALUE, decode_text,
-    fits_parse_budget, normalize_jsonc, parse_jsonc, prepare_jsonc, validate_jsonc,
+    fits_parse_budget, normalize_jsonc, parse_jsonc, parse_jsonc_lenient, prepare_jsonc,
+    validate_jsonc,
 };
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::{Value, json};
@@ -189,7 +190,6 @@ fn malformed_syntax_is_rejected_and_comments_separate_tokens() {
 
 #[test]
 fn manifest_leniency_accepts_hash_comments_and_only_the_first_value() {
-    use super::parse_jsonc_lenient;
     let bytes = br##"# header
     {"name":"x#//y", "values":[1,2,],} trailing "unfinished /*"##;
     let value: Value = parse_jsonc_lenient(bytes).unwrap();
@@ -298,6 +298,7 @@ fn raw_string_controls_keep_their_decoded_values() {
         bytes.extend_from_slice(b"after\"}");
         let expected = json!({format!("key{}", char::from(control)): format!("before{}after", char::from(control))});
         assert_eq!(parse_jsonc::<Value>(&bytes).unwrap(), expected);
+        assert_eq!(parse_jsonc_lenient::<Value>(&bytes).unwrap(), expected);
         assert!(validate_jsonc(&bytes).is_ok());
         let normalized = normalize_jsonc(&bytes).unwrap();
         assert_eq!(
@@ -313,6 +314,14 @@ fn multiline_strings_preserve_comments_quotes_and_existing_escapes() {
         b"\xef\xbb\xbf{/* comment */\"text\":\"first\r\n\xa7r\t// /* ,} \\\" \\n \\\\\nlast\",}";
     let expected = json!({"text": "first\r\n§r\t// /* ,} \" \n \\\nlast"});
     assert_eq!(parse_jsonc::<Value>(bytes).unwrap(), expected);
+    assert_eq!(parse_jsonc_lenient::<Value>(bytes).unwrap(), expected);
+    let mut with_trailing_value = bytes.to_vec();
+    with_trailing_value.extend_from_slice(b" {\"ignored\":true}");
+    assert_eq!(
+        parse_jsonc_lenient::<Value>(&with_trailing_value).unwrap(),
+        expected
+    );
+    assert!(parse_jsonc::<Value>(&with_trailing_value).is_err());
     assert_eq!(
         serde_json::from_slice::<Value>(&normalize_jsonc(bytes).unwrap()).unwrap(),
         expected
@@ -328,6 +337,7 @@ fn raw_controls_do_not_repair_invalid_escapes_or_non_string_tokens() {
         b"{\"text\":true\x01}",
     ] {
         assert!(parse_jsonc::<Value>(bytes).is_err(), "{bytes:?}");
+        assert!(parse_jsonc_lenient::<Value>(bytes).is_err(), "{bytes:?}");
         assert!(validate_jsonc(bytes).is_err(), "{bytes:?}");
         assert!(normalize_jsonc(bytes).is_none(), "{bytes:?}");
     }
