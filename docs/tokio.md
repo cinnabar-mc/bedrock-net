@@ -15,7 +15,7 @@ the accepting NetherNet session type:
 bedrock-client-tokio = { git = "https://github.com/cinnabar-mc/bedrock-net", branch = "dev", features = ["nethernet"] }
 bedrock-client = { git = "https://github.com/cinnabar-mc/bedrock-net", branch = "dev" }
 bedrock-net = { git = "https://github.com/cinnabar-mc/bedrock-net", branch = "dev" }
-bedrock-protocol = { package = "bedrock-protocol-contract-1-26-60", git = "https://github.com/cinnabar-mc/protocolgen", rev = "6bbb5226582dbcf510df90a6ebadb6cc26d0c403" }
+bedrock-protocol = { package = "bedrock-protocol-contract-1-26-60", git = "https://github.com/cinnabar-mc/protocolgen", rev = "9eed056998235e4c01e0f3befabed651021dea77" }
 nethernet-tokio = { git = "https://github.com/cinnabar-mc/nethernet", rev = "a756e40632f3564408f2cf1e2bb9119017e6bc30" }
 p384 = { version = "0.14", default-features = false, features = ["alloc", "ecdsa", "ecdh", "pkcs8"] }
 serde_json = { version = "1", features = ["raw_value"] }

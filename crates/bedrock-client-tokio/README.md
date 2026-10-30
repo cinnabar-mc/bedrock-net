@@ -18,7 +18,7 @@ and batch APIs, the generated packet crate, P-384 keys, raw JSON metadata and
 
 Keep crates from this repository on the same revision and commit your
 application's `Cargo.lock`. HTTP, LAN and Player Messaging connections all use
-NetherNet associations.
+`NetherNet` associations.
 
 ## Connect a client
 

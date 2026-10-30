@@ -308,7 +308,7 @@ dependencies = [
 [[package]]
 name = "bedrock-protocol-contract-1-26-60"
 version = "0.1.0"
-source = "git+https://github.com/cinnabar-mc/protocolgen?rev=6bbb5226582dbcf510df90a6ebadb6cc26d0c403#6bbb5226582dbcf510df90a6ebadb6cc26d0c403"
+source = "git+https://github.com/cinnabar-mc/protocolgen?rev=9eed056998235e4c01e0f3befabed651021dea77#9eed056998235e4c01e0f3befabed651021dea77"
 dependencies = [
  "bytes",
  "glam",

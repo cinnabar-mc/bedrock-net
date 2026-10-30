@@ -176,9 +176,8 @@ impl Transport {
     }
     /// Synchronously retires only a server association, preserving its same receive prefix.
     pub fn retire_accepted(&mut self) {
-        match &mut self.state {
-            State::Accepted(connection) => connection.close(),
-            _ => {}
+        if let State::Accepted(connection) = &mut self.state {
+            connection.close();
         }
     }
     /// Checks actual established accepted admission before encoding any retained effect.
