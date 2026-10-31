@@ -256,7 +256,7 @@ async fn join(
         Ok(Some(offer)) => login_phase(&mut session, offer, observed).await,
         Ok(None) => {
             observed.packless_startup = true;
-            Ok(())
+            start_spawn(&mut session, observed).await
         }
         Err(error) => terminal(error, observed),
     };
@@ -295,6 +295,14 @@ async fn login_phase(
         .iter()
         .map(|pack| pack.archive.len())
         .collect();
+    start_spawn(session, observed).await
+}
+
+/// Replays the original startup prefix after either Login handoff reaches world negotiation.
+async fn start_spawn(
+    session: &mut Connection,
+    observed: &mut Observed,
+) -> Result<(), Box<dyn Error>> {
     let mut spawn = SpawnNegotiation::new(packets::RequestChunkRadius {
         chunk_radius: wire::ZigZag32(4),
         max_chunk_radius: wire::U8(4),
@@ -454,12 +462,12 @@ fn url_pack_falls_back_to_chunks() {
 
 #[test]
 fn start_game_without_pack_phase() {
-    let Some((observed, _, _)) = scenario("startgame-without-packs") else {
+    let Some((observed, _, verdict)) = scenario("startgame-without-packs") else {
         return;
     };
-    // A Go Dialer starts the game from this StartGame; so does the Rust Login owner.
+    assert_eq!(verdict["result"], "ok", "{verdict}; {observed:?}");
     assert!(
-        observed.packless_startup && observed.unhandled.is_empty(),
+        observed.packless_startup && observed.spawned && observed.unhandled.is_empty(),
         "{observed:?}"
     );
 }

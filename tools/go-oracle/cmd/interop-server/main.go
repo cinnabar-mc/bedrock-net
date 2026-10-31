@@ -265,6 +265,27 @@ func scripted(scenario string) (err error) {
 		if err := s.write(success, &packet.StartGame{WorldName: "interop", EntityRuntimeID: 1, EntityUniqueID: 1}); err != nil {
 			return err
 		}
+		if err := s.write(&packet.ItemRegistry{}); err != nil {
+			return err
+		}
+		var radius packet.RequestChunkRadius
+		if err := s.read(packet.IDRequestChunkRadius, &radius); err != nil {
+			return err
+		}
+		if err := s.write(&packet.ChunkRadiusUpdated{ChunkRadius: radius.ChunkRadius},
+			&packet.PlayStatus{Status: packet.PlayStatusPlayerSpawn}); err != nil {
+			return err
+		}
+		var initialized packet.SetLocalPlayerAsInitialised
+		if err := s.read(packet.IDSetLocalPlayerAsInitialised, &initialized); err != nil {
+			return err
+		}
+		if initialized.EntityRuntimeID != 1 {
+			return errors.New("client initialized the wrong runtime ID")
+		}
+		if err := s.write(&packet.Disconnect{Message: "interop complete"}); err != nil {
+			return err
+		}
 		return s.drain()
 	case "packs-info-before-login-success", "pack-stack-before-login-success":
 		stack := &packet.ResourcePackStack{BaseGameVersion: protocol.CurrentVersion}

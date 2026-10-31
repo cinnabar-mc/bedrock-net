@@ -1,6 +1,6 @@
 //! A distinct internal capability exercises type retention without manufacturing provider identity.
 
-use super::super::{Phase, ServerSessionError};
+use super::super::{Phase, ServerSessionError, ServerSessionEvent, spawn};
 use super::*;
 use bedrock_net::login::LoginError;
 use bedrock_protocol::wire;
@@ -109,4 +109,50 @@ fn distinct_capability_keeps_terminal_deadline_before_policy_revalidation() {
             .start_world(world(), &policy, now, SystemTime::UNIX_EPOCH)
             .is_err()
     );
+}
+
+/// Radius renegotiation updates the policy result without repeating one-time startup effects.
+#[test]
+fn startup_radius_updates_keep_one_spawn_and_the_final_bounded_radius() {
+    for fixed in [None, Some(3)] {
+        let mut world = world();
+        world.initial_chunk_radius = fixed;
+        let (mut startup, _) = spawn::Startup::new(world, 1024 * 1024).unwrap();
+        for (index, requested) in [5, 12, 6].into_iter().enumerate() {
+            let ServerSessionEvent::Send(packets) = startup
+                .receive(
+                    packets::RequestChunkRadius {
+                        chunk_radius: wire::ZigZag32(requested),
+                        max_chunk_radius: wire::U8(16),
+                    }
+                    .into(),
+                )
+                .unwrap()
+            else {
+                panic!("radius update must respond");
+            };
+            assert_eq!(packets.len(), if index == 0 { 3 } else { 1 });
+            assert!(
+                matches!(&packets[0], packets::Packet::ChunkRadiusUpdated(radius)
+                if radius.chunk_radius.0 == fixed.unwrap_or(requested.min(8)))
+            );
+            if index == 0 {
+                assert!(matches!(&packets[1], packets::Packet::PlayStatus(status)
+                    if status.status == bedrock_protocol::enums::PlayStatusType::PlayerSpawn));
+                assert!(matches!(&packets[2], packets::Packet::CreativeContent(_)));
+            }
+        }
+        assert!(matches!(
+            startup
+                .receive(
+                    packets::SetLocalPlayerAsInitialized {
+                        player_id: bedrock_protocol::types::ActorRuntimeID(73),
+                    }
+                    .into()
+                )
+                .unwrap(),
+            ServerSessionEvent::Ready
+        ));
+        assert_eq!(startup.radius(), fixed.unwrap_or(6));
+    }
 }

@@ -64,29 +64,29 @@ impl Startup {
     pub(super) fn receive(&mut self, packet: packets::Packet) -> Result<Event, Error> {
         match packet {
             packets::Packet::RequestChunkRadius(request) => {
-                if self.radius.is_some() || self.initialized || request.chunk_radius.0 < 1 {
-                    return Err(Error::InvalidData(
-                        "invalid or repeated accepting radius request",
-                    ));
+                if self.initialized || request.chunk_radius.0 < 1 {
+                    return Err(Error::InvalidData("invalid accepting radius request"));
                 }
                 let radius = self
                     .fixed_radius
                     .unwrap_or(request.chunk_radius.0.min(self.max_radius));
                 self.radius = Some(radius);
-                Ok(Event::Send(vec![
+                let mut packets = vec![
                     packets::ChunkRadiusUpdated {
                         chunk_radius: wire::ZigZag32(radius),
                     }
                     .into(),
-                    packets::PlayStatus {
-                        status: PlayStatusType::PlayerSpawn,
-                    }
-                    .into(),
-                    self.creative
-                        .take()
-                        .expect("first radius owns creative content")
+                ];
+                if let Some(creative) = self.creative.take() {
+                    packets.push(
+                        packets::PlayStatus {
+                            status: PlayStatusType::PlayerSpawn,
+                        }
                         .into(),
-                ]))
+                    );
+                    packets.push(creative.into());
+                }
+                Ok(Event::Send(packets))
             }
             packets::Packet::SetLocalPlayerAsInitialized(initialized) => {
                 if self.radius.is_none()
