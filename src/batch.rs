@@ -72,12 +72,40 @@ pub enum VisitOutcome {
 /// Each yielded packet shares the original allocation, without a per-packet
 /// collection. Dropping or exhausting the iterator releases its unread body;
 /// a previously yielded slice can still retain the entire batch allocation.
+#[derive(Clone)]
 pub struct BatchPackets {
     body: Bytes,
     remaining: usize,
+    front: Option<(Bytes, usize)>,
 }
 
 impl BatchPackets {
+    /// Borrows the remaining validated length-prefixed body without collecting its packets.
+    pub fn body(&self) -> &Bytes {
+        &self.body
+    }
+
+    /// Borrows the next packet without advancing the original framed body.
+    pub fn front(&mut self) -> Option<&Bytes> {
+        if self.remaining == 0 {
+            return None;
+        }
+        if self.front.is_none() {
+            let mut offset = 0;
+            loop {
+                let (length, prefix) = read_length(&self.body[offset..], offset)
+                    .expect("the complete immutable batch was validated before iteration");
+                offset += prefix;
+                if length != 0 {
+                    let end = offset + length as usize;
+                    self.front = Some((self.body.slice(offset..end), end));
+                    break;
+                }
+            }
+        }
+        self.front.as_ref().map(|(packet, _)| packet)
+    }
+
     /// Reports whether every nonempty packet has been consumed.
     pub fn is_empty(&self) -> bool {
         self.remaining == 0
@@ -90,6 +118,14 @@ impl Iterator for BatchPackets {
     fn next(&mut self) -> Option<Self::Item> {
         if self.remaining == 0 {
             return None;
+        }
+        if let Some((packet, consumed)) = self.front.take() {
+            self.body.advance(consumed);
+            self.remaining -= 1;
+            if self.remaining == 0 {
+                self.body = Bytes::new();
+            }
+            return Some(packet);
         }
         loop {
             let (length, prefix) = read_length(&self.body, 0)
@@ -266,6 +302,37 @@ impl BatchCodec<Negotiated> {
 }
 
 impl<S: BatchPhase> BatchCodec<S> {
+    /// Forwards a length-prefixed body without decoding packet headers or payloads.
+    /// Plain bodies that fit the outgoing limits keep their original allocation.
+    /// Larger groups split in order; empty entries follow the normal decoder's skip policy.
+    pub fn encode_raw_batch(&self, body: Bytes) -> Result<Vec<Bytes>, BatchError> {
+        let (count, empty) = validate_packets(&body, None)?;
+        if count == 0 {
+            return Ok(Vec::new());
+        }
+        if count <= self.limits.max_packets
+            && body.len() <= self.limits.max_decoded_bytes
+            && empty == 0
+        {
+            if self.phase.compression().is_none() {
+                self.check_encoded_size(body.len())?;
+                return Ok(vec![body]);
+            }
+            let mut message = self.start_batch(None);
+            message.extend_from_slice(&body);
+            let mut batches = Vec::new();
+            self.finish_batch(message, &mut batches, 0)?;
+            return Ok(batches);
+        }
+        let packets: Vec<_> = BatchPackets {
+            body,
+            remaining: count,
+            front: None,
+        }
+        .collect();
+        self.encode(&packets)
+    }
+
     /// Encodes packets as consecutive batches, splitting by count and decoded size.
     ///
     /// Packet slices include their packet headers and exclude their length prefixes.
@@ -462,6 +529,7 @@ impl<S: BatchPhase> BatchCodec<S> {
         let packets = BatchPackets {
             body: if count == 0 { Bytes::new() } else { message },
             remaining: count,
+            front: None,
         };
         Ok(DecodeOutcome::Packets {
             packets,

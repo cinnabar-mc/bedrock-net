@@ -6,6 +6,35 @@ use bedrock_net::{
 };
 use bytes::Bytes;
 
+#[test]
+fn raw_batch_forwarding_reuses_plain_storage_and_splits_only_at_limits() {
+    let body = Bytes::from_static(&[2, 0xff, 7, 1, 0x80]);
+    let codec = BatchCodec::new(BatchLimits::default());
+    let encoded = codec.encode_raw_batch(body.clone()).unwrap();
+    assert_eq!(encoded.as_slice(), std::slice::from_ref(&body));
+    assert_eq!(encoded[0].as_ptr(), body.as_ptr());
+    let split = BatchCodec::new(BatchLimits {
+        max_packets: 1,
+        ..BatchLimits::default()
+    })
+    .encode_raw_batch(body.clone())
+    .unwrap();
+    assert_eq!(split, [body.slice(..3), body.slice(3..)]);
+    assert!(codec.encode_raw_batch(Bytes::from_static(&[2, 1])).is_err());
+    for algorithm in [
+        CompressionAlgorithm::None,
+        CompressionAlgorithm::Deflate,
+        CompressionAlgorithm::Snappy,
+    ] {
+        let codec = negotiated(algorithm, BatchLimits::default());
+        let frames = codec.encode_raw_batch(body.clone()).unwrap();
+        assert_eq!(
+            packets(&codec, frames[0].clone()),
+            [body.slice(1..3), body.slice(4..)]
+        );
+    }
+}
+
 #[path = "fixtures/go_batches.rs"]
 mod go;
 

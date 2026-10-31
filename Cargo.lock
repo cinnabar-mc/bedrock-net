@@ -224,6 +224,7 @@ dependencies = [
  "bedrock-packs",
  "bedrock-protocol-contract-1-26-60",
  "bytes",
+ "criterion",
  "futures",
  "nethernet",
  "nethernet-tokio",

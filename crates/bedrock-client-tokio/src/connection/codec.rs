@@ -12,6 +12,13 @@ pub(super) enum Codec {
 }
 
 impl Codec {
+    /// Applies compression to a framed body without decoding packet headers or bodies.
+    pub(super) fn encode_raw_batch(&self, body: Bytes) -> Result<Vec<Bytes>, BatchError> {
+        match self {
+            Self::Plain(codec) => codec.encode_raw_batch(body),
+            Self::Negotiated(codec) => codec.encode_raw_batch(body),
+        }
+    }
     /// Encodes on the actual current phase without copying or resetting its settings.
     pub(super) fn encode(&self, packets: &[Bytes]) -> Result<Vec<Bytes>, BatchError> {
         match self {

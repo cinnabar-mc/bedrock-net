@@ -200,8 +200,7 @@ impl AcceptingConnection {
         packet: Bytes,
         deadline: Instant,
     ) -> io::Result<PreparedSend<'_>> {
-        let body = self.connection.raw_body(packet).map_err(|_| invalid())?;
-        self.connection.prepare_body(body, deadline)
+        self.connection.prepare_packet_raw(packet, deadline)
     }
 
     /// Resumes the exact cursor, permit or receipt retained by an earlier borrowed operation.

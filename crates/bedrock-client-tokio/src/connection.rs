@@ -13,9 +13,13 @@ use std::io;
 mod codec;
 mod deferred;
 pub mod identity;
+mod observer;
 mod pending;
+mod raw;
 use codec::Codec;
+pub use observer::{PacketDirection, PacketObservation, PacketObserver};
 use pending::PendingPackets;
+pub use raw::{RawBatch, RawPacket};
 pub mod send;
 use send::{PendingSend, RetirementState};
 
@@ -38,6 +42,7 @@ pub struct Connection {
     negotiation_skips: u64,
     ingress: Ingress,
     identity: Option<identity::WireIdentity>,
+    packet_observer: Option<PacketObserver>,
     #[cfg(any(test, feature = "test-support"))]
     observed_batches: Option<BatchLifetimes>,
 }
@@ -81,6 +86,7 @@ impl Connection {
             negotiation_skips: 0,
             ingress: Ingress::Raw,
             identity: None,
+            packet_observer: None,
             #[cfg(any(test, feature = "test-support"))]
             observed_batches: OBSERVE_BATCHES.try_with(std::sync::Arc::clone).ok(),
         }
@@ -116,6 +122,51 @@ impl Connection {
         self.identity = Some(identity);
     }
 
+    /// Installs connection-wide raw observations before the next read or encoded send.
+    pub fn set_packet_observer(&mut self, observer: Option<PacketObserver>) {
+        self.packet_observer = observer;
+    }
+
+    /// Reads one original batch without known/primary filtering, decoding only the selected IDs.
+    /// Replayed prefixes are returned separately; a prior packet read leaves this batch's remainder.
+    pub async fn read_batch_raw(
+        &mut self,
+        select: impl FnMut(u32) -> bool,
+    ) -> io::Result<RawBatch> {
+        self.current = None;
+        while self.pending.front().is_none() {
+            self.receive_batch().await?;
+        }
+        let packets = self.pending.take_batch()?.expect("a pending batch exists");
+        RawBatch::from_packets(packets, &self.receive_limits, select)
+    }
+
+    /// Sends a length-prefixed raw batch immediately, without identity rewriting or body decoding.
+    pub async fn send_batch_raw(
+        &mut self,
+        body: Bytes,
+        deadline: Option<std::time::Instant>,
+    ) -> io::Result<()> {
+        self.ensure_send_idle()?;
+        for message in self.encode_raw_batch(body)? {
+            self.transport.send_until(message, deadline).await?;
+        }
+        Ok(())
+    }
+
+    /// Sends one encoded header/body immediately through the same raw observation and send checks.
+    pub async fn write_packet_raw(
+        &mut self,
+        packet: Bytes,
+        deadline: Option<std::time::Instant>,
+    ) -> io::Result<()> {
+        self.ensure_send_idle()?;
+        for message in self.encode_raw_packets(std::slice::from_ref(&packet))? {
+            self.transport.send_until(message, deadline).await?;
+        }
+        Ok(())
+    }
+
     /// Keeps ordinary writes/settings from replacing an unfinished or terminal effect.
     fn ensure_send_idle(&self) -> io::Result<()> {
         if self.send_sealed {
@@ -129,6 +180,9 @@ impl Connection {
                 io::ErrorKind::InvalidInput,
                 "native accepting send is still retained",
             ));
+        }
+        if self.packet_observer.is_some() {
+            self.transport.check_send()?;
         }
         Ok(())
     }
@@ -273,20 +327,56 @@ impl Connection {
     }
 
     /// Encodes the original bounded packet entries once on the current codec.
-    fn encode_body(&self, body: Bytes) -> io::Result<Vec<Bytes>> {
+    fn encode_body(&mut self, body: Bytes) -> io::Result<Vec<Bytes>> {
         Self::check_body_size(&body, self.limits.max_decoded_bytes)?;
         self.encode_frames(wire::Frames::new(body, self.limits.max_packets))
     }
 
     /// Applies original wire metadata before the current codec splits an ordered packet group.
-    fn encode_frames(&self, frames: wire::Frames) -> io::Result<Vec<Bytes>> {
+    fn encode_frames(&mut self, frames: wire::Frames) -> io::Result<Vec<Bytes>> {
         let entries = frames
             .map(|frame| {
                 let frame = frame.map_err(io::Error::other)?;
                 identity::entry(frame, self.identity.as_ref(), self.limits.max_decoded_bytes)
             })
             .collect::<io::Result<Vec<_>>>()?;
-        self.codec().encode(&entries).map_err(io::Error::other)
+        self.encode_raw_packets(&entries)
+    }
+
+    /// Checks the complete raw group before observing queued output in order.
+    fn encode_raw_packets(&mut self, packets: &[Bytes]) -> io::Result<Vec<Bytes>> {
+        let messages = self.codec().encode(packets).map_err(io::Error::other)?;
+        if let Some(observer) = &mut self.packet_observer {
+            for packet in packets {
+                observer.observe(PacketDirection::Sent, packet);
+            }
+        }
+        Ok(messages)
+    }
+
+    /// Preserves whole validated bodies and copies only selected observation payloads at the caller's request.
+    fn encode_raw_batch(&mut self, body: Bytes) -> io::Result<Vec<Bytes>> {
+        let messages = self
+            .codec()
+            .encode_raw_batch(body.clone())
+            .map_err(io::Error::other)?;
+        if let Some(observer) = &mut self.packet_observer {
+            let DecodeOutcome::Packets { packets, .. } = BatchCodec::new(BatchLimits {
+                max_decoded_bytes: body.len(),
+                max_encoded_bytes: body.len(),
+                max_incoming_packets: None,
+                ..self.limits
+            })
+            .decode(body)
+            .map_err(io::Error::other)?
+            else {
+                unreachable!()
+            };
+            for packet in packets {
+                observer.observe(PacketDirection::Sent, &packet);
+            }
+        }
+        Ok(messages)
     }
 
     /// Frames one original raw packet under the same decoded-body limit.
@@ -325,26 +415,34 @@ impl Connection {
     /// Reads a complete batch, retaining decoded siblings across every protocol transition.
     async fn fill(&mut self) -> io::Result<()> {
         while !self.pending_ready()? {
-            let message = self.transport.recv().await?;
-            self.check_wire_size(&message)?;
-            #[cfg(any(test, feature = "test-support"))]
-            let message = self.observe_batch(message);
-            match self.codec().decode(message).map_err(io::Error::other)? {
-                DecodeOutcome::Packets {
-                    packets,
-                    skipped_empty_packets,
-                    ..
-                } => {
-                    if skipped_empty_packets != 0 {
-                        tracing::debug!(
-                            skipped_empty_packets,
-                            "skipped empty native batch entries"
-                        );
+            self.receive_batch().await?;
+        }
+        Ok(())
+    }
+
+    /// Receives and observes a complete batch before any consumer applies its header policy.
+    async fn receive_batch(&mut self) -> io::Result<()> {
+        let message = self.transport.recv().await?;
+        self.check_wire_size(&message)?;
+        #[cfg(any(test, feature = "test-support"))]
+        let message = self.observe_batch(message);
+        match self.codec().decode(message).map_err(io::Error::other)? {
+            DecodeOutcome::Packets {
+                packets,
+                skipped_empty_packets,
+                ..
+            } => {
+                if let Some(observer) = &mut self.packet_observer {
+                    for packet in packets.clone() {
+                        observer.observe(PacketDirection::Received, &packet);
                     }
-                    self.pending.push_batch(packets);
                 }
-                DecodeOutcome::Dropped(reason) => tracing::debug!(?reason, "dropped native batch"),
+                if skipped_empty_packets != 0 {
+                    tracing::debug!(skipped_empty_packets, "skipped empty native batch entries");
+                }
+                self.pending.push_batch(packets);
             }
+            DecodeOutcome::Dropped(reason) => tracing::debug!(?reason, "dropped native batch"),
         }
         Ok(())
     }

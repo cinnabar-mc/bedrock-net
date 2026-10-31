@@ -20,6 +20,14 @@ enum Connection {
 }
 
 impl MessagingTransport {
+    /// Rejects observations of new output once the original messaging owner has retired.
+    pub(super) fn check_send(&self) -> io::Result<()> {
+        if matches!(self.connection, Some(Connection::Established(_))) {
+            Ok(())
+        } else {
+            Err(super::closing())
+        }
+    }
     /// Applies caller-owned wire/count limits while retaining the same accepted prefix.
     pub(super) fn configure_limits(&mut self, limits: bedrock_net::BatchLimits) {
         self.inbox.configure_limits(limits);

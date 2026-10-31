@@ -35,6 +35,15 @@ enum State {
 }
 
 impl Transport {
+    /// Checks the original send lifecycle before invoking a queued-output observer.
+    pub(super) fn check_send(&self) -> io::Result<()> {
+        match &self.state {
+            State::Messaging(connection) => connection.check_send(),
+            State::Accepted(connection) | State::Lan(connection) | State::Http(connection) => {
+                connection.sender().map(drop)
+            }
+        }
+    }
     /// Installs connection limits without replacing a transport or already accepted input.
     pub(super) fn configure_limits(&mut self, limits: bedrock_net::BatchLimits) {
         match &mut self.state {

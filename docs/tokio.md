@@ -113,6 +113,41 @@ async fn exchange(connection: &mut Connection, outgoing: &Packet) -> std::io::Re
 Use `Peer::Server` when sending from a server. Raw reads and prepared raw sends
 let a proxy retain original packet headers and bytes.
 
+To forward complete batches, select only the packet bodies your application needs:
+
+```rust,no_run
+use bedrock_client_tokio::connection::Connection;
+use bedrock_protocol::packets::SetTime;
+
+async fn forward(source: &mut Connection, destination: &mut Connection) -> std::io::Result<()> {
+    let batch = source.read_batch_raw(|id| id == SetTime::ID).await?;
+    for packet in batch.packets() {
+        if let Some(result) = &packet.decoded {
+            match result {
+                Ok(decoded) => println!("selected packet: {:?}", decoded.id()),
+                Err(error) => eprintln!("selected decode failed: {error}"),
+            }
+        }
+    }
+    destination.send_batch_raw(batch.into_body(), None).await
+}
+```
+
+Unselected bodies stay opaque. A selected decode error retains that packet's raw
+bytes, so the application can choose whether to forward it. Raw reads bypass the
+typed reader's header filters and do not apply negotiation or disconnect policy.
+Raw sends preserve headers and identity fields and submit output immediately;
+they do not wait for a later flush. Prepared raw sends use the same capacity and
+retirement checks as typed sends. After packet-at-a-time reads, a raw batch contains
+the unread remainder; replayed packets form a separate prefix batch.
+Both endpoints must use the same generated protocol version.
+
+Install a `PacketObserver` with `Connection::set_packet_observer` to observe a
+copied set of packet IDs in both directions. Its synchronous callback borrows the
+payload without its header, before body decoding. Copy the payload explicitly if
+you need to keep it, and keep the callback short. Replaying input does not repeat
+the observation.
+
 ## Accept a client
 
 Pass an association returned by `nethernet_tokio::NetherServer::accept`. This

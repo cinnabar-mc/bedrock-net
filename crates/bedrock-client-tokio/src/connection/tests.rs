@@ -5,6 +5,9 @@ use super::*;
 #[cfg(feature = "nethernet")]
 mod accepting_boundaries;
 
+#[cfg(feature = "nethernet")]
+mod raw_batches;
+
 /// Uses the actual generated encoder, retaining the original complete header/body.
 fn packet_bytes(header: wire::PacketHeader, packet: &packets::Packet) -> Bytes {
     let mut batch = Vec::new();

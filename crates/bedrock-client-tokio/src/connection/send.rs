@@ -52,7 +52,7 @@ impl Connection {
     fn prepare_encoded(
         &mut self,
         deadline: Instant,
-        encode: impl FnOnce(&Self) -> io::Result<Vec<Bytes>>,
+        encode: impl FnOnce(&mut Self) -> io::Result<Vec<Bytes>>,
     ) -> io::Result<()> {
         self.ensure_send_idle()?;
         check_deadline(deadline)?;
@@ -412,6 +412,28 @@ impl Connection {
     /// Encodes once on the current codec, then borrows the same retained operation.
     pub fn prepare_body(&mut self, body: Bytes, deadline: Instant) -> io::Result<PreparedSend<'_>> {
         self.prepare_send(body, deadline)?;
+        Ok(PreparedSend { connection: self })
+    }
+
+    /// Retains one raw batch through the same admission checks without identity rewriting.
+    pub fn prepare_batch_raw(
+        &mut self,
+        body: Bytes,
+        deadline: Instant,
+    ) -> io::Result<PreparedSend<'_>> {
+        self.prepare_encoded(deadline, |connection| connection.encode_raw_batch(body))?;
+        Ok(PreparedSend { connection: self })
+    }
+
+    /// Encodes one raw packet once and retains its original bytes through send admission.
+    pub fn prepare_packet_raw(
+        &mut self,
+        packet: Bytes,
+        deadline: Instant,
+    ) -> io::Result<PreparedSend<'_>> {
+        self.prepare_encoded(deadline, |connection| {
+            connection.encode_raw_packets(&[packet])
+        })?;
         Ok(PreparedSend { connection: self })
     }
     /// Splits one already framed typed effect on the current codec without admitting it.
