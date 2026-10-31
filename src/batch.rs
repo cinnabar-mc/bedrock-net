@@ -13,10 +13,12 @@ const DEFAULT_PACKET_COUNT: usize = 1600;
 pub struct BatchLimits {
     /// Maximum wire message size, including envelope bytes.
     pub max_encoded_bytes: usize,
-    /// Maximum total length-prefixed packet bytes after decompression.
-    /// Also the incoming ceiling until a negotiated codec's
-    /// [`BatchCodec::with_incoming_decoded_limit`] overrides that direction.
+    /// Maximum incoming length-prefixed packet bytes after decompression.
+    /// A negotiated codec's [`BatchCodec::with_incoming_decoded_limit`] overrides this direction.
     pub max_decoded_bytes: usize,
+    /// Optional outgoing packet-byte ceiling per batch; larger groups split in order.
+    /// None splits only at the outgoing packet-count ceiling.
+    pub max_outgoing_decoded_bytes: Option<usize>,
     /// Maximum packets in one outgoing batch; larger groups split in order.
     pub max_packets: usize,
     /// Optional maximum nonempty packets in one incoming batch.
@@ -31,6 +33,7 @@ impl Default for BatchLimits {
             // Incoming allocation is bounded by the decoded allowance; callers can cap wire bytes.
             max_encoded_bytes: usize::MAX,
             max_decoded_bytes: DEFAULT_DECODED_BYTES,
+            max_outgoing_decoded_bytes: None,
             max_packets: DEFAULT_PACKET_COUNT,
             max_incoming_packets: None,
         }
@@ -311,7 +314,7 @@ impl<S: BatchPhase> BatchCodec<S> {
             return Ok(Vec::new());
         }
         if count <= self.limits.max_packets
-            && body.len() <= self.limits.max_decoded_bytes
+            && body.len() <= self.limits.max_outgoing_decoded_bytes.unwrap_or(usize::MAX)
             && empty == 0
         {
             if self.phase.compression().is_none() {
@@ -378,6 +381,7 @@ impl<S: BatchPhase> BatchCodec<S> {
         if self.limits.max_packets == 0 {
             return Err(BatchError::TooManyPackets { maximum: 0 });
         }
+        let maximum = self.limits.max_outgoing_decoded_bytes.unwrap_or(usize::MAX);
         let mut index = 0;
         let mut message = self.start_batch(batches.get_mut(index).map(std::mem::take));
         let prefix = message.len();
@@ -392,17 +396,13 @@ impl<S: BatchPhase> BatchCodec<S> {
             let entry_len = packet
                 .len()
                 .checked_add(((u32::BITS - length.leading_zeros()).div_ceil(7)) as usize)
-                .ok_or(BatchError::DecodedTooLarge {
-                    maximum: self.limits.max_decoded_bytes,
-                })?;
-            if entry_len > self.limits.max_decoded_bytes {
-                return Err(BatchError::DecodedTooLarge {
-                    maximum: self.limits.max_decoded_bytes,
-                });
+                .ok_or(BatchError::DecodedTooLarge { maximum })?;
+            if entry_len > maximum {
+                return Err(BatchError::DecodedTooLarge { maximum });
             }
             if count != 0
                 && (count == self.limits.max_packets
-                    || entry_len > self.limits.max_decoded_bytes - (message.len() - prefix))
+                    || entry_len > maximum - (message.len() - prefix))
             {
                 self.finish_batch(message, batches, index)?;
                 index += 1;

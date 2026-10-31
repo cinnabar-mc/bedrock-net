@@ -29,10 +29,12 @@ After network settings arrive, consume the plain codec with `negotiate` to obtai
 codec. Outgoing batches use the selected algorithm and threshold; incoming
 batches use their declared algorithm. The protocol's Zlib name selects raw DEFLATE.
 
-Use `BatchLimits` to set an encoded-wire ceiling, decoded-byte limit and outgoing
-packet count. Incoming packets use the byte bounds by default; set
-`max_incoming_packets` for a separate nonempty packet-count ceiling. Empty
-incoming entries are skipped and counted.
+Use `BatchLimits::max_decoded_bytes` for the incoming decoded-byte ceiling.
+Outgoing batches split at `max_packets`; set `max_outgoing_decoded_bytes` to
+`Some(bytes)` for an additional outgoing byte ceiling. Its default is `None`,
+so an incoming allowance does not split outgoing data. `max_encoded_bytes`
+applies to both directions. Set `max_incoming_packets` for a separate incoming
+packet-count ceiling. Empty incoming entries are skipped and counted.
 
 You can give negotiated incoming batches a different decoded-byte ceiling:
 

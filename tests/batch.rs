@@ -152,6 +152,7 @@ fn splits_count_and_byte_limited_batches_without_reordering() {
         BatchLimits {
             max_packets: 7,
             max_decoded_bytes: 29,
+            max_outgoing_decoded_bytes: Some(29),
             ..BatchLimits::default()
         },
     ] {
@@ -230,6 +231,7 @@ fn client_batch_count_preserves_declared_compression_and_decoded_byte_limits() {
             CompressionAlgorithm::Deflate,
             BatchLimits {
                 max_decoded_bytes: body.len() - 1,
+                max_outgoing_decoded_bytes: Some(body.len() - 1),
                 ..outgoing
             },
         );
@@ -309,6 +311,7 @@ fn decoded_limits_are_fatal_for_every_algorithm_and_accept_exact_boundary() {
             algorithm,
             BatchLimits {
                 max_decoded_bytes: decoded_len,
+                max_outgoing_decoded_bytes: Some(decoded_len),
                 ..BatchLimits::default()
             },
         );
@@ -317,6 +320,7 @@ fn decoded_limits_are_fatal_for_every_algorithm_and_accept_exact_boundary() {
             algorithm,
             BatchLimits {
                 max_decoded_bytes: decoded_len - 1,
+                max_outgoing_decoded_bytes: Some(decoded_len - 1),
                 ..BatchLimits::default()
             },
         );
@@ -337,6 +341,7 @@ fn oversized_deflate_with_a_corrupt_tail_is_still_fatal() {
         CompressionAlgorithm::Deflate,
         BatchLimits {
             max_decoded_bytes: 4,
+            max_outgoing_decoded_bytes: Some(4),
             ..BatchLimits::default()
         },
     );
@@ -459,6 +464,7 @@ fn incoming_cursor_retains_unread_bytes_and_releases_them_on_drop_or_exhaustion(
 fn negotiated_incoming_decoded_limit_preserves_defaults_and_output_policy() {
     let limits = BatchLimits {
         max_decoded_bytes: 8,
+        max_outgoing_decoded_bytes: Some(8),
         max_encoded_bytes: 128,
         max_packets: 2,
         ..BatchLimits::default()
@@ -470,6 +476,7 @@ fn negotiated_incoming_decoded_limit_preserves_defaults_and_output_policy() {
         let plain = BatchCodec::new(limits);
         let initial = BatchCodec::new(BatchLimits {
             max_decoded_bytes: decoded_len,
+            max_outgoing_decoded_bytes: Some(decoded_len),
             ..limits
         })
         .encode(&input)
@@ -490,6 +497,7 @@ fn negotiated_incoming_decoded_limit_preserves_defaults_and_output_policy() {
             };
             let wire = BatchCodec::new(BatchLimits {
                 max_decoded_bytes: decoded_len,
+                max_outgoing_decoded_bytes: Some(decoded_len),
                 ..limits
             })
             .negotiate(settings)
@@ -528,6 +536,7 @@ fn negotiated_incoming_decoded_limit_preserves_defaults_and_output_policy() {
 fn negotiated_incoming_decoded_limit_keeps_wire_count_and_framing_validation() {
     let limits = BatchLimits {
         max_decoded_bytes: 8,
+        max_outgoing_decoded_bytes: Some(8),
         max_encoded_bytes: 128,
         max_incoming_packets: Some(1),
         ..BatchLimits::default()
@@ -537,6 +546,7 @@ fn negotiated_incoming_decoded_limit_keeps_wire_count_and_framing_validation() {
         CompressionAlgorithm::None,
         BatchLimits {
             max_decoded_bytes: 10,
+            max_outgoing_decoded_bytes: Some(10),
             ..limits
         },
     )
@@ -617,6 +627,7 @@ fn negotiated_codec_keeps_const_construction_and_thread_safety() {
         BatchCodec::new(BatchLimits {
             max_encoded_bytes: 1024,
             max_decoded_bytes: 1024,
+            max_outgoing_decoded_bytes: Some(1024),
             max_packets: 10,
             max_incoming_packets: None,
         })
@@ -884,4 +895,29 @@ fn incoming_decoded_allowance_accepts_large_uncompressed_wire_messages() {
     message.push(length as u8);
     message.extend_from_slice(&packet);
     assert_eq!(packets(&codec, Bytes::from(message)), [Bytes::from(packet)]);
+}
+
+#[test]
+fn incoming_byte_policy_does_not_split_outgoing_batches() {
+    let limits = BatchLimits {
+        max_decoded_bytes: 8,
+        ..Default::default()
+    };
+    let packets_in = [Bytes::from_static(&[1; 6]), Bytes::from_static(&[2; 6])];
+    let codec = BatchCodec::new(limits);
+    let frames = codec.encode(&packets_in).unwrap();
+    assert_eq!(frames.len(), 1);
+    assert!(matches!(
+        codec.decode(frames[0].clone()),
+        Err(BatchError::DecodedTooLarge { maximum: 8 })
+    ));
+    let codec = BatchCodec::new(BatchLimits {
+        max_outgoing_decoded_bytes: Some(8),
+        ..limits
+    });
+    let frames = codec.encode(&packets_in).unwrap();
+    assert_eq!(frames.len(), 2);
+    for (frame, packet) in frames.into_iter().zip(packets_in) {
+        assert_eq!(packets(&codec, frame), [packet]);
+    }
 }

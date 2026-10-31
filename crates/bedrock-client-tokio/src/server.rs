@@ -75,6 +75,7 @@ impl AcceptingConnection {
     fn from_transport(transport: Transport, max_deferred_bytes: usize) -> Self {
         let defaults = BatchLimits::default();
         let limits = BatchLimits {
+            max_outgoing_decoded_bytes: Some(defaults.max_decoded_bytes),
             max_incoming_packets: Some(defaults.max_packets),
             ..defaults
         };

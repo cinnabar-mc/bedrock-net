@@ -86,6 +86,7 @@ async fn pack_effects_with_retirement(
         };
         let limits = BatchLimits {
             max_decoded_bytes: size(0) + size(2),
+            max_outgoing_decoded_bytes: Some(size(0) + size(2)),
             max_packets: 2,
             ..Default::default()
         };

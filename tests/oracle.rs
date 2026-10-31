@@ -16,7 +16,7 @@ use bytes::Bytes;
 use serde_json::{Value, json};
 
 /// Deliberate differences checked against both complete outcomes below.
-const EXPECTED_DIVERGENCES: &[&str] = &["encode/split_16mib", "decode/flate_truncated_partial"];
+const EXPECTED_DIVERGENCES: &[&str] = &["decode/flate_truncated_partial"];
 
 /// A short description of a result, so a listed divergence cannot silently change shape.
 trait Summary {
@@ -53,15 +53,6 @@ impl Summary for Vec<Outcome> {
 
 /// Frames written per encode call.
 impl Summary for Vec<Vec<Vec<u8>>> {
-    fn allowed_difference(name: &str, go: &Self, rust: &Self) -> bool {
-        name == "encode/split_16mib"
-            && go.len() == 1
-            && go[0].len() == 1
-            && rust.len() == 1
-            && rust[0].len() == 2
-            && go[0][0] == rust[0].concat()
-    }
-
     fn summary(&self) -> String {
         let parts: Vec<_> = self.iter().map(|call| call.len().to_string()).collect();
         parts.join(",")
