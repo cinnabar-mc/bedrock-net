@@ -245,7 +245,7 @@ impl Driver {
                 None => (None, None, outgoing_deadline),
             };
             if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
-                return Err(Error::TimedOut);
+                return self.admission_expired();
             }
             let progress = async {
                 tokio::select! {
@@ -316,7 +316,7 @@ impl Driver {
                     {
                         self.incoming.discard();
                     }
-                    Some(Err(CallerSignalingError::TimedOut)) => return Err(Error::TimedOut),
+                    Some(Err(CallerSignalingError::TimedOut)) => return self.admission_expired(),
                     Some(Err(CallerSignalingError::Closed)) => return Err(Error::Closed),
                     Some(Err(_)) => return Err(Error::Signaling),
                     None => {}
@@ -325,8 +325,24 @@ impl Driver {
                     .socket
                     .map_or(Ok(()), |event| self.socket_progress(event))
             }
-            Step::AdmissionTimeout => Err(Error::TimedOut),
+            Step::AdmissionTimeout => self.admission_expired(),
         }
+    }
+
+    /// Retires an expired server admission without closing other peers' routes or the service socket.
+    fn admission_expired(&mut self) -> Result<(), Error> {
+        if matches!(&self.caller, Caller::Server(_)) {
+            let now = Instant::now();
+            if self
+                .incoming
+                .front_mut()
+                .is_some_and(|front| now >= front.deadline)
+            {
+                self.incoming.discard();
+                return Ok(());
+            }
+        }
+        Err(Error::TimedOut)
     }
 
     /// Caps either dialect's retained incoming handoff at the same original attempt cutoff.
@@ -341,7 +357,11 @@ impl Driver {
 
     /// Applies socket progress after recording any handoff completed in the same poll.
     fn socket_progress(&mut self, event: Result<SocketStep, Error>) -> Result<(), Error> {
-        match event? {
+        let event = match event {
+            Err(Error::TimedOut) => return self.admission_expired(),
+            other => other?,
+        };
+        match event {
             SocketStep::Acknowledged(event) => {
                 self.incoming.acknowledged();
                 event.map_or(Ok(()), |event| {
@@ -394,11 +414,10 @@ fn complete(wait: SignalRequest, result: Result<(), bedrock_services::signaling:
     } else {
         SignalDelivery::ServiceAccepted
     };
-    wait.finish(
-        result
-            .map(|()| evidence)
-            .map_err(|_| CallerSignalingError::Rejected),
-    );
+    wait.finish(result.map(|()| evidence).map_err(|failure| match failure {
+        bedrock_services::signaling::Failure::TimedOut => CallerSignalingError::TimedOut,
+        _ => CallerSignalingError::Rejected,
+    }));
 }
 
 impl Drop for Driver {

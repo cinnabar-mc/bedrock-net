@@ -51,17 +51,17 @@ fn test_config() -> ConnectionConfig {
 /// Exercises actual SDK WebSocket envelopes, existing accepting transport and real UDP data.
 #[tokio::test]
 async fn accepting_messaging_routes_the_authenticated_peer_and_retires_actual_owners() {
-    accepting_transport(false).await;
+    accepting_transport(false, false).await;
 }
 
 /// Explicit missing-identity allowance still uses the same real service and UDP owners.
 #[tokio::test]
 async fn accepting_messaging_allows_anonymous_offers_only_by_explicit_policy() {
-    accepting_transport(true).await;
+    accepting_transport(true, true).await;
 }
 
 /// Runs one finite actual transport association without supplying game or world authority.
-async fn accepting_transport(anonymous: bool) {
+async fn accepting_transport(anonymous: bool, allow_anonymous: bool) {
     tokio::time::timeout(std::time::Duration::from_secs(15), async {
         use bytes::Bytes;
         use nethernet::connection::IceMode;
@@ -76,7 +76,7 @@ async fn accepting_transport(anonymous: bool) {
         let (socket, peer) = test_support::pair(network_id).await;
         let mut server_config = test_config();
         server_config.max_sessions = 1;
-        server_config.allow_anonymous_offers = anonymous;
+        server_config.allow_anonymous_offers = allow_anonymous;
         server_config.server_ice = Some(ServerIceConfig {
             ice: Default::default(),
             bind_addr: SocketAddr::new(Ipv4Addr::LOCALHOST.into(), 0),
@@ -112,6 +112,17 @@ async fn accepting_transport(anonymous: bool) {
             turn_tls: None,
         });
         let application = async {
+            if anonymous && !allow_anonymous {
+                let result = tokio::select! {
+                    result = NetherClient::connect_with(caller, server_id.to_string(), client_config) => result,
+                    accepted = server.accept() => panic!("anonymous offer bypassed policy: {}", accepted.is_ok()),
+                };
+                assert!(matches!(result, Err(nethernet_tokio::NetherError::Signaled(_))), "anonymous offer was not rejected: {:?}", result.err());
+                let mut closing = server.begin_close();
+                closing.finish_close().await.unwrap();
+                assert!(closing.try_finish().is_ok());
+                return;
+            }
             let (client, accepted) = tokio::join!(
                 NetherClient::connect_with(caller, server_id.to_string(), client_config),
                 server.accept(),
@@ -314,4 +325,10 @@ async fn verify_routed_login(
         );
         assert_eq!(login.return_target(""), Some((b"::1".to_vec(), 19132)));
     }
+}
+
+/// An identity-free offer cannot opt itself into the listener's anonymous admission policy.
+#[tokio::test]
+async fn accepting_messaging_rejects_anonymous_offers_when_policy_is_disabled() {
+    accepting_transport(true, false).await;
 }

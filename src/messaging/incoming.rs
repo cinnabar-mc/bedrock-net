@@ -51,7 +51,10 @@ impl Batch {
             // An offer outside the accepting route limit cannot retire unrelated peers.
             return Ok(());
         }
-        self.retain(signal, deadline, delivery)
+        match self.retain(signal, deadline, delivery) {
+            Err(Error::TimedOut) => Ok(()),
+            result => result,
+        }
     }
 
     /// Retains one prepared admission in the original bounded allocation, regardless of route direction.
@@ -69,6 +72,7 @@ impl Batch {
             Err(CallerSignalingError::RouteMismatch | CallerSignalingError::InvalidSignal) => {
                 return Ok(());
             }
+            Err(CallerSignalingError::TimedOut) => return Err(Error::TimedOut),
             Err(_) => return Err(Error::Signaling),
         };
         let bytes = signal

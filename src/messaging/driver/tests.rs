@@ -440,3 +440,116 @@ async fn receipt_admission_drives_its_wire_write_before_returning() {
         .unwrap();
     assert!(wire.contains("Signaling_DeliveryNotification"));
 }
+
+/// Expired transport and receipt admission belongs to one envelope, not the shared listener.
+#[tokio::test]
+async fn expired_accepting_envelopes_preserve_healthy_peers() {
+    use bedrock_services::signaling::websocket::test_support;
+    use nethernet_tokio::{CallerServerSignaling, CallerServerSignalingConfig};
+    for admitted in [false, true] {
+        let stale_peer = Uuid::from_u128(21);
+        let healthy_peer = Uuid::from_u128(22);
+        let (socket, mut peer) = test_support::pair(7).await;
+        let (caller, caller_driver) =
+            CallerServerSignaling::new("7".into(), CallerServerSignalingConfig::default()).unwrap();
+        let mut signals = caller.signals().unwrap();
+        let mut sdk = Messaging::new(7);
+        let mut batch = Batch::default();
+        for (id, connection) in [(stale_peer, 9), (healthy_peer, 10)] {
+            batch
+                .push_server(
+                    &caller_driver,
+                    received(
+                        &mut sdk,
+                        id,
+                        "untrusted",
+                        &Signal::offer(connection, "sdp".into(), id.to_string()).to_string(),
+                    ),
+                    Instant::now() + Duration::from_secs(5),
+                )
+                .unwrap();
+        }
+        if admitted {
+            batch
+                .front_mut()
+                .unwrap()
+                .waiting
+                .as_mut()
+                .unwrap()
+                .await
+                .unwrap();
+            batch.admitted();
+            assert_eq!(
+                signals.next().await.unwrap().network_id,
+                stale_peer.to_string()
+            );
+        }
+        batch.front_mut().unwrap().deadline = Instant::now();
+        let mut service = Driver::server(
+            socket,
+            caller_driver,
+            Duration::from_secs(5),
+            std::future::pending(),
+        );
+        service.incoming = batch;
+        let outcome = tokio::time::timeout(Duration::from_secs(1), service.run(signals.next()))
+            .await
+            .unwrap();
+        assert!(
+            outcome.is_ok(),
+            "one expired envelope closed the listener: {:?}",
+            service.failure()
+        );
+        assert_eq!(
+            outcome.unwrap().unwrap().network_id,
+            healthy_peer.to_string()
+        );
+        let receipt = tokio::time::timeout(Duration::from_secs(1), service.run(peer.recv_text()))
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        let receipt: Value = serde_json::from_str(&receipt).unwrap();
+        assert_eq!(receipt["params"]["toPlayerId"], healthy_peer.to_string());
+        assert!(service.failure().is_none());
+        assert!(service.incoming.front_mut().is_none());
+        service.close();
+        let _ = peer.close().await;
+    }
+}
+
+/// Service expiration and explicit rejection retain distinct transport waiter categories.
+#[tokio::test]
+async fn completions_preserve_timeout_classification() {
+    use bedrock_services::signaling::Failure;
+    for (failure, timeout) in [
+        (Failure::TimedOut, true),
+        (Failure::ServiceCode(403), false),
+    ] {
+        let peer = Uuid::from_u128(1);
+        let (caller, mut driver) = CallerSignaling::new(
+            "7".into(),
+            peer.to_string(),
+            CallerSignalingConfig::default(),
+        )
+        .unwrap();
+        let _signals = caller.signals().unwrap();
+        let sending = caller.signal(Signal::offer(9, "sdp".into(), peer.to_string()));
+        tokio::pin!(sending);
+        let request = tokio::select! {
+            request = driver.recv() => request.unwrap(),
+            _ = &mut sending => panic!("request completed without service evidence"),
+        };
+        complete(request, Err(failure));
+        let error = sending.await.unwrap_err();
+        assert_eq!(error.is_timeout(), timeout, "{error:?}");
+        if !timeout {
+            assert!(matches!(
+                error,
+                nethernet_tokio::NetherError::CallerSignaling(CallerSignalingError::Rejected)
+            ));
+        }
+        driver.close();
+    }
+}
