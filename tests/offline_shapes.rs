@@ -1,21 +1,26 @@
 //! Actual Go comparisons for offline JOSE shapes and retained outer chain arrays.
-#![cfg(feature = "login")]
 
+#[cfg(feature = "login")]
 use base64::{Engine as _, engine::general_purpose::STANDARD};
+#[cfg(feature = "login")]
 use bedrock_net::login::parse_offline_request;
+#[cfg(feature = "login")]
 use serde_json::{Value, json};
+#[cfg(feature = "login")]
 use std::{
     io::{Read, Write},
     process::{Child, ChildStdin, ChildStdout, Command, Stdio},
     time::{Duration, UNIX_EPOCH},
 };
 
+#[cfg(feature = "login")]
 struct Oracle {
     child: Child,
     input: Option<ChildStdin>,
     output: ChildStdout,
 }
 
+#[cfg(feature = "login")]
 impl Oracle {
     /// Starts only the caller-configured synthetic helper; required-fixture runs cannot skip it.
     fn new() -> Option<Self> {
@@ -56,6 +61,7 @@ impl Oracle {
     }
 }
 
+#[cfg(feature = "login")]
 impl Drop for Oracle {
     /// Closes the helper's stdin and reaps its normal EOF exit without sending any signal.
     fn drop(&mut self) {
@@ -65,6 +71,7 @@ impl Drop for Oracle {
 }
 
 /// Compares every case in the selected independent shape group and reports all mismatches.
+#[cfg(feature = "login")]
 fn compare(group: &str) {
     let Some(mut oracle) = Oracle::new() else {
         return;
@@ -98,13 +105,24 @@ fn compare(group: &str) {
 }
 
 /// Folded aliases reuse prior string slots through truncation and re-extension.
+#[cfg(feature = "login")]
 #[test]
 fn chain_arrays_match_go() {
     compare("chain");
 }
 
 /// Modern headers still decode JOSE types while skipping signature and critical policy.
+#[cfg(feature = "login")]
 #[test]
 fn jose_headers_match_go() {
     compare("header");
+}
+
+#[cfg(not(feature = "login"))]
+#[test]
+fn required_fixtures_need_login_support() {
+    assert!(
+        std::env::var_os("BEDROCK_NET_REQUIRE_FIXTURES").is_none(),
+        "required Go comparisons need the login feature"
+    );
 }
