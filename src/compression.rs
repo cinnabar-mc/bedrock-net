@@ -1,3 +1,5 @@
+mod deflate_tail;
+
 use std::borrow::Cow;
 #[cfg(target_family = "wasm")]
 use std::io::Write;
@@ -221,7 +223,7 @@ pub(crate) fn decompress(
     }
 }
 
-/// Inflates incrementally, requiring a final block and stopping at the decoded-byte limit.
+/// Inflates within the decoded-byte limit, retaining reference prefixes for packet validation.
 fn inflate(body: &[u8], maximum: usize) -> Result<Result<Bytes, DropReason>, BatchError> {
     let mut decoder = Decompress::new(false);
     let mut input = body;
@@ -249,7 +251,11 @@ fn inflate(body: &[u8], maximum: usize) -> Result<Result<Bytes, DropReason>, Bat
             return Ok(Ok(Bytes::from(decoded)));
         }
         if consumed == 0 && produced == 0 {
-            return Ok(Err(DropReason::TruncatedDeflate));
+            return if deflate_tail::releases_prefix(body) {
+                Ok(Ok(Bytes::from(decoded)))
+            } else {
+                Ok(Err(DropReason::TruncatedDeflate))
+            };
         }
     }
 }
@@ -393,5 +399,20 @@ mod tests {
                 same_snappy_result(&body);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tail_tests {
+    use super::*;
+
+    /// A reference cut off at EOF still exposes its original prefix to fatal packet validation.
+    #[test]
+    fn unfinished_reference_releases_the_original_decoded_prefix() {
+        let body = Bytes::from_static(&[
+            0x63, 0x65, 0x62, 0, 0x02, 0x56, 0x4e, 0xe6, 0x8c, 0xd4, 0xca, 0x13, 0x8c, 0x0c, 0x8c,
+            0x4c, 0xcc, 0x2c, 0xac, 0x6c, 0xec, 0x1c, 0x9c, 0x5c, 0xdc, 0x3c, 0x43,
+        ]);
+        assert!(decompress(DEFLATE_ID, body, 4096).unwrap().is_ok());
     }
 }

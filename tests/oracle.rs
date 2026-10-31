@@ -1,7 +1,6 @@
-//! Differential checks against the pinned Go codec through one long-lived `go-oracle serve`.
+//! Differential checks against the pinned Go codec through bounded `go-oracle serve` processes.
 //!
-//! Every case compares Rust's accept/drop/fatal decision and bytes with Go's. A mismatch must
-//! be listed in [`EXPECTED_DIVERGENCES`], and a listed entry must still diverge.
+//! Every case compares Rust's accept/drop/fatal decision and bytes with Go's. Any mismatch fails.
 
 #[path = "support/oracle.rs"]
 mod oracle_support;
@@ -14,29 +13,12 @@ use bedrock_net::{
 use bytes::Bytes;
 use serde_json::{Value, json};
 
-/// Deliberate differences checked against both complete outcomes below.
-const EXPECTED_DIVERGENCES: &[&str] = &["decode/flate_truncated_partial"];
-
-/// A short description of a result, so a listed divergence cannot silently change shape.
+/// A short description of a result for independently checked outcome anchors.
 trait Summary {
     fn summary(&self) -> String;
-
-    /// Allows only the named difference, preserving all unaffected bytes and outcomes.
-    fn allowed_difference(_name: &str, _go: &Self, _rust: &Self) -> bool
-    where
-        Self: Sized,
-    {
-        false
-    }
 }
 
 impl Summary for Vec<Outcome> {
-    fn allowed_difference(name: &str, go: &Self, rust: &Self) -> bool {
-        name == "decode/flate_truncated_partial"
-            && *go == [Outcome::Fatal]
-            && *rust == [Outcome::Dropped, Outcome::Packets(sample())]
-    }
-
     fn summary(&self) -> String {
         let parts: Vec<_> = self
             .iter()
@@ -327,38 +309,22 @@ fn offline_numeric_dates_match_go_internal_time() {
 #[derive(Default)]
 struct Ledger {
     unexpected: Vec<String>,
-    seen: Vec<&'static str>,
 }
 
 impl Ledger {
+    /// Records every byte or lifecycle mismatch without exemptions.
     fn compare<T: PartialEq + std::fmt::Debug + Summary>(&mut self, name: &str, go: T, rust: T) {
-        let listed = EXPECTED_DIVERGENCES.iter().find(|case| **case == name);
-        match (go == rust, listed) {
-            (true, None) => {}
-            (false, Some(case)) if T::allowed_difference(name, &go, &rust) => {
-                self.seen.push(case);
-            }
-            (false, Some(_)) => self.unexpected.push(format!(
-                "{name}: unexpected difference: Go {go:?}; Rust {rust:?}"
-            )),
-            (true, Some(_)) => self.unexpected.push(format!(
-                "{name}: now matches Go; remove its divergence entry"
-            )),
-            (false, None) => self
-                .unexpected
-                .push(format!("{name}: Go {go:?} != Rust {rust:?}")),
+        if go != rust {
+            self.unexpected
+                .push(format!("{name}: Go {go:?} != Rust {rust:?}"));
         }
     }
 
+    /// Reports the complete group of mismatches after all comparisons have run.
     fn finish(self, prefix: &str) {
-        let missing: Vec<_> = EXPECTED_DIVERGENCES
-            .iter()
-            .filter(|case| case.starts_with(prefix) && !self.seen.contains(case))
-            .copied()
-            .collect();
         assert!(
-            self.unexpected.is_empty() && missing.is_empty(),
-            "unexpected: {:#?}\nlisted but not run or not diverging: {missing:?}",
+            self.unexpected.is_empty(),
+            "unexpected {prefix} differences: {:#?}",
             self.unexpected
         );
     }
@@ -678,6 +644,7 @@ fn decode_decisions_match_go() {
     // Go's own decision for these cases, so an agreeing pair of failures cannot pass.
     let anchors = [
         ("flate_multi", "packets(3)"),
+        ("flate_truncated_partial", "fatal"),
         ("snappy_multi", "packets(3)"),
         ("uncompressed_multi", "packets(3)"),
         ("unknown_compression_02", "dropped,packets(3)"),
@@ -1427,42 +1394,6 @@ mod login {
     }
 }
 
-#[test]
-fn truncated_stream_exemption_rejects_unaffected_packet_corruption() {
-    let mut ledger = Ledger::default();
-    let mut healthy = sample();
-    healthy[0][0] ^= 1;
-    ledger.compare(
-        "decode/flate_truncated_partial",
-        vec![Outcome::Fatal],
-        vec![Outcome::Dropped, Outcome::Packets(healthy)],
-    );
-    assert!(!ledger.unexpected.is_empty());
-    let mut ledger = Ledger::default();
-    let mut healthy = sample();
-    healthy.swap(0, 1);
-    ledger.compare(
-        "decode/flate_truncated_partial",
-        vec![Outcome::Fatal],
-        vec![Outcome::Dropped, Outcome::Packets(healthy)],
-    );
-    assert!(!ledger.unexpected.is_empty());
-    let mut ledger = Ledger::default();
-    ledger.compare(
-        "decode/flate_truncated_partial",
-        vec![Outcome::Dropped],
-        vec![Outcome::Dropped, Outcome::Packets(sample())],
-    );
-    assert!(!ledger.unexpected.is_empty());
-    let mut ledger = Ledger::default();
-    ledger.compare(
-        "decode/flate_truncated_partial",
-        vec![Outcome::Fatal],
-        vec![Outcome::Dropped, Outcome::Packets(sample())],
-    );
-    assert!(ledger.unexpected.is_empty());
-}
-
 #[cfg(feature = "login")]
 #[test]
 fn url_hosts_match_the_go_parser() {
@@ -1523,5 +1454,54 @@ fn server_handshake_claim_shapes_match_go() {
             accepted,
             "{payload}"
         );
+    }
+}
+
+/// Every byte cutoff compares both the damaged batch and a healthy successor's delivery.
+#[test]
+fn deflate_prefix_decisions_match_go() {
+    let Some(mut oracle) = oracle() else { return };
+    let mut random = 73_u32;
+    let noise: Vec<u8> = (0..1024)
+        .map(|_| {
+            random ^= random << 13;
+            random ^= random >> 17;
+            random ^= random << 5;
+            random as u8
+        })
+        .collect();
+    let letters: Vec<u8> = (0..4096)
+        .map(|_| {
+            random ^= random << 13;
+            random ^= random >> 17;
+            random ^= random << 5;
+            b"ACGT"[random as usize & 3]
+        })
+        .collect();
+    let dynamic = rust_batch("flate", &[letters]);
+    assert_eq!(
+        (dynamic[1] >> 1) & 3,
+        2,
+        "fixture must exercise a dynamic Huffman block"
+    );
+    let mut multiple = vec![0, 0, 2, 0, 0xfd, 0xff, 1, 5];
+    multiple.extend_from_slice(&dynamic[1..]);
+    let wires = [
+        rust_batch("flate", &sample()),
+        rust_batch("flate", &[vec![3; 1024]]),
+        rust_batch("flate", &[noise]),
+        dynamic,
+        multiple,
+    ];
+    let healthy = rust_batch("none", &sample());
+    for wire in wires {
+        for cutoff in 1..wire.len() {
+            let messages = [wire[..cutoff].to_vec(), healthy.clone()];
+            assert_eq!(
+                rust_decode(Settings::NEGOTIATED, &messages),
+                go_decode(&mut oracle, Settings::NEGOTIATED, &messages),
+                "cutoff={cutoff}, wire={wire:?}"
+            );
+        }
     }
 }

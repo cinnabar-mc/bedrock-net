@@ -17,6 +17,10 @@ and packet limits. `decode` validates every entry length before exposing packets
 | `DecodeOutcome::Dropped` | Count and log the compression failure, then continue. |
 | `BatchError` | Handle the framing or limit failure; no partial packet list was returned. |
 
+An unfinished DEFLATE reference can release its decoded prefix for packet
+validation. If that prefix has malformed packet framing, decoding is fatal and
+returns no packets from that batch. Other incomplete compressed streams are dropped.
+
 `BatchPackets` is an iterator whose `Bytes` entries share the decoded allocation.
 Keep its cursor between reads instead of collecting unread entries. A small
 retained slice can keep the whole allocation alive. Preserve unread entries ahead
