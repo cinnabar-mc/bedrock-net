@@ -35,7 +35,7 @@ async fn typed_effect_splits_individually_valid_packets_at_the_original_byte_lim
     split_effect(packets, &[1, 1], true).await;
 }
 
-/// Drops every committed receipt borrow and resumes one effect on its original cipher and deadline.
+/// Drops every committed receipt borrow and resumes one effect on its original codec and deadline.
 async fn split_effect(packets: Vec<packets::Packet>, expected_counts: &[usize], byte_split: bool) {
     tokio::time::timeout(TIMEOUT, async {
         let limits = BatchLimits::default();
@@ -52,13 +52,6 @@ async fn split_effect(packets: Vec<packets::Packet>, expected_counts: &[usize], 
             threshold: 0,
         };
         pair.wire.compression_flushed(compression).unwrap();
-        let key = zeroize::Zeroizing::new(rand::random::<[u8; 32]>());
-        pair.wire
-            .encryption_flushed((
-                BatchEncryptor::new(*key),
-                BatchDecryptor::new(rand::random()),
-            ))
-            .unwrap();
         let preparation = pair.wire.prepare_packets(packets, deadline).map(drop);
         if let Err(error) = preparation {
             assert!(
@@ -89,13 +82,11 @@ async fn split_effect(packets: Vec<packets::Packet>, expected_counts: &[usize], 
             .await
             .unwrap();
         pair.wire.resume_send().unwrap().finish().unwrap();
-        let codec = BatchCodec::new(BatchHeader::NetherNet, limits).negotiate(compression);
-        let mut decryptor = BatchDecryptor::new(*key);
+        let codec = BatchCodec::new(limits).negotiate(compression);
         let mut received = Vec::new();
         let mut batch_counts = Vec::new();
         for _ in expected_counts {
-            let ciphertext = pair.client.recv().await.unwrap().unwrap();
-            let plaintext = decryptor.decrypt(ciphertext).unwrap();
+            let plaintext = pair.client.recv().await.unwrap().unwrap();
             let DecodeOutcome::Packets { packets, .. } = codec.decode(plaintext).unwrap() else {
                 panic!("original effect batch was dropped");
             };

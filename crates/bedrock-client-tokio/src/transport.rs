@@ -12,7 +12,6 @@ mod inbox;
 mod messaging;
 use super::RoundTripTime;
 use accepted::AcceptedTransport;
-use bedrock_net::BatchHeader;
 use bytes::Bytes;
 use futures::future::BoxFuture;
 use inbox::Inbox;
@@ -98,14 +97,6 @@ impl Transport {
     pub fn nonce(&self) -> &str {
         &self.nonce
     }
-    /// Selects the original association's Bedrock batch envelope.
-    pub fn header(&self) -> BatchHeader {
-        BatchHeader::NetherNet
-    }
-    /// Whether this transport needs Bedrock's application cipher above its socket.
-    pub fn batch_encryption(&self) -> bool {
-        false
-    }
     /// Applies the original absolute admission deadline without restarting accepted work.
     pub async fn send_until(
         &mut self,
@@ -189,7 +180,7 @@ impl Transport {
             _ => Err(prepared_unsupported()),
         }
     }
-    /// Reserves the same bounded transport capacity without owning a payload or cipher effect.
+    /// Reserves the same bounded transport capacity without owning a payload.
     pub(super) fn reserve_send(
         &self,
         _bytes: usize,

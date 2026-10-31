@@ -13,12 +13,9 @@
     "Flate/compress": ["small64", "chunk50k", "chunks4m"],
     "Flate/decompress": ["small64", "chunk50k", "chunks4m"],
     "Snappy/compress": ["small64", "chunk50k"],
-    "Snappy/decompress": ["small64", "chunk50k"],
-    "Encryption/encrypt": ["small64", "chunk50k", "chunks4m"],
-    "Encryption/decrypt": ["small64", "chunk50k", "chunks4m"]
+    "Snappy/decompress": ["small64", "chunk50k"]
   },
   "compression_threshold": 256,
-  "encryption_key_byte": 9,
   "packs": {
     "source": "chunk_packet.bin",
     "trailer": "pack_trailer.zip",

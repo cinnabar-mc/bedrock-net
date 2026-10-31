@@ -2,7 +2,7 @@
 
 use super::*;
 use crate::{PacketIo, connect::lan};
-use bedrock_net::{BatchCodec, BatchHeader, BatchLimits, DecodeOutcome};
+use bedrock_net::{BatchCodec, BatchLimits, DecodeOutcome};
 use nethernet_tokio::{ConnectionConfig, LanConfig, LanSignaling, NetherServer, ServerData};
 use std::{sync::Arc, time::Duration};
 use tokio::net::UdpSocket;
@@ -98,7 +98,7 @@ async fn pack_effects_with_retirement(
             }
         })
         .await;
-        let codec = BatchCodec::new(BatchHeader::NetherNet, limits);
+        let codec = BatchCodec::new(limits);
         let mut received = Vec::new();
         let mut batch_counts = Vec::new();
         if result.is_ok() {

@@ -55,7 +55,7 @@ impl<R: Fn(&str) -> Result<(), LoginError>> HandshakePolicy<OfflineLogin> for Of
         parse_offline_request(request, utc, limit, &self.resolve)
     }
 
-    /// Borrows the final signed key for the existing transport and cipher boundaries.
+    /// Borrows the final signed key for the existing transport boundary.
     fn exchange_key<'a>(&self, login: &'a OfflineLogin) -> Option<&'a VerifyingKey> {
         login.exchange_key().as_p384()
     }

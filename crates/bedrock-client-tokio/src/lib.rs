@@ -31,7 +31,7 @@ pub trait PacketIo: Send + 'static {
     fn observe_rtt(&self) -> Option<RoundTripTime> {
         None
     }
-    /// Sends one complete batch without cancelling cipher or transport progress.
+    /// Sends one complete batch without cancelling transport progress.
     fn send_body(
         &mut self,
         body: Bytes,

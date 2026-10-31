@@ -57,12 +57,11 @@ fn public_handshake_enables_retained_metadata_only_for_the_original_requested_ow
 }
 
 /// Uses a synthetic deterministic proof key, without account or transport I/O.
-fn handshake(batch_encryption: bool) -> Engine {
+fn handshake() -> Engine {
     let key = Arc::new(SigningKey::from_slice(&[1; 48]).unwrap());
     let client = Engine::new(
         Arc::clone(&key),
         HandshakeOptions {
-            batch_encryption,
             blob_cache: true,
             ..Default::default()
         },
@@ -116,45 +115,39 @@ fn exchange_token(login: &packets::Login) -> String {
 
 #[test]
 fn settings_login_and_verified_exchange_use_one_key_and_one_transition() {
-    for batch_encryption in [true, false] {
-        let mut client = handshake(batch_encryption);
-        let request = login(&mut client);
-        assert_eq!(request.client_network_version.0, PROTOCOL_VERSION);
-        let token = exchange_token(&request);
-        let event = client
-            .receive(packets::Packet::ServerToClientHandshake(
-                packets::ServerToClientHandshake {
-                    handshake_web_token: token.clone().into(),
-                },
-            ))
-            .unwrap();
-        let EngineEvent::KeyExchange {
-            ciphers,
-            response: _,
-        } = event
-        else {
-            panic!("verified exchange")
-        };
-        assert_eq!(ciphers.is_some(), batch_encryption);
-        assert!(matches!(
-            client.receive(packets::Packet::ServerToClientHandshake(
-                packets::ServerToClientHandshake {
-                    handshake_web_token: token.into(),
-                }
-            )),
-            Ok(EngineEvent::Unhandled(_))
-        ));
-        assert!(matches!(
-            client.receive(packets::Packet::ResourcePacksInfo(Default::default())),
-            Ok(EngineEvent::Packs { .. })
-        ));
-    }
+    let mut client = handshake();
+    let request = login(&mut client);
+    assert_eq!(request.client_network_version.0, PROTOCOL_VERSION);
+    let token = exchange_token(&request);
+    let event = client
+        .receive(packets::Packet::ServerToClientHandshake(
+            packets::ServerToClientHandshake {
+                handshake_web_token: token.clone().into(),
+            },
+        ))
+        .unwrap();
+    let EngineEvent::KeyExchange { response: _ } = event else {
+        panic!("verified exchange")
+    };
+
+    assert!(matches!(
+        client.receive(packets::Packet::ServerToClientHandshake(
+            packets::ServerToClientHandshake {
+                handshake_web_token: token.into(),
+            }
+        )),
+        Ok(EngineEvent::Unhandled(_))
+    ));
+    assert!(matches!(
+        client.receive(packets::Packet::ResourcePacksInfo(Default::default())),
+        Ok(EngineEvent::Packs { .. })
+    ));
 }
 
 #[test]
 fn pack_offer_and_login_success_in_either_order_emit_one_cache_status() {
     for offer_first in [false, true] {
-        let mut client = handshake(true);
+        let mut client = handshake();
         let signed_login = login(&mut client);
         let success = || {
             packets::Packet::PlayStatus(packets::PlayStatus {
@@ -186,10 +179,7 @@ fn pack_offer_and_login_success_in_either_order_emit_one_cache_status() {
                     }
                 ))
                 .unwrap(),
-            EngineEvent::KeyExchange {
-                ciphers: Some(_),
-                ..
-            }
+            EngineEvent::KeyExchange { .. }
         ));
         let EngineEvent::Send(sent) = client.receive(success()).unwrap() else {
             panic!("late success")
@@ -210,8 +200,8 @@ fn pack_offer_and_login_success_in_either_order_emit_one_cache_status() {
 }
 
 #[test]
-fn failed_exchange_is_terminal_even_when_transport_already_encrypts() {
-    let mut client = handshake(false);
+fn failed_server_token_verification_is_terminal() {
+    let mut client = handshake();
     login(&mut client);
     assert!(matches!(
         client.receive(packets::Packet::ServerToClientHandshake(
@@ -229,7 +219,7 @@ fn failed_exchange_is_terminal_even_when_transport_already_encrypts() {
 
 #[test]
 fn early_refusal_and_terminal_packets_preserve_their_meaning() {
-    let mut client = handshake(true);
+    let mut client = handshake();
     client.start().unwrap();
     let disconnect = packets::Packet::Disconnect(Default::default());
     assert!(
@@ -247,7 +237,7 @@ fn early_refusal_and_terminal_packets_preserve_their_meaning() {
 
 #[test]
 fn deferred_spawn_neither_sends_cache_status_nor_consumes_the_verified_exchange() {
-    let mut client = handshake(true);
+    let mut client = handshake();
     let signed_login = login(&mut client);
     let spawn = packets::Packet::PlayStatus(packets::PlayStatus {
         status: PlayStatusType::PlayerSpawn,
@@ -263,10 +253,7 @@ fn deferred_spawn_neither_sends_cache_status_nor_consumes_the_verified_exchange(
                 },
             ))
             .unwrap(),
-        EngineEvent::KeyExchange {
-            ciphers: Some(_),
-            ..
-        }
+        EngineEvent::KeyExchange { .. }
     ));
     let success = || {
         packets::Packet::PlayStatus(packets::PlayStatus {
@@ -304,7 +291,7 @@ fn refusal_and_unknown_statuses_still_end_the_handshake_during_packs() {
         PlayStatusType::LoginFailedServerFullSubClient,
         PlayStatusType::Unknown(i32::MAX),
     ] {
-        let mut client = handshake(true);
+        let mut client = handshake();
         login(&mut client);
         let EngineEvent::Packs { negotiation, .. } = client
             .receive(packets::Packet::ResourcePacksInfo(Default::default()))
@@ -334,7 +321,7 @@ fn refusal_and_unknown_statuses_still_end_the_handshake_during_packs() {
 
 #[test]
 fn deferred_spawn_does_not_admit_login_before_settings_or_login_construction() {
-    let mut client = handshake(true);
+    let mut client = handshake();
     client.start().unwrap();
     let spawn = packets::Packet::PlayStatus(packets::PlayStatus {
         status: PlayStatusType::PlayerSpawn,
@@ -361,7 +348,7 @@ fn deferred_spawn_does_not_admit_login_before_settings_or_login_construction() {
 
 #[test]
 fn packless_startup_returns_the_actual_packet_and_retires_login() {
-    let mut client = handshake(true);
+    let mut client = handshake();
     login(&mut client);
     let start_game = packets::StartGame {
         runtime_id: bedrock_protocol::types::ActorRuntimeID(42),
@@ -384,7 +371,7 @@ fn packless_startup_returns_the_actual_packet_and_retires_login() {
 
 #[test]
 fn start_game_during_an_advertised_pack_phase_keeps_the_original_completion() {
-    let mut client = handshake(true);
+    let mut client = handshake();
     login(&mut client);
     let EngineEvent::Packs { negotiation, .. } = client
         .receive(packets::ResourcePacksInfo::default().into())
@@ -408,7 +395,7 @@ fn start_game_during_an_advertised_pack_phase_keeps_the_original_completion() {
 
 #[test]
 fn unexpected_login_controls_do_not_consume_the_original_transition() {
-    let mut client = handshake(true);
+    let mut client = handshake();
     client.start().unwrap();
     for packet in [
         packets::Packet::ServerToClientHandshake(packets::ServerToClientHandshake {

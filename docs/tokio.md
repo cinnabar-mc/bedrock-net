@@ -63,7 +63,6 @@ async fn connect_client(
     let transport = Transport::from_http(ready);
     let limits = BatchLimits::default();
     let configured = ClientHandshake::new(key, HandshakeOptions {
-        batch_encryption: transport.batch_encryption(),
         ..Default::default()
     })?;
     let mut connection = Connection::new(
@@ -173,8 +172,8 @@ async fn accept_settings(
 ```
 
 For NetherNet, `AcceptingConnection::from_nether` takes an accepted association
-and binds Login to its verified SDP key. It disables the additional batch cipher
-because the association uses DTLS. Supply the server proof key used by signaling.
+and binds Login to its verified SDP key. DTLS protects the association. Supply the
+server proof key used by signaling.
 
 Continue with the [server guide](server.md) for verification, authorization, packs
 and startup. After authorization, recheck the grant after each

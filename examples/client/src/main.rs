@@ -65,7 +65,6 @@ async fn probe(
     let configured = ClientHandshake::new(
         key,
         HandshakeOptions {
-            batch_encryption: transport.batch_encryption(),
             max_login_bytes: BatchLimits::default().max_decoded_bytes,
             ..Default::default()
         },
@@ -113,15 +112,9 @@ async fn probe(
                     })
                     .await?;
                 }
-                println!(
-                    "offline_login=accepted encryption={}",
-                    session.has_batch_ciphers()
-                );
+                println!("offline_login=accepted");
             }
-            None => println!(
-                "startup_without_pack_offer=true encryption={}",
-                session.has_batch_ciphers()
-            ),
+            None => println!("startup_without_pack_offer=true"),
         }
     }
     session.transport_mut().finish_close().await?;

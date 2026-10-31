@@ -1,9 +1,8 @@
 //! Consumed accepting capabilities; provider verification and caller authorization remain distinct.
 
 use super::{
-    AuthenticatedLogin, BatchDecryptor, BatchEncryptor, CompressionSettings, Engine, EngineEvent,
-    HandshakePolicy, LoginPolicy, ServerHandshakeError, ServerHandshakeOptions,
-    ServerKeyExchangeHandoff, SigningKey, VerifyingKey, packets,
+    AuthenticatedLogin, CompressionSettings, Engine, EngineEvent, HandshakePolicy, LoginPolicy,
+    ServerHandshakeError, ServerHandshakeOptions, SigningKey, VerifyingKey, packets,
 };
 use std::{
     fmt,
@@ -49,7 +48,7 @@ impl ServerHandshake<bedrock_net::login::OfflineLogin> {
     ///
     /// All continuations retain `OfflineLogin`; application authorization receives
     /// its untrusted claims and signed metadata, without authenticated account access.
-    /// Transport comparison and cipher setup use the final signed exchange key.
+    /// Transport comparison uses the final signed exchange key.
     ///
     /// # Errors
     /// Rejects a zero Login budget or an already reached deadline.
@@ -269,16 +268,15 @@ impl<A, L> ApprovedLogin<A, L> {
         verified(&self.engine)
     }
 
-    /// Revalidates original credentials/deadline before creating the sole exchange.
+    /// Revalidates original credentials/deadline before preparing packs.
     /// The caller rechecks its grant immediately before this transition and later handoffs.
     pub fn accept(
         mut self,
         verifier: &impl HandshakePolicy<L>,
-        salt: Option<&[u8; 16]>,
         now: Instant,
         utc: SystemTime,
-    ) -> Result<ServerApprovalEvent<A, L>, ServerTransitionError<Self>> {
-        let event = match self.engine.accept(verifier, salt, now, utc) {
+    ) -> Result<ServerPacksReady<A, L>, ServerTransitionError<Self>> {
+        let event = match self.engine.accept(verifier, now, utc) {
             Ok(event) => event,
             Err(error) => {
                 return Err(ServerTransitionError {
@@ -288,123 +286,9 @@ impl<A, L> ApprovedLogin<A, L> {
             }
         };
         match event {
-            EngineEvent::KeyExchange { packet, ciphers } => {
-                Ok(ServerApprovalEvent::KeyExchange(PendingServerKeyExchange {
-                    engine: self.engine,
-                    grant: self.grant,
-                    packet,
-                    ciphers,
-                }))
-            }
-            EngineEvent::ReadyForPacks => Ok(ServerApprovalEvent::Ready(ServerPacksReady {
+            EngineEvent::ReadyForPacks => Ok(ServerPacksReady {
                 engine: self.engine,
                 grant: self.grant,
-            })),
-            _ => Err(ServerTransitionError {
-                owner: Box::new(self),
-                error: ServerHandshakeError::InvalidState,
-            }),
-        }
-    }
-}
-
-/// One actual exchange or the encrypted-transport skip, preserving the original authorization grant.
-pub enum ServerApprovalEvent<A, L = AuthenticatedLogin> {
-    /// Send/flush plaintext before installing its exact derived cipher streams.
-    KeyExchange(PendingServerKeyExchange<A, L>),
-    /// An explicitly encrypted transport needs no additional batch acknowledgment.
-    Ready(ServerPacksReady<A, L>),
-}
-
-/// The original plaintext server token, derived streams and acknowledged-Login continuation.
-#[must_use = "flush plaintext before installing the streams and reading the acknowledgment"]
-pub struct PendingServerKeyExchange<A, L = AuthenticatedLogin> {
-    engine: Box<Engine<L>>,
-    grant: A,
-    packet: packets::ServerToClientHandshake,
-    ciphers: Box<(BatchEncryptor, BatchDecryptor)>,
-}
-impl<A, L> PendingServerKeyExchange<A, L> {
-    /// Borrows the original signed token for the single plaintext dispatch.
-    pub fn packet(&self) -> &packets::ServerToClientHandshake {
-        &self.packet
-    }
-    /// Borrows original caller authorization for policy checks before dispatch.
-    pub fn grant(&self) -> &A {
-        &self.grant
-    }
-
-    /// Consumes actual plaintext flush, returning streams to install before polling acknowledgment.
-    /// On failure the exact original token/streams/grant remain owned by the error for retirement.
-    pub fn flushed(
-        mut self,
-        now: Instant,
-    ) -> Result<ServerKeyExchangeHandoff<A, L>, ServerTransitionError<Self>> {
-        if let Err(error) = self.engine.encryption_installed(now) {
-            return Err(ServerTransitionError {
-                owner: Box::new(self),
-                error,
-            });
-        }
-        Ok((
-            ServerAcknowledgment {
-                engine: self.engine,
-                grant: self.grant,
-            },
-            self.ciphers,
-        ))
-    }
-}
-
-/// Cipher streams belong to the adapter; only the actual encrypted acknowledgment completes Login.
-#[must_use]
-pub struct ServerAcknowledgment<A, L = AuthenticatedLogin> {
-    engine: Box<Engine<L>>,
-    grant: A,
-}
-
-/// Actual acknowledgment completion or an intact unrelated sibling.
-pub enum ServerAcknowledgmentEvent<A, L = AuthenticatedLogin> {
-    /// The provider was revalidated at the original acknowledgment boundary.
-    Ready(ServerPacksReady<A, L>),
-    /// Retain the same observer and handle unrelated/terminal input immediately.
-    Unhandled {
-        /// The original acknowledgment observer and grant.
-        acknowledgment: ServerAcknowledgment<A, L>,
-        /// Unrelated or terminal input returned intact.
-        packet: Box<packets::Packet>,
-    },
-}
-impl<A, L> ServerAcknowledgment<A, L> {
-    /// Borrows the caller grant for actual policy rechecks before further input/handoff.
-    pub fn grant(&self) -> &A {
-        &self.grant
-    }
-    /// Processes the acknowledgment under the original provider and absolute deadline.
-    pub fn receive(
-        mut self,
-        packet: packets::Packet,
-        verifier: &impl HandshakePolicy<L>,
-        now: Instant,
-        utc: SystemTime,
-    ) -> Result<ServerAcknowledgmentEvent<A, L>, ServerTransitionError<Self>> {
-        let event = match self.engine.receive(packet, verifier, now, utc) {
-            Ok(event) => event,
-            Err(error) => {
-                return Err(ServerTransitionError {
-                    owner: Box::new(self),
-                    error,
-                });
-            }
-        };
-        match event {
-            EngineEvent::ReadyForPacks => Ok(ServerAcknowledgmentEvent::Ready(ServerPacksReady {
-                engine: self.engine,
-                grant: self.grant,
-            })),
-            EngineEvent::Unhandled(packet) => Ok(ServerAcknowledgmentEvent::Unhandled {
-                acknowledgment: self,
-                packet,
             }),
             _ => Err(ServerTransitionError {
                 owner: Box::new(self),
@@ -414,7 +298,7 @@ impl<A, L> ServerAcknowledgment<A, L> {
     }
 }
 
-/// Actual Login/cipher completion and the original caller grant, before any pack/world advertisement.
+/// Actual Login completion and the original caller grant, before any pack/world advertisement.
 #[must_use]
 pub struct ServerPacksReady<A, L = AuthenticatedLogin> {
     engine: Box<Engine<L>>,

@@ -119,7 +119,7 @@ fn accepted(
     Instant,
     SystemTime,
 ) {
-    let (server, client, provider, now, utc) = ready_with_client(false);
+    let (server, client, provider, now, utc) = ready_with_client();
     let (server, packets) = server
         .start_packs(
             snapshot,
@@ -477,7 +477,7 @@ fn memory_chunk_request(
         6,
         false,
     )];
-    let (server, _client, provider, now, utc) = ready_with_client(false);
+    let (server, _client, provider, now, utc) = ready_with_client();
     let (server, initial) = server
         .start_packs(
             source,

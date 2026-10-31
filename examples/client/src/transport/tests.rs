@@ -1,7 +1,7 @@
 use super::*;
 use bedrock_client::handshake::{ClientHandshake, HandshakeOptions};
 use bedrock_client_tokio::connection::Connection;
-use bedrock_net::{BatchCodec, BatchHeader, BatchLimits, DecodeOutcome};
+use bedrock_net::{BatchCodec, BatchLimits, DecodeOutcome};
 use bedrock_protocol::{
     packets,
     wire::{PacketHeader, Peer, Reader},
@@ -49,14 +49,7 @@ async fn generated_probe_send_emits_without_a_later_receive_or_close() {
             tokio::join!(connect("nethernet", address, deadline), listener.accept(),);
         let (transport, key) = transport.unwrap();
         let mut peer = peer.unwrap();
-        let configured = ClientHandshake::new(
-            key,
-            HandshakeOptions {
-                batch_encryption: transport.batch_encryption(),
-                ..Default::default()
-            },
-        )
-        .unwrap();
+        let configured = ClientHandshake::new(key, HandshakeOptions::default()).unwrap();
         let (_settings, request) = configured.start().unwrap();
         let expected = request.client_network_version.0;
         let mut session = Connection::new(
@@ -78,7 +71,7 @@ async fn generated_probe_send_emits_without_a_later_receive_or_close() {
         let DecodeOutcome::Packets {
             packets: mut frames,
             ..
-        } = BatchCodec::new(BatchHeader::NetherNet, BatchLimits::default())
+        } = BatchCodec::new(BatchLimits::default())
             .decode(message)
             .unwrap()
         else {

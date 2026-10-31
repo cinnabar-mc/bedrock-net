@@ -13,7 +13,7 @@ const LIMIT: usize = 64 * 1024;
 const UUID: &str = "00000000-0000-4000-8000-000000000001";
 const CLIENT_DATA: &str = r#"{"DeviceOS":7,"GameVersion":"1.0.0","LanguageCode":"en_US","ServerAddress":"127.0.0.1:19132","SkinId":"synthetic","ThirdPartyName":"Probe","ClientRandomId":0,"ProfileHash":""}"#;
 
-/// Creates a synthetic scalar, including the leading-zero ECDH fixture pair.
+/// Creates a synthetic signing key from a small scalar.
 fn key(scalar: u8) -> SigningKey {
     let mut bytes = [0; 48];
     bytes[47] = scalar;
@@ -58,8 +58,6 @@ struct Oracle {
     auth_claims: Value,
     client_json: String,
     server_token: String,
-    session_key: String,
-    leading_zero: bool,
     name: String,
     uuid: String,
 }
@@ -77,9 +75,9 @@ fn go_verifies_both_login_modes_with_the_same_connection_key() {
         );
         return;
     };
-    let client = key(1);
     let server = key(197);
     let now = UNIX_EPOCH + Duration::from_secs(10_000);
+    let client = key(1);
     let client_data = RawValue::from_string(CLIENT_DATA.into()).unwrap();
     let offline = encode_offline_request(&client, &identity(), &client_data, now, LIMIT).unwrap();
     let length = u32::from_le_bytes(offline[..4].try_into().unwrap()) as usize;
@@ -114,10 +112,6 @@ fn go_verifies_both_login_modes_with_the_same_connection_key() {
             String::from_utf8_lossy(&output.stderr)
         );
         let oracle: Oracle = serde_json::from_slice(&output.stdout).unwrap();
-        assert!(
-            oracle.leading_zero,
-            "the fixture must protect the full-width ECDH secret"
-        );
         assert_eq!(oracle.name, identity().display_name);
         assert_eq!(oracle.uuid, UUID);
         assert_eq!(oracle.auth_claims["aud"], MULTIPLAYER_AUDIENCE);
@@ -130,36 +124,12 @@ fn go_verifies_both_login_modes_with_the_same_connection_key() {
             STANDARD.decode(oracle.client_json).unwrap(),
             format!("{CLIENT_DATA}\n").as_bytes()
         );
-        let session_key: [u8; 32] = STANDARD
-            .decode(oracle.session_key)
-            .unwrap()
-            .try_into()
-            .unwrap();
-        let (mut outgoing, mut incoming) =
-            finish_key_exchange(&client, &oracle.server_token, LIMIT).unwrap();
-        let body = Bytes::from_static(b"native Login key exchange");
-        assert_eq!(
-            BatchDecryptor::new(session_key)
-                .decrypt(outgoing.encrypt(body.clone()).unwrap())
-                .unwrap(),
-            body
-        );
-        assert_eq!(
-            incoming
-                .decrypt(
-                    BatchEncryptor::new(session_key)
-                        .encrypt(body.clone())
-                        .unwrap()
-                )
-                .unwrap(),
-            body
-        );
+        verify_server_handshake(&oracle.server_token, LIMIT).unwrap();
     }
 }
 
 #[test]
-fn server_tokens_verify_before_key_exchange_and_ignore_unused_registered_claims() {
-    let client = key(1);
+fn server_tokens_verify_and_ignore_unused_registered_claims() {
     let server = key(197);
     for (header, claims) in [
         (
@@ -171,17 +141,17 @@ fn server_tokens_verify_before_key_exchange_and_ignore_unused_registered_claims(
         (json!({}), json!({"salt":null})),
     ] {
         let token = server_token(&server, header, claims);
-        assert!(finish_key_exchange(&client, &token, LIMIT).is_ok());
+        assert!(verify_server_handshake(&token, LIMIT).is_ok());
         let (input, signature) = token.rsplit_once('.').unwrap();
         let mut signature = URL_SAFE_NO_PAD.decode(signature).unwrap();
         signature[0] ^= 1;
         let tampered = format!("{input}.{}", URL_SAFE_NO_PAD.encode(signature));
         assert!(matches!(
-            finish_key_exchange(&client, &tampered, LIMIT),
+            verify_server_handshake(&tampered, LIMIT),
             Err(LoginError::Signature(_))
         ));
         assert!(matches!(
-            finish_key_exchange(&client, &token, token.len() - 1),
+            verify_server_handshake(&token, token.len() - 1),
             Err(LoginError::LimitExceeded { .. })
         ));
     }
@@ -190,7 +160,7 @@ fn server_tokens_verify_before_key_exchange_and_ignore_unused_registered_claims(
         server_token(&server, json!({"crit":["unknown"]}), json!({"salt":""})),
         server_token(&server, json!({}), json!({"salt":"!"})),
     ] {
-        assert!(finish_key_exchange(&client, &token, LIMIT).is_err());
+        assert!(verify_server_handshake(&token, LIMIT).is_err());
     }
 }
 

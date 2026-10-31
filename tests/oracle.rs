@@ -9,12 +9,10 @@ use std::sync::{Mutex, OnceLock};
 
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
-use bedrock_net::encryption::{BatchDecryptor, BatchEncryptor};
 use bedrock_net::{
-    BatchCodec, BatchHeader, BatchLimits, BatchPhase, CompressionAlgorithm, CompressionSettings,
-    DecodeOutcome,
+    BatchCodec, BatchLimits, BatchPhase, CompressionAlgorithm, CompressionSettings, DecodeOutcome,
 };
-use bytes::{Bytes, BytesMut};
+use bytes::Bytes;
 use serde_json::{Value, json};
 
 /// Known Go/Rust differences: case, the Rust result's [`Summary`], and its audit item.
@@ -22,11 +20,6 @@ use serde_json::{Value, json};
 const EXPECTED_DIVERGENCES: &[(&str, &str, &str)] = &[
     // Audit A "readBatch, empty transport message": Go skips it, Rust is fatal.
     ("decode/empty_message", "fatal", "empty transport message"),
-    (
-        "decode/encrypted_empty_message",
-        "fatal",
-        "empty transport message",
-    ),
     // Audit stricter-limits list: incoming wire messages over 32 MiB are fatal.
     (
         "decode/wire_over_32mib",
@@ -85,8 +78,6 @@ impl Summary for bool {
         if *self { "accept" } else { "reject" }.into()
     }
 }
-
-const KEY: [u8; 32] = [7; 32];
 
 struct Oracle {
     _child: Child,
@@ -341,8 +332,6 @@ struct Settings {
     compression: Option<&'static str>,
     max_decompressed: Option<usize>,
     accepting: bool,
-    key: bool,
-    nethernet: bool,
 }
 
 impl Settings {
@@ -350,17 +339,7 @@ impl Settings {
         compression: Some("flate"),
         max_decompressed: None,
         accepting: false,
-        key: false,
-        nethernet: false,
     };
-
-    fn header(self) -> BatchHeader {
-        if self.nethernet {
-            BatchHeader::NetherNet
-        } else {
-            BatchHeader::Prefixed
-        }
-    }
 
     fn limits(self) -> BatchLimits {
         let mut limits = BatchLimits {
@@ -377,11 +356,9 @@ impl Settings {
 
     fn go(self) -> Value {
         json!({
-            "nethernet": self.nethernet,
             "compression": self.compression,
             "max_decompressed": self.max_decompressed.unwrap_or(0),
             "packet_limit": self.accepting,
-            "key": if self.key { b64(&KEY) } else { Value::Null },
         })
     }
 }
@@ -399,11 +376,11 @@ fn algorithm(name: &str) -> CompressionAlgorithm {
     }
 }
 
-/// Decodes like a connection: optional decryption, marker restore, then the batch codec.
+/// Decodes like a connection: framing and compression on the retained batch codec.
 fn rust_decode(settings: Settings, messages: &[Vec<u8>]) -> Vec<Outcome> {
-    let plain = BatchCodec::new(settings.header(), settings.limits());
+    let plain = BatchCodec::new(settings.limits());
     match settings.compression {
-        None => decode_all(&plain, settings, messages),
+        None => decode_all(&plain, messages),
         Some(name) => {
             let mut codec = plain.negotiate(CompressionSettings {
                 algorithm: algorithm(name),
@@ -412,37 +389,15 @@ fn rust_decode(settings: Settings, messages: &[Vec<u8>]) -> Vec<Outcome> {
             if let Some(maximum) = settings.max_decompressed {
                 codec = codec.with_incoming_decoded_limit(maximum);
             }
-            decode_all(&codec, settings, messages)
+            decode_all(&codec, messages)
         }
     }
 }
 
-fn decode_all<S: BatchPhase>(
-    codec: &BatchCodec<S>,
-    settings: Settings,
-    messages: &[Vec<u8>],
-) -> Vec<Outcome> {
-    let mut decryptor = settings.key.then(|| BatchDecryptor::new(KEY));
+fn decode_all<S: BatchPhase>(codec: &BatchCodec<S>, messages: &[Vec<u8>]) -> Vec<Outcome> {
     let mut out = Vec::new();
     for message in messages {
-        let mut message = Bytes::copy_from_slice(message);
-        if let Some(decryptor) = &mut decryptor {
-            let marker = settings.header().marker();
-            if let Some(marker) = marker
-                && message.first() != Some(&marker)
-            {
-                out.push(Outcome::Fatal);
-                break;
-            }
-            let body = message.slice(usize::from(marker.is_some())..);
-            match decryptor.decrypt(body) {
-                Ok(plain) => message = envelope(marker, plain),
-                Err(_) => {
-                    out.push(Outcome::Fatal);
-                    break;
-                }
-            }
-        }
+        let message = Bytes::copy_from_slice(message);
         match codec.decode(message) {
             Ok(DecodeOutcome::Packets { packets, .. }) => {
                 out.push(Outcome::Packets(packets.map(|p| p.to_vec()).collect()))
@@ -480,37 +435,15 @@ fn go_decode(oracle: &mut Oracle, settings: Settings, messages: &[Vec<u8>]) -> V
         .collect()
 }
 
-fn envelope(marker: Option<u8>, body: Bytes) -> Bytes {
-    let Some(marker) = marker else {
-        return body;
-    };
-    let mut message = BytesMut::with_capacity(body.len() + 1);
-    message.extend_from_slice(&[marker]);
-    message.extend_from_slice(&body);
-    message.freeze()
-}
-
 /// Encodes with Rust's negotiated codec at threshold 0.
-fn rust_batch(header: BatchHeader, name: &str, packets: &[Vec<u8>]) -> Vec<u8> {
-    let codec = BatchCodec::new(header, BatchLimits::default()).negotiate(CompressionSettings {
+fn rust_batch(name: &str, packets: &[Vec<u8>]) -> Vec<u8> {
+    let codec = BatchCodec::new(BatchLimits::default()).negotiate(CompressionSettings {
         algorithm: algorithm(name),
         threshold: 0,
     });
     let mut batches = codec.encode(packets).unwrap();
     assert_eq!(batches.len(), 1);
     batches.pop().unwrap().to_vec()
-}
-
-/// Encrypts consecutive plaintext prefixed messages with one outgoing stream.
-fn encrypt_all(messages: &[Vec<u8>]) -> Vec<Vec<u8>> {
-    let mut encryptor = BatchEncryptor::new(KEY);
-    messages
-        .iter()
-        .map(|message| {
-            let body = Bytes::copy_from_slice(&message[1..]);
-            envelope(Some(0xfe), encryptor.encrypt(body).unwrap()).to_vec()
-        })
-        .collect()
 }
 
 fn sample() -> Vec<Vec<u8>> {
@@ -536,58 +469,56 @@ fn entries(packets: &[&[u8]]) -> Vec<u8> {
 }
 
 fn uncompressed(packets: &[&[u8]]) -> Vec<u8> {
-    [&[0xfe, 0xff][..], &entries(packets)].concat()
+    [&[0xff][..], &entries(packets)].concat()
 }
 
 fn decode_corpus() -> Vec<(&'static str, Settings, Vec<Vec<u8>>)> {
     let n = Settings::NEGOTIATED;
     let sample = sample();
-    let flate = rust_batch(BatchHeader::Prefixed, "flate", &sample);
-    let snappy = rust_batch(BatchHeader::Prefixed, "snappy", &sample);
-    let none = rust_batch(BatchHeader::Prefixed, "none", &sample);
+    let flate = rust_batch("flate", &sample);
+    let snappy = rust_batch("snappy", &sample);
+    let none = rust_batch("none", &sample);
     let one_byte: Vec<&[u8]> = vec![&[1]; 1601];
     let big = vec![0x42; 16 * 1024 * 1024 + 512 * 1024];
-    let mut corpus = vec![
+    let corpus = vec![
         ("flate_multi", n, vec![flate.clone()]),
         ("snappy_multi", n, vec![snappy]),
         ("uncompressed_multi", n, vec![none.clone()]),
         (
             "empty_entries",
             n,
-            vec![[&[0xfe, 0xff, 0][..], &entries(&[&[1, 2], &[]]), &[0]].concat()],
+            vec![[&[0xff, 0][..], &entries(&[&[1, 2], &[]]), &[0]].concat()],
         ),
         (
             "unknown_compression_02",
             n,
-            vec![vec![0xfe, 0x02, 1, 2], flate.clone()],
+            vec![vec![0x02, 1, 2], flate.clone()],
         ),
         (
             "unknown_compression_7f",
             n,
-            vec![vec![0xfe, 0x7f, 1, 2], none.clone()],
+            vec![vec![0x7f, 1, 2], none.clone()],
         ),
-        ("uncompressed_no_packets", n, vec![vec![0xfe, 0xff]]),
-        ("missing_compression_id", n, vec![vec![0xfe]]),
+        ("uncompressed_no_packets", n, vec![vec![0xff]]),
         ("empty_message", n, vec![vec![]]),
-        ("invalid_batch_header", n, vec![vec![0xfd, 0xff, 1, 1]]),
         (
             "flate_garbage",
             n,
-            vec![vec![0xfe, 0x00, 0xde, 0xad, 0xbe, 0xef, 0x00, 0x11]],
+            vec![vec![0x00, 0xde, 0xad, 0xbe, 0xef, 0x00, 0x11]],
         ),
         (
             "flate_truncated",
             n,
-            vec![vec![0xfe, 0, 0, 5, 0, 0xfa, 0xff, 1], none.clone()],
+            vec![vec![0, 0, 5, 0, 0xfa, 0xff, 1], none.clone()],
         ),
         (
             "flate_truncated_partial",
             n,
             vec![
                 vec![
-                    0xfe, 0, 0x63, 0x65, 0x62, 0, 0x02, 0x56, 0x4e, 0xe6, 0x8c, 0xd4, 0xca, 0x13,
-                    0x8c, 0x0c, 0x8c, 0x4c, 0xcc, 0x2c, 0xac, 0x6c, 0xec, 0x1c, 0x9c, 0x5c, 0xdc,
-                    0x3c, 0x43,
+                    0, 0x63, 0x65, 0x62, 0, 0x02, 0x56, 0x4e, 0xe6, 0x8c, 0xd4, 0xca, 0x13, 0x8c,
+                    0x0c, 0x8c, 0x4c, 0xcc, 0x2c, 0xac, 0x6c, 0xec, 0x1c, 0x9c, 0x5c, 0xdc, 0x3c,
+                    0x43,
                 ],
                 none.clone(),
             ],
@@ -600,12 +531,12 @@ fn decode_corpus() -> Vec<(&'static str, Settings, Vec<Vec<u8>>)> {
         (
             "snappy_declared_over_limit",
             n,
-            vec![vec![0xfe, 0x01, 0xff, 0xff, 0xff, 0xff, 0x0f]],
+            vec![vec![0x01, 0xff, 0xff, 0xff, 0xff, 0x0f]],
         ),
         (
             "snappy_garbage",
             n,
-            vec![vec![0xfe, 0x01, 0x05, 0xff, 0xff], none.clone()],
+            vec![vec![0x01, 0x05, 0xff, 0xff], none.clone()],
         ),
         (
             "flate_over_limit",
@@ -613,7 +544,7 @@ fn decode_corpus() -> Vec<(&'static str, Settings, Vec<Vec<u8>>)> {
                 max_decompressed: Some(1024),
                 ..n
             },
-            vec![rust_batch(BatchHeader::Prefixed, "flate", &[vec![3; 4096]])],
+            vec![rust_batch("flate", &[vec![3; 4096]])],
         ),
         (
             "uncompressed_over_limit",
@@ -631,25 +562,23 @@ fn decode_corpus() -> Vec<(&'static str, Settings, Vec<Vec<u8>>)> {
             },
             vec![uncompressed(&[&[3; 1024]])],
         ),
-        ("truncated_entry", n, vec![vec![0xfe, 0xff, 0x05, 1, 2]]),
+        ("truncated_entry", n, vec![vec![0xff, 0x05, 1, 2]]),
         (
             "unterminated_length",
             n,
-            vec![vec![0xfe, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff]],
+            vec![vec![0xff, 0xff, 0xff, 0xff, 0xff, 0xff]],
         ),
         (
             "length_overflow_fifth_byte",
             n,
-            vec![vec![
-                0xfe, 0xff, 0x85, 0x80, 0x80, 0x80, 0x10, 1, 2, 3, 4, 5,
-            ]],
+            vec![vec![0xff, 0x85, 0x80, 0x80, 0x80, 0x10, 1, 2, 3, 4, 5]],
         ),
         ("packets_1601_client", n, vec![uncompressed(&one_byte)]),
         (
             "plain_multi",
             Settings::default(),
             vec![
-                BatchCodec::new(BatchHeader::Prefixed, BatchLimits::default())
+                BatchCodec::new(BatchLimits::default())
                     .encode(&sample)
                     .unwrap()[0]
                     .to_vec(),
@@ -658,7 +587,7 @@ fn decode_corpus() -> Vec<(&'static str, Settings, Vec<Vec<u8>>)> {
         (
             "plain_leading_ff",
             Settings::default(),
-            vec![vec![0xfe, 0x02, 0xff, 0x01]],
+            vec![vec![0x02, 0xff, 0x01]],
         ),
         (
             "accepting_empty_entry",
@@ -684,22 +613,8 @@ fn decode_corpus() -> Vec<(&'static str, Settings, Vec<Vec<u8>>)> {
             },
             vec![uncompressed(&one_byte)],
         ),
-        (
-            "nethernet_uncompressed",
-            Settings {
-                nethernet: true,
-                ..n
-            },
-            vec![vec![0xff, 1, 7]],
-        ),
-        (
-            "nethernet_flate",
-            Settings {
-                nethernet: true,
-                ..n
-            },
-            vec![rust_batch(BatchHeader::NetherNet, "flate", &sample)],
-        ),
+        ("nethernet_uncompressed", n, vec![vec![0xff, 1, 7]]),
+        ("nethernet_flate", n, vec![rust_batch("flate", &sample)]),
         (
             "wire_over_32mib",
             Settings {
@@ -709,27 +624,6 @@ fn decode_corpus() -> Vec<(&'static str, Settings, Vec<Vec<u8>>)> {
             vec![uncompressed(&[&big, &big])],
         ),
     ];
-    let keyed = Settings { key: true, ..n };
-    let snappy_small = rust_batch(BatchHeader::Prefixed, "snappy", &sample[..1]);
-    corpus.extend([
-        (
-            "encrypted_consecutive",
-            keyed,
-            encrypt_all(&[flate.clone(), none.clone(), snappy_small]),
-        ),
-        (
-            "encrypted_drop_keeps_stream",
-            keyed,
-            encrypt_all(&[none.clone(), vec![0xfe, 0x02, 9, 9], flate.clone()]),
-        ),
-        ("encrypted_bad_checksum", keyed, {
-            let mut frames = encrypt_all(&[none.clone(), none.clone()]);
-            *frames[1].last_mut().unwrap() ^= 1;
-            frames
-        }),
-        ("encrypted_short", keyed, vec![vec![0xfe, 1, 2, 3]]),
-        ("encrypted_empty_message", keyed, vec![vec![]]),
-    ]);
     corpus
 }
 
@@ -744,13 +638,6 @@ fn decode_decisions_match_go() {
         ("unknown_compression_02", "dropped,packets(3)"),
         ("plain_multi", "packets(3)"),
         ("nethernet_flate", "packets(3)"),
-        ("missing_compression_id", "fatal"),
-        ("encrypted_consecutive", "packets(3),packets(3),packets(1)"),
-        (
-            "encrypted_drop_keeps_stream",
-            "packets(3),dropped,packets(3)",
-        ),
-        ("encrypted_bad_checksum", "packets(3),fatal"),
     ];
     let mut ledger = Ledger::default();
     for (name, settings, messages) in decode_corpus() {
@@ -771,23 +658,15 @@ fn decode_decisions_match_go() {
 struct EncodeCase {
     name: &'static str,
     compression: Option<(&'static str, u16)>,
-    nethernet: bool,
-    key: bool,
     calls: Vec<Vec<Vec<u8>>>,
 }
 
-/// Encodes each call like a connection, encrypting after framing when keyed.
+/// Encodes each call like a connection, retaining the negotiated framing.
 fn rust_encode(case: &EncodeCase) -> Vec<Vec<Vec<u8>>> {
-    let header = if case.nethernet {
-        BatchHeader::NetherNet
-    } else {
-        BatchHeader::Prefixed
-    };
-    let plain = BatchCodec::new(header, BatchLimits::default());
-    let mut encryptor = case.key.then(|| BatchEncryptor::new(KEY));
+    let plain = BatchCodec::new(BatchLimits::default());
     let encode = |packets: &[Vec<u8>]| match case.compression {
         None => plain.encode(packets),
-        Some((name, threshold)) => BatchCodec::new(header, BatchLimits::default())
+        Some((name, threshold)) => BatchCodec::new(BatchLimits::default())
             .negotiate(CompressionSettings {
                 algorithm: algorithm(name),
                 threshold,
@@ -799,14 +678,7 @@ fn rust_encode(case: &EncodeCase) -> Vec<Vec<Vec<u8>>> {
         .map(|packets| match encode(packets) {
             Ok(batches) => batches
                 .into_iter()
-                .map(|message| match &mut encryptor {
-                    Some(encryptor) => {
-                        let marker = header.marker();
-                        let body = message.slice(usize::from(marker.is_some())..);
-                        envelope(marker, encryptor.encrypt(body).unwrap()).to_vec()
-                    }
-                    None => message.to_vec(),
-                })
+                .map(|message| message.to_vec())
                 .collect(),
             Err(_) => Vec::new(),
         })
@@ -816,10 +688,8 @@ fn rust_encode(case: &EncodeCase) -> Vec<Vec<Vec<u8>>> {
 fn go_encode(oracle: &mut Oracle, case: &EncodeCase) -> Vec<Vec<Vec<u8>>> {
     let response = oracle.call(json!({
         "op": "encode_batch",
-        "nethernet": case.nethernet,
         "compression": case.compression.map(|(name, _)| name),
         "threshold": case.compression.map_or(0, |(_, threshold)| threshold),
-        "key": if case.key { b64(&KEY) } else { Value::Null },
         "batches": case.calls.iter().map(|packets| packets.iter().map(|p| b64(p)).collect::<Vec<_>>()).collect::<Vec<_>>(),
     }));
     response["results"]
@@ -841,7 +711,7 @@ fn semantic(oracle: &mut Oracle, frames: &[Vec<Vec<u8>>]) -> Vec<(u8, Vec<Outcom
         .flatten()
         .map(|frame| {
             let decoded = go_decode(oracle, Settings::NEGOTIATED, std::slice::from_ref(frame));
-            (frame[1], decoded)
+            (frame[0], decoded)
         })
         .collect()
 }
@@ -857,50 +727,31 @@ fn encode_output_matches_go() {
         EncodeCase {
             name: "plain_exact",
             compression: None,
-            nethernet: false,
-            key: false,
             calls: vec![sample.clone()],
         },
         EncodeCase {
             name: "uncompressed_exact",
             compression: Some(("none", 0)),
-            nethernet: false,
-            key: false,
             calls: vec![sample.clone(), sample[..1].to_vec()],
         },
         EncodeCase {
             name: "below_threshold",
             compression: Some(("flate", body_len + 1)),
-            nethernet: false,
-            key: false,
             calls: vec![sample.clone()],
         },
         EncodeCase {
             name: "split_1600",
             compression: None,
-            nethernet: false,
-            key: false,
             calls: vec![many],
         },
         EncodeCase {
             name: "split_16mib",
             compression: None,
-            nethernet: false,
-            key: false,
             calls: vec![huge],
-        },
-        EncodeCase {
-            name: "encrypted_exact",
-            compression: Some(("none", 0)),
-            nethernet: false,
-            key: true,
-            calls: vec![sample.clone(), sample.clone(), sample[1..].to_vec()],
         },
         EncodeCase {
             name: "nethernet_exact",
             compression: Some(("none", 0)),
-            nethernet: true,
-            key: false,
             calls: vec![sample.clone()],
         },
     ];
@@ -925,8 +776,6 @@ fn encode_output_matches_go() {
         let case = EncodeCase {
             name,
             compression: Some((algorithm, body_len)),
-            nethernet: false,
-            key: false,
             calls: vec![sample.clone()],
         };
         let go = go_encode(&mut oracle, &case);
@@ -944,7 +793,7 @@ fn encode_output_matches_go() {
             .flatten()
             .map(|frame| {
                 (
-                    frame[1],
+                    frame[0],
                     rust_decode(Settings::NEGOTIATED, std::slice::from_ref(frame)),
                 )
             })
@@ -961,40 +810,6 @@ fn encode_output_matches_go() {
         );
     }
     ledger.finish("encode/");
-}
-
-#[test]
-fn encryption_checksums_match_go() {
-    let Some(mut oracle) = oracle() else { return };
-    let bodies: Vec<Vec<u8>> = vec![
-        vec![0xff],
-        (0..1024).map(|i| i as u8).collect(),
-        vec![0; 64 * 1024],
-        vec![0x01, 9, 9, 9],
-    ];
-    let response = oracle.call(json!({
-        "op": "encrypt",
-        "key": b64(&KEY),
-        "bodies": bodies.iter().map(|b| b64(b)).collect::<Vec<_>>(),
-    }));
-    let go: Vec<Vec<u8>> = response["ciphertexts"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(unb64)
-        .collect();
-    let mut encryptor = BatchEncryptor::new(KEY);
-    let rust: Vec<Vec<u8>> = bodies
-        .iter()
-        .map(|body| {
-            envelope(
-                Some(0xfe),
-                encryptor.encrypt(Bytes::copy_from_slice(body)).unwrap(),
-            )
-            .to_vec()
-        })
-        .collect();
-    assert_eq!(go, rust);
 }
 
 #[cfg(feature = "login")]

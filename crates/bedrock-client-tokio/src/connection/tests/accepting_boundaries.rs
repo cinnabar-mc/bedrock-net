@@ -2,7 +2,6 @@
 
 use super::*;
 use crate::server::test_support::{TIMEOUT, signed_pair_with_key};
-use bedrock_net::BatchHeader;
 use p384::{ecdsa::SigningKey, elliptic_curve::Generate};
 use std::sync::Arc;
 
@@ -26,7 +25,7 @@ async fn late_raw_completion_replays_once_before_siblings_without_replaying_deli
             let packet = time_packet(time);
             packet_bytes(wire::PacketHeader::new(packet.id() as u32), &packet)
         });
-        let mut batches = BatchCodec::new(BatchHeader::NetherNet, BatchLimits::default())
+        let mut batches = BatchCodec::new(BatchLimits::default())
             .encode(&prefix)
             .unwrap();
         assert_eq!(batches.len(), 1);
@@ -133,13 +132,6 @@ async fn full_frame_bound_accepts_exact_limit_and_skips_one_over_without_losing_
         );
         let rolled_back = body == before;
         drop(body);
-        let key = zeroize::Zeroizing::new(rand::random::<[u8; 32]>());
-        pair.wire
-            .encryption_flushed((
-                BatchEncryptor::new(*key),
-                BatchDecryptor::new(rand::random()),
-            ))
-            .unwrap();
         let deadline = tokio::time::Instant::now().into_std() + TIMEOUT;
         let prepared = pair
             .wire
@@ -151,9 +143,8 @@ async fn full_frame_bound_accepts_exact_limit_and_skips_one_over_without_losing_
                 capacity.commit().unwrap();
             }
             sending.finish().unwrap();
-            let ciphertext = pair.client.recv().await.unwrap().unwrap();
-            let plaintext = BatchDecryptor::new(*key).decrypt(ciphertext).unwrap();
-            match BatchCodec::new(BatchHeader::NetherNet, BatchLimits::default())
+            let plaintext = pair.client.recv().await.unwrap().unwrap();
+            match BatchCodec::new(BatchLimits::default())
                 .decode(plaintext)
                 .unwrap()
             {

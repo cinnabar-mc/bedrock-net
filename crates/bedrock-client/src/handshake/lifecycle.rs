@@ -2,11 +2,7 @@
 
 use super::{Engine, EngineEvent, HandshakeError, HandshakeOptions};
 use crate::packs::{PackComplete, PackError, PackEvent, PackNegotiation, PackOffer};
-use bedrock_net::{
-    CompressionSettings,
-    encryption::{BatchDecryptor, BatchEncryptor},
-    login::OfflineIdentity,
-};
+use bedrock_net::{CompressionSettings, login::OfflineIdentity};
 use bedrock_protocol::{packets, types::PackInfoData};
 use p384::ecdsa::SigningKey;
 use serde_json::value::RawValue;
@@ -197,25 +193,18 @@ pub struct ClientLogin {
 }
 
 /// The sole verified key-exchange continuation, not a publicly constructible installed marker.
-#[must_use = "install streams and send the original acknowledgment before continuing input"]
+#[must_use = "send the original acknowledgment before continuing input"]
 pub struct ClientKeyExchange<C> {
     continuation: C,
-    ciphers: Option<Box<(BatchEncryptor, BatchDecryptor)>>,
     response: packets::ClientToServerHandshake,
 }
 
 impl<C> ClientKeyExchange<C> {
-    /// Moves the exact streams, acknowledgment and continuation to the adapter.
-    /// Install both streams before sending the acknowledgment and before polling the continuation.
+    /// Moves the acknowledgment and continuation to the adapter.
+    /// Send the acknowledgment before polling the continuation.
     /// This is an explicit caller I/O contract, not proof of a socket operation.
-    pub fn into_parts(
-        self,
-    ) -> (
-        C,
-        Option<Box<(BatchEncryptor, BatchDecryptor)>>,
-        packets::ClientToServerHandshake,
-    ) {
-        (self.continuation, self.ciphers, self.response)
+    pub fn into_parts(self) -> (C, packets::ClientToServerHandshake) {
+        (self.continuation, self.response)
     }
 }
 
@@ -265,10 +254,9 @@ impl ClientLogin {
                 login: self,
                 packets,
             }),
-            EngineEvent::KeyExchange { ciphers, response } => {
+            EngineEvent::KeyExchange { response } => {
                 Ok(LoginEvent::KeyExchange(ClientKeyExchange {
                     continuation: self,
-                    ciphers,
                     response,
                 }))
             }
@@ -341,10 +329,9 @@ impl ClientPackOffer {
                 offer: self,
                 packets,
             }),
-            EngineEvent::KeyExchange { ciphers, response } => {
+            EngineEvent::KeyExchange { response } => {
                 Ok(OfferEvent::KeyExchange(ClientKeyExchange {
                     continuation: self,
-                    ciphers,
                     response,
                 }))
             }
@@ -436,10 +423,9 @@ impl ClientPacks {
                     packs: self,
                     packets,
                 }),
-                EngineEvent::KeyExchange { ciphers, response } => {
+                EngineEvent::KeyExchange { response } => {
                     Ok(PacksEvent::KeyExchange(ClientKeyExchange {
                         continuation: self,
-                        ciphers,
                         response,
                     }))
                 }

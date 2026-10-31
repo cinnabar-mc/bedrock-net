@@ -7,7 +7,7 @@ use p384::{ecdsa::VerifyingKey, pkcs8::EncodePublicKey};
 
 mod verification;
 
-/// Validated client public key for offline metadata signing or final key exchange.
+/// Validated client public key for metadata signing and transport identity binding.
 /// A signed key update does not prove possession of the new private key.
 pub struct ClientExchangeKey {
     der: Box<[u8]>,
@@ -21,13 +21,13 @@ impl ClientExchangeKey {
         &self.der
     }
 
-    /// Borrows the key when it can participate in this stack's existing P384 exchange.
-    /// Go Parse accepts other ECDSA curves, but its P384 ECDH continuation rejects them.
+    /// Borrows a P-384 key for comparison with the signed transport identity.
+    /// Other accepted ECDSA curves remain available through `public_key_der`.
     pub fn as_p384(&self) -> Option<&VerifyingKey> {
         self.p384.as_ref()
     }
 
-    /// Starts the final exchange with the provider-bound signing key when no update is present.
+    /// Retains the provider-bound signing key when no signed update is present.
     pub(super) fn from_signer(key: &VerifyingKey) -> Result<Self, LoginError> {
         let der = key.to_public_key_der().map_err(LoginError::PublicKey)?;
         Ok(Self {

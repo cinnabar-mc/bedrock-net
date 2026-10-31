@@ -4,12 +4,11 @@ use super::*;
 use bedrock_protocol::types::ActorRuntimeID;
 
 /// Signs Login with the same public owner and completes its actual verified exchange.
-fn verified_login(batch_encryption: bool) -> ClientLogin {
+fn verified_login() -> ClientLogin {
     let key = Arc::new(SigningKey::from_slice(&[1; 48]).unwrap());
     let configured = ClientHandshake::new(
         Arc::clone(&key),
         HandshakeOptions {
-            batch_encryption,
             blob_cache: true,
             ..Default::default()
         },
@@ -55,16 +54,16 @@ fn verified_login(batch_encryption: bool) -> ClientLogin {
     else {
         panic!("the same key must verify the actual server exchange");
     };
-    let (login, ciphers, _) = exchange.into_parts();
-    assert_eq!(ciphers.is_some(), batch_encryption);
+    let (login, _) = exchange.into_parts();
+
     assert!(std::ptr::eq(login.key(), key.as_ref()));
     login
 }
 
 /// Covers both absent and already-observed `LoginSuccess` without inventing an offer or stack.
-fn packless_start_game(batch_encryption: bool) {
+fn packless_start_game() {
     for login_success in [false, true] {
-        let mut login = verified_login(batch_encryption);
+        let mut login = verified_login();
         if login_success {
             let LoginEvent::Send {
                 login: pending,
@@ -101,13 +100,8 @@ fn packless_start_game(batch_encryption: bool) {
 }
 
 #[test]
-fn packless_start_game_after_verified_batch_exchange_finishes_login() {
-    packless_start_game(true);
-}
-
-#[test]
-fn packless_start_game_on_encrypted_transport_finishes_login() {
-    packless_start_game(false);
+fn packless_start_game_after_verified_server_handshake_finishes_login() {
+    packless_start_game();
 }
 
 #[test]

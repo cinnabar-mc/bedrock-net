@@ -30,15 +30,12 @@ type serveRequest struct {
 	Op string `json:"op"`
 
 	// Batch codec settings. A nil Compression means before NetworkSettings.
-	NetherNet       bool       `json:"nethernet"`
 	Compression     *string    `json:"compression"`
 	Threshold       int        `json:"threshold"`
 	MaxDecompressed int        `json:"max_decompressed"`
 	PacketLimit     bool       `json:"packet_limit"`
-	Key             []byte     `json:"key"`
 	Messages        [][]byte   `json:"messages"`
 	Batches         [][][]byte `json:"batches"`
-	Bodies          [][]byte   `json:"bodies"`
 
 	// Login.
 	Scalar      []byte          `json:"scalar"`
@@ -110,8 +107,6 @@ func handle(req *serveRequest) (any, error) {
 		return decodeBatch(req)
 	case "encode_batch":
 		return encodeBatch(req)
-	case "encrypt":
-		return encryptBodies(req)
 	case "login_build":
 		return loginBuild(req)
 	case "login_parse":
@@ -142,16 +137,12 @@ func handle(req *serveRequest) (any, error) {
 
 // transport supplies NetherNet's empty batch header to the codec, like the real transport.
 type transport struct {
-	nethernet bool
-	frames    [][]byte
-	written   [][]byte
+	frames  [][]byte
+	written [][]byte
 }
 
 func (t *transport) BatchHeader() []byte {
-	if t.nethernet {
-		return []byte{}
-	}
-	return []byte{0xfe}
+	return nil
 }
 func (t *transport) Read([]byte) (int, error) { return 0, io.ErrNoProgress }
 func (t *transport) ReadPacket() ([]byte, error) {
@@ -179,24 +170,10 @@ func compressionNamed(name string) (packet.Compression, error) {
 	return nil, fmt.Errorf("unknown compression %q", name)
 }
 
-func key(raw []byte) (*[32]byte, error) {
-	if len(raw) == 0 {
-		return nil, nil
-	}
-	if len(raw) != 32 {
-		return nil, errors.New("key must be 32 bytes")
-	}
-	return (*[32]byte)(raw), nil
-}
-
 // decodeBatch feeds consecutive messages to one Decoder and classifies each result as
 // accept ("packets"), "dropped" (ErrBatchDropped) or "fatal"; it stops at the first fatal.
 func decodeBatch(req *serveRequest) (any, error) {
-	k, err := key(req.Key)
-	if err != nil {
-		return nil, err
-	}
-	t := &transport{nethernet: req.NetherNet, frames: req.Messages}
+	t := &transport{frames: req.Messages}
 	d := packet.NewDecoder(t)
 	if !req.PacketLimit {
 		d.DisableBatchPacketLimit()
@@ -207,9 +184,6 @@ func decodeBatch(req *serveRequest) (any, error) {
 			return nil, err
 		}
 		d.EnableCompression(c, req.MaxDecompressed)
-	}
-	if k != nil {
-		d.EnableEncryption(*k)
 	}
 	results := make([]decodeResult, 0, len(req.Messages))
 	for range req.Messages {
@@ -232,11 +206,7 @@ func decodeBatch(req *serveRequest) (any, error) {
 
 // encodeBatch runs one Encoder over consecutive Encode calls and returns each call's writes.
 func encodeBatch(req *serveRequest) (any, error) {
-	k, err := key(req.Key)
-	if err != nil {
-		return nil, err
-	}
-	t := &transport{nethernet: req.NetherNet}
+	t := &transport{}
 	e := packet.NewEncoder(t)
 	if req.Compression != nil {
 		c, err := compressionNamed(*req.Compression)
@@ -244,9 +214,6 @@ func encodeBatch(req *serveRequest) (any, error) {
 			return nil, err
 		}
 		e.EnableCompression(c, req.Threshold)
-	}
-	if k != nil {
-		e.EnableEncryption(*k)
 	}
 	results := make([][][]byte, 0, len(req.Batches))
 	for _, packets := range req.Batches {
@@ -257,38 +224,6 @@ func encodeBatch(req *serveRequest) (any, error) {
 		results = append(results, t.written)
 	}
 	return map[string]any{"results": results}, nil
-}
-
-// verbatim presents an arbitrary body to the Encoder: its first byte becomes the
-// compression ID and the rest the compressed payload, so encryption sees it unchanged.
-type verbatim struct{ body []byte }
-
-func (v verbatim) EncodeCompression() uint16              { return uint16(v.body[0]) }
-func (v verbatim) Compress([]byte) ([]byte, error)        { return v.body[1:], nil }
-func (v verbatim) Decompress([]byte, int) ([]byte, error) { return nil, errors.New("unused") }
-
-// encryptBodies checksums and encrypts consecutive non-empty bodies through the Encoder's cipher.
-func encryptBodies(req *serveRequest) (any, error) {
-	k, err := key(req.Key)
-	if err != nil || k == nil {
-		return nil, errors.New("encrypt needs a 32-byte key")
-	}
-	t := &transport{}
-	e := packet.NewEncoder(t)
-	e.EnableEncryption(*k)
-	out := make([][]byte, 0, len(req.Bodies))
-	for _, body := range req.Bodies {
-		if len(body) == 0 {
-			return nil, errors.New("encrypt bodies must be non-empty")
-		}
-		e.EnableCompression(verbatim{body}, 0)
-		t.written = nil
-		if err := e.Encode([][]byte{{}}); err != nil {
-			return nil, err
-		}
-		out = append(out, t.written[0])
-	}
-	return map[string]any{"ciphertexts": out}, nil
 }
 
 func scalarKey(scalar []byte) (*ecdsa.PrivateKey, error) {

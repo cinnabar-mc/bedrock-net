@@ -12,7 +12,7 @@ It performs no socket, HTTP, filesystem or clock I/O. Supply time where requeste
 
 ## Keep one connection
 
-Keep the same transport, batch codec, cipher streams and proof key throughout a
+Keep the same transport, batch codec and proof key throughout a
 connection. Preserve unread packets when moving from settings to Login, packs,
 startup and play. A new negotiation state does not create a new connection.
 
@@ -23,7 +23,7 @@ startup and play. A new negotiation state does not create a new connection.
    before advancing a pending settings, key-exchange or chunk state.
 4. Read queued packets before later network input, including after a phase change.
 
-The Tokio `Connection` maintains the codec, ciphers and unread/deferred packet
+The Tokio `Connection` maintains the codec and unread/deferred packet
 queues for you. Construct it with batch limits, generated receive limits and a
 deferred-byte budget for your application. See the
 [connection implementation](../crates/bedrock-client-tokio/src/connection.rs) and
@@ -39,7 +39,7 @@ settings.
 Some errors return the state through `into_parts`. A local preparation failure
 may allow correction and retry; a failed remote protocol transition ends that
 negotiation. Retire the connection on terminal errors. Recovering a state does
-not reset a deadline or cipher stream.
+not reset a deadline.
 
 Keep pending states outside I/O futures that you may cancel. Dropping a future
 that owns a state drops that state too. Borrowed waits preserve work only as
@@ -61,7 +61,7 @@ admission, after any capacity wait.
 
 | Task | Guide |
 | --- | --- |
-| Encode batches, choose limits or install ciphers | [Batch framing](batches.md) |
+| Encode batches or choose limits | [Batch framing](batches.md) |
 | Sign Login, download packs and initialize a client | [Client negotiation](client.md) |
 | Verify Login, serve packs and initialize a player | [Server negotiation](server.md) |
 | Connect, maintain or close a transport | [Transports](transports.md) |

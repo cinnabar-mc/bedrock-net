@@ -39,22 +39,22 @@ func run() error {
 		return err
 	}
 	for _, algorithm := range []packet.Compression{packet.FlateCompression, packet.SnappyCompression, packet.NopCompression} {
-		var wire bytes.Buffer
+		var wire transport
 		encoder := packet.NewEncoder(&wire)
 		encoder.EnableCompression(algorithm, 12)
 		if err := encoder.Encode(packets); err != nil {
 			return fmt.Errorf("encode oracle batch: %w", err)
 		}
-		if err := emit(fmt.Sprintf("GO_BATCH_%d", algorithm.EncodeCompression()), wire.Bytes()); err != nil {
+		if err := emit(fmt.Sprintf("GO_BATCH_%d", algorithm.EncodeCompression()), wire.written[0]); err != nil {
 			return err
 		}
-		wire.Reset()
+		wire.written = nil
 		encoder.EnableCompression(algorithm, 0)
 		withEmpty := [][]byte{{}, packets[0], {}, packets[1], {}}
 		if err := encoder.Encode(withEmpty); err != nil {
 			return fmt.Errorf("encode empty-entry oracle batch: %w", err)
 		}
-		decoder := packet.NewDecoder(bytes.NewReader(wire.Bytes()))
+		decoder := packet.NewDecoder(&transport{frames: wire.written})
 		decoder.DisableBatchPacketLimit()
 		decoder.EnableCompression(algorithm, 0)
 		decoded, err := decoder.Decode()
@@ -69,24 +69,7 @@ func run() error {
 				return fmt.Errorf("empty-entry oracle changed packet order or contents")
 			}
 		}
-		if err := emit(fmt.Sprintf("GO_BATCH_EMPTY_%d", algorithm.EncodeCompression()), wire.Bytes()); err != nil {
-			return err
-		}
-	}
-	var key [32]byte
-	for index := range key {
-		key[index] = byte(index)
-	}
-	var encrypted bytes.Buffer
-	encoder := packet.NewEncoder(&encrypted)
-	encoder.EnableCompression(packet.NopCompression, 0)
-	encoder.EnableEncryption(key)
-	for index := range 3 {
-		encrypted.Reset()
-		if err := encoder.Encode(packets); err != nil {
-			return fmt.Errorf("encode encrypted oracle batch: %w", err)
-		}
-		if err := emit(fmt.Sprintf("GO_ENCRYPTED_%d", index), encrypted.Bytes()); err != nil {
+		if err := emit(fmt.Sprintf("GO_BATCH_EMPTY_%d", algorithm.EncodeCompression()), wire.written[0]); err != nil {
 			return err
 		}
 	}

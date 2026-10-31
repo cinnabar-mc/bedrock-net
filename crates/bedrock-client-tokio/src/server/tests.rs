@@ -1,13 +1,13 @@
 // SPDX-License-Identifier: MIT
 
-//! Cancellation and cipher continuity on actual signed accepted HTTP/DTLS/SCTP owners.
+//! Cancellation and batch ordering on actual signed accepted HTTP/DTLS/SCTP owners.
 
 use super::test_support::{
     SignedPair, TIMEOUT, drain, signed_pair_with_key, signed_pair_with_server_bind,
 };
 use super::*;
 use crate::connection::send::SendOutcome;
-use bedrock_net::{BatchCodec, BatchHeader, BatchLimits, DecodeOutcome};
+use bedrock_net::{BatchCodec, BatchLimits, DecodeOutcome};
 use bedrock_protocol::{
     packets::SetTime,
     wire::{self, Encode},
@@ -46,9 +46,7 @@ async fn actual_accepting_owner_keeps_the_original_incoming_packet_count_policy(
         let limits = BatchLimits::default();
         let count = limits.max_packets + 1;
         let packets = vec![raw_packet(1); count];
-        let mut messages = BatchCodec::new(
-            BatchHeader::NetherNet,
-            BatchLimits {
+        let mut messages = BatchCodec::new(BatchLimits {
                 max_packets: count,
                 ..limits
             },
@@ -73,20 +71,10 @@ async fn actual_accepting_owner_keeps_the_original_incoming_packet_count_policy(
 }
 
 #[tokio::test]
-async fn cancelled_borrows_retain_reservation_permit_receipt_and_cipher_order() {
+async fn cancelled_borrows_retain_reservation_permit_receipt_and_batch_order() {
     tokio::time::timeout(TIMEOUT, async {
         let mut pair = signed_pair().await;
         let deadline = tokio::time::Instant::now().into_std() + TIMEOUT;
-        // Exercise the shared Connection cipher owner directly; public from_nether remains DTLS-only.
-        let key = zeroize::Zeroizing::new(rand::random::<[u8; 32]>());
-        pair.wire
-            .connection
-            .enable_encryption((
-                BatchEncryptor::new(*key),
-                BatchDecryptor::new(rand::random()),
-            ))
-            .unwrap();
-        let mut decryptor = BatchDecryptor::new(*key);
         let first = [raw_packet(1), raw_packet(4)];
         let second = raw_packet(2);
         let mut held = fill_capacity(&pair.sender).await;
@@ -149,8 +137,7 @@ async fn cancelled_borrows_retain_reservation_permit_receipt_and_cipher_order() 
         let original_deadline = sending.deadline();
         let completed = sending.next().await.unwrap().is_none();
         sending.finish().unwrap();
-        let first_received =
-            decode_ciphertext(&mut decryptor, pair.client.recv().await.unwrap().unwrap());
+        let first_received = decode_batch(pair.client.recv().await.unwrap().unwrap());
 
         {
             let mut sending = pair.wire.prepare_raw(second.clone(), deadline).unwrap();
@@ -173,8 +160,7 @@ async fn cancelled_borrows_retain_reservation_permit_receipt_and_cipher_order() 
             .finish()
             .await
             .unwrap();
-        let second_received =
-            decode_ciphertext(&mut decryptor, pair.client.recv().await.unwrap().unwrap());
+        let second_received = decode_batch(pair.client.recv().await.unwrap().unwrap());
         pair.wire.resume_send().unwrap().finish().unwrap();
         let sealed = pair.wire.prepare_raw(raw_packet(3), deadline).is_err();
         drop(held);
@@ -204,7 +190,7 @@ async fn cancelled_borrows_retain_reservation_permit_receipt_and_cipher_order() 
         assert_eq!(marker.as_ref(), MARKER);
     })
     .await
-    .expect("finite actual prepared-send cancellation/cipher fixture stalled");
+    .expect("finite actual prepared-send cancellation fixture stalled");
 }
 
 #[tokio::test]
@@ -322,7 +308,7 @@ async fn accepting_finish_close_waits_for_the_original_socket_retirement() {
             signed_pair_with_server_bind(Arc::new(SigningKey::generate()), address, deferred_bound()).await;
         let deadline = tokio::time::Instant::now().into_std() + TIMEOUT;
         let prefix = [raw_packet(1), raw_packet(2)];
-        for message in BatchCodec::new(BatchHeader::NetherNet, BatchLimits::default())
+        for message in BatchCodec::new(BatchLimits::default())
             .encode(&prefix)
             .unwrap()
         {
@@ -407,11 +393,10 @@ fn raw_packet(time: i32) -> Bytes {
     Bytes::from(bytes)
 }
 
-/// Uses one original peer decryptor across both exact wire messages.
-fn decode_ciphertext(decryptor: &mut BatchDecryptor, message: Bytes) -> Vec<Bytes> {
-    let plaintext = decryptor.decrypt(message).unwrap();
-    match BatchCodec::new(BatchHeader::NetherNet, BatchLimits::default())
-        .decode(plaintext)
+/// Decodes one original unprefixed wire message.
+fn decode_batch(message: Bytes) -> Vec<Bytes> {
+    match BatchCodec::new(BatchLimits::default())
+        .decode(message)
         .unwrap()
     {
         DecodeOutcome::Packets { packets, .. } => packets.collect(),

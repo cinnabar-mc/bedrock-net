@@ -19,13 +19,11 @@ Drive these transitions in order:
 | `ServerLogin` | Feed packets to `receive` until `ServerLoginEvent::Verified`. |
 | `VerifiedLogin` | Call `authorize` with the application's current player/world policy. |
 | `ApprovedLogin` | Recheck the returned grant, then call `accept`. |
-| `ServerApprovalEvent::KeyExchange` | Send the server token in plaintext, flush, call `flushed`, then install both ciphers. |
-| `ServerAcknowledgment` | Receive the encrypted acknowledgment to obtain `ServerPacksReady`. |
+| `ServerPacksReady` | Prepare the selected world's packs or finish Login. |
 
-An already encrypted transport can reach `ServerApprovalEvent::Ready` without an
-additional batch cipher. Otherwise, supply fresh caller-generated sixteen-byte
-salt to `accept`. Keep pending states until their exact send completes; only then
-call `flushed` and install the corresponding configuration.
+NetherNet protects the association with DTLS. Accepting Login proceeds directly
+to `ServerPacksReady` after approval, without an application-layer key exchange.
+Keep pending settings until the exact send completes, then call `flushed`.
 
 Authorization is separate from cryptographic verification. The callback returns
 a grant that travels with the session. Consult your current account, session and
@@ -34,7 +32,7 @@ world access. Recheck the grant after waits, before packet admission and before
 attaching the player. The original deadline never restarts.
 
 Provider identity, proof key and signed player identity are revalidated during
-exchange, acknowledgment and later handoffs. `TrustedIdentity::with_player_identity`
+approval and later handoffs. `TrustedIdentity::with_player_identity`
 can retain a signed name, canonical UUID and PlayFab identifiers;
 `AuthenticatedLogin::player_identity` borrows them. Missing fields stay absent.
 
@@ -56,7 +54,7 @@ the signer and final exchange key.
 
 This policy leaves modern identity signatures, expiry and audience unverified.
 Legacy-chain checks run during parsing. Signed client data, final exchange-key
-binding, cipher acknowledgment, authorization and the setup deadline still apply.
+binding, authorization and the setup deadline still apply.
 Wire guest mode 1 is unsupported.
 
 ## Serve resource packs
@@ -126,7 +124,7 @@ runtime-ID checks still apply.
 `client_data()` decodes invalid UTF-8 using Go replacement rules;
 `client_data_json_bytes()` retains the signed JSON bytes. The provider-bound
 `signing_key()` and final signed `exchange_key()` are distinct. Transport binding
-and cipher setup use the exchange key; provider revalidation retains the signer
+uses the exchange key; provider revalidation retains the signer
 and identity. Nonce aliases use the final non-null signed value.
 
 Some colon-containing UDP addresses need a successful cached result from

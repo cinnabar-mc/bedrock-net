@@ -4,12 +4,6 @@ use thiserror::Error;
 #[derive(Debug, Error)]
 #[non_exhaustive]
 pub enum BatchError {
-    /// A prefixed message had no batch marker.
-    #[error("missing batch header")]
-    MissingBatchHeader,
-    /// A prefixed message had a different batch marker.
-    #[error("invalid batch header {0:#04x}")]
-    InvalidBatchHeader(u8),
     /// Compression was enabled but no algorithm byte followed.
     #[error("missing compression header")]
     MissingCompressionHeader,

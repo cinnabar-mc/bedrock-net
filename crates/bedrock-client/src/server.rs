@@ -7,8 +7,7 @@
 
 use bedrock_net::{
     CompressionAlgorithm, CompressionSettings,
-    encryption::{BatchDecryptor, BatchEncryptor},
-    login::{self, AuthenticatedLogin, LoginError, LoginVerifier},
+    login::{AuthenticatedLogin, LoginError, LoginVerifier},
 };
 use bedrock_protocol::{PROTOCOL_VERSION, enums::PlayStatusType, packets, wire};
 use p384::ecdsa::{SigningKey, VerifyingKey};
@@ -26,25 +25,16 @@ pub use policy::{HandshakePolicy, LoginPolicy};
 /// Owned accepting pack delivery and selected-world startup after the actual Login handoff.
 pub mod session;
 pub use lifecycle::{
-    AcceptedLogin, ApprovedLogin, AuthorizationFailure, PendingServerKeyExchange,
-    PendingServerSettings, ServerAcknowledgment, ServerAcknowledgmentEvent, ServerApprovalEvent,
-    ServerHandshake, ServerLogin, ServerLoginEvent, ServerPacksReady, ServerSettingsEvent,
-    ServerTransitionError, VerifiedLogin,
+    AcceptedLogin, ApprovedLogin, AuthorizationFailure, PendingServerSettings, ServerHandshake,
+    ServerLogin, ServerLoginEvent, ServerPacksReady, ServerSettingsEvent, ServerTransitionError,
+    VerifiedLogin,
 };
-
-/// The acknowledgment continuation and its exact outgoing/incoming cipher streams after plaintext flush.
-pub type ServerKeyExchangeHandoff<A, L = AuthenticatedLogin> = (
-    ServerAcknowledgment<A, L>,
-    Box<(BatchEncryptor, BatchDecryptor)>,
-);
 
 /// Fixed accepting capabilities; the caller supplies the original deadline and server proof key.
 #[derive(Clone, Copy, Debug)]
 pub struct ServerHandshakeOptions {
     /// Compression installed only after sending and flushing `NetworkSettings` uncompressed.
     pub compression: CompressionSettings,
-    /// Whether the accepted transport also needs the Bedrock batch cipher.
-    pub batch_encryption: bool,
     /// Complete Login request and server token byte ceiling.
     pub max_login_bytes: usize,
 }
@@ -56,7 +46,6 @@ impl Default for ServerHandshakeOptions {
                 algorithm: CompressionAlgorithm::Deflate,
                 threshold: 256,
             },
-            batch_encryption: true,
             max_login_bytes: bedrock_net::BatchLimits::default().max_decoded_bytes,
         }
     }
@@ -78,10 +67,7 @@ pub enum ServerHandshakeError {
     /// Supplied transport binding and final signed Login exchange key differ.
     #[error("accepting Login proof does not match its transport")]
     TransportKeyMismatch,
-    /// Encryption requires fresh caller-owned sixteen-byte entropy before creating an exchange.
-    #[error("accepting handshake salt is unavailable")]
-    MissingSalt,
-    /// Provider, signed client data or encryption setup failed.
+    /// Provider or signed client data verification failed.
     #[error(transparent)]
     Login(#[from] LoginError),
 }
@@ -96,18 +82,11 @@ enum EngineEvent {
         /// Settings for the same retained batch codec.
         compression: CompressionSettings,
     },
-    /// Send this uncompressed refusal and close; no Login/cipher/pack transition remains possible.
+    /// Send this uncompressed refusal and close; no Login or pack transition remains possible.
     Refused(packets::PlayStatus),
     /// Inspect `login()` and obtain current application authorization before calling `accept`.
     LoginVerified,
-    /// Send/flush the plaintext token, install both streams, then call `encryption_installed`.
-    KeyExchange {
-        /// Unencrypted generated server token, after negotiated compression.
-        packet: packets::ServerToClientHandshake,
-        /// Outgoing then incoming streams, installed exactly once on this connection.
-        ciphers: Box<(BatchEncryptor, BatchDecryptor)>,
-    },
-    /// Login and any encrypted acknowledgment are complete; prepare the original world/pack snapshot.
+    /// Login is complete; prepare the original world/pack snapshot.
     /// Recheck application approval after awaits before advertising `LoginSuccess` or any packs.
     ReadyForPacks,
     /// Return unrelated packets unchanged, including Disconnect/Transfer for immediate caller handling.
@@ -120,13 +99,11 @@ enum Phase {
     Compression,
     Login,
     Approval,
-    Cipher,
-    Acknowledgment,
     Packs,
     Failed,
 }
 
-/// One accepting Login and cipher lifetime without I/O, a clock, queues or issuer discovery.
+/// One accepting Login lifetime without I/O, a clock, queues or issuer discovery.
 ///
 /// The caller retains all decoded batch siblings and applies effects in order.
 /// An explicit policy validates Login; it never substitutes for
@@ -220,33 +197,21 @@ impl<L> Engine<L> {
     /// Accepts only after the caller's current application authorization, without an internal await.
     ///
     /// Revalidates the exact provider credential immediately before creating the
-    /// single exchange. Supply fresh caller entropy when batch encryption is
-    /// enabled; an encrypted transport can omit salt and receives `ReadyForPacks`.
+    /// pack-preparation transition.
     ///
     /// # Errors
-    /// Expiry, repeated/out-of-sequence use, provider/key changes or missing salt end this handshake.
+    /// Expiry, repeated/out-of-sequence use, provider/key changes end this handshake.
     fn accept(
         &mut self,
         verifier: &impl HandshakePolicy<L>,
-        salt: Option<&[u8; 16]>,
         now: Instant,
         utc: SystemTime,
     ) -> Result<EngineEvent, ServerHandshakeError> {
-        let result = self.accept_inner(verifier, salt, now, utc);
+        let result = self.accept_inner(verifier, now, utc);
         if result.is_err() {
             self.phase = Phase::Failed;
         }
         result
-    }
-
-    /// Commits plaintext server-token flush and the single installation of both batch cipher streams.
-    ///
-    /// # Errors
-    /// Rejects expiry or a repeated/out-of-sequence cipher transition.
-    fn encryption_installed(&mut self, now: Instant) -> Result<(), ServerHandshakeError> {
-        self.require(Phase::Cipher, now)?;
-        self.phase = Phase::Acknowledgment;
-        Ok(())
     }
 
     /// Transfers the original Login once at the pack-preparation policy boundary.
@@ -345,17 +310,6 @@ impl<L> Engine<L> {
                 self.phase = Phase::Approval;
                 Ok(EngineEvent::LoginVerified)
             }
-            packets::Packet::ClientToServerHandshake(_) => {
-                self.require(Phase::Acknowledgment, now)?;
-                verifier.revalidate(
-                    self.login
-                        .as_ref()
-                        .ok_or(ServerHandshakeError::InvalidState)?,
-                    utc,
-                )?;
-                self.phase = Phase::Packs;
-                Ok(EngineEvent::ReadyForPacks)
-            }
             packet => Ok(EngineEvent::Unhandled(Box::new(packet))),
         }
     }
@@ -364,7 +318,6 @@ impl<L> Engine<L> {
     fn accept_inner(
         &mut self,
         verifier: &impl HandshakePolicy<L>,
-        salt: Option<&[u8; 16]>,
         now: Instant,
         utc: SystemTime,
     ) -> Result<EngineEvent, ServerHandshakeError> {
@@ -374,26 +327,8 @@ impl<L> Engine<L> {
             .as_ref()
             .ok_or(ServerHandshakeError::InvalidState)?;
         verifier.revalidate(login, utc)?;
-        if !self.options.batch_encryption {
-            self.phase = Phase::Packs;
-            return Ok(EngineEvent::ReadyForPacks);
-        }
-        let salt = salt.ok_or(ServerHandshakeError::MissingSalt)?;
-        let (token, ciphers) = login::begin_key_exchange(
-            &self.key,
-            verifier
-                .exchange_key(login)
-                .ok_or(LoginError::UnsupportedExchangeCurve)?,
-            salt,
-            self.options.max_login_bytes,
-        )?;
-        self.phase = Phase::Cipher;
-        Ok(EngineEvent::KeyExchange {
-            packet: packets::ServerToClientHandshake {
-                handshake_web_token: token.into(),
-            },
-            ciphers: Box::new(ciphers),
-        })
+        self.phase = Phase::Packs;
+        Ok(EngineEvent::ReadyForPacks)
     }
 
     /// Enforces the original absolute admission deadline without renewing it for received progress.

@@ -5,28 +5,8 @@ use bytes::{Buf, Bytes};
 use crate::compression::{self, CompressionAlgorithm, CompressionSettings};
 use crate::{BatchError, DropReason};
 
-const PREFIXED_BATCH_HEADER: u8 = 0xfe;
 const DEFAULT_DECODED_BYTES: usize = 16 * 1024 * 1024;
 const DEFAULT_PACKET_COUNT: usize = 1600;
-
-/// The batch envelope used by a transport.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum BatchHeader {
-    /// A leading `0xfe` byte precedes the batch payload.
-    Prefixed,
-    /// The transport carries the payload without a batch marker.
-    NetherNet,
-}
-
-impl BatchHeader {
-    /// Returns the transport marker excluded from encrypted batch bodies.
-    pub const fn marker(self) -> Option<u8> {
-        match self {
-            Self::Prefixed => Some(PREFIXED_BATCH_HEADER),
-            Self::NetherNet => None,
-        }
-    }
-}
 
 /// Resource ceilings applied before packets are exposed to the caller.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -236,7 +216,6 @@ impl BatchPhase for Negotiated {
 /// Before compression is enabled, no compression marker is consumed or emitted.
 #[derive(Debug)]
 pub struct BatchCodec<S = Plain> {
-    header: BatchHeader,
     limits: BatchLimits,
     max_incoming_decoded_bytes: usize,
     phase: S,
@@ -244,9 +223,8 @@ pub struct BatchCodec<S = Plain> {
 
 impl BatchCodec<Plain> {
     /// Creates a codec for a new connection before `NetworkSettings`.
-    pub const fn new(header: BatchHeader, limits: BatchLimits) -> Self {
+    pub const fn new(limits: BatchLimits) -> Self {
         Self {
-            header,
             limits,
             max_incoming_decoded_bytes: limits.max_decoded_bytes,
             phase: Plain(()),
@@ -264,7 +242,6 @@ impl BatchCodec<Plain> {
     /// ```
     pub const fn negotiate(self, settings: CompressionSettings) -> BatchCodec<Negotiated> {
         BatchCodec {
-            header: self.header,
             limits: self.limits,
             max_incoming_decoded_bytes: self.max_incoming_decoded_bytes,
             phase: Negotiated {
@@ -365,7 +342,7 @@ impl<S: BatchPhase> BatchCodec<S> {
                 message = self.start_batch(batches.get_mut(index).map(std::mem::take));
                 count = 0;
             }
-            message.reserve(entry_len.saturating_add(8));
+            message.reserve(entry_len);
             write_length(length, &mut message);
             message.extend_from_slice(packet);
             count += 1;
@@ -447,16 +424,9 @@ impl<S: BatchPhase> BatchCodec<S> {
         }
     }
 
-    /// Checks the wire ceiling and removes transport and negotiated algorithm markers.
+    /// Checks the wire ceiling and removes the negotiated algorithm marker.
     fn strip_envelope(&self, mut message: Bytes) -> Result<(Option<u8>, Bytes), BatchError> {
         self.check_encoded_size(message.len())?;
-        if self.header == BatchHeader::Prefixed {
-            match message.first().copied() {
-                Some(PREFIXED_BATCH_HEADER) => message.advance(1),
-                Some(actual) => return Err(BatchError::InvalidBatchHeader(actual)),
-                None => return Err(BatchError::MissingBatchHeader),
-            }
-        }
         let id = if self.phase.compression().is_some() {
             let id = message
                 .first()
@@ -506,16 +476,13 @@ impl<S: BatchPhase> BatchCodec<S> {
             .map(Vec::from)
             .unwrap_or_default();
         message.clear();
-        if self.header == BatchHeader::Prefixed {
-            message.push(PREFIXED_BATCH_HEADER);
-        }
         if self.phase.compression().is_some() {
             message.push(CompressionAlgorithm::None.batch_id());
         }
         message
     }
 
-    /// Compresses a complete group, retains checksum space, and replaces its recycled slot.
+    /// Compresses a complete group and replaces its recycled slot.
     fn finish_batch(
         &self,
         mut message: Vec<u8>,
@@ -523,22 +490,19 @@ impl<S: BatchPhase> BatchCodec<S> {
         index: usize,
     ) -> Result<(), BatchError> {
         if let Some(settings) = self.phase.compression() {
-            let marker = usize::from(self.header == BatchHeader::Prefixed);
-            let body = &message[marker + 1..];
+            let body = &message[1..];
             if body.len() >= usize::from(settings.threshold)
                 && settings.algorithm != CompressionAlgorithm::None
             {
-                self.phase
-                    .compress(settings.algorithm, &mut message, marker + 1)?;
-                message[marker] = settings.algorithm.batch_id();
-                let retained = message.len().saturating_add(8);
+                self.phase.compress(settings.algorithm, &mut message, 1)?;
+                message[0] = settings.algorithm.batch_id();
+                let retained = message.len();
                 if message.capacity() > retained.saturating_mul(2).max(4096) {
                     message.shrink_to(retained);
                 }
             }
         }
         self.check_encoded_size(message.len())?;
-        message.reserve(8);
         let message = Bytes::from(message);
         if let Some(slot) = batches.get_mut(index) {
             *slot = message;
@@ -646,13 +610,10 @@ mod tests {
 
     /// Creates a codec whose outgoing scratch limit matches one small Snappy block.
     fn bounded(algorithm: CompressionAlgorithm) -> BatchCodec<Negotiated> {
-        BatchCodec::new(
-            BatchHeader::Prefixed,
-            BatchLimits {
-                max_decoded_bytes: 65536,
-                ..BatchLimits::default()
-            },
-        )
+        BatchCodec::new(BatchLimits {
+            max_decoded_bytes: 65536,
+            ..BatchLimits::default()
+        })
         .negotiate(CompressionSettings {
             algorithm,
             threshold: 0,

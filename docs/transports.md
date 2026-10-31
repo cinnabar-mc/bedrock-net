@@ -10,8 +10,8 @@ These are features of the root `bedrock-net` crate:
 
 | Feature | Adds |
 | --- | --- |
-| Default | Synchronous batches and directional ciphers. |
-| `login` | Login formatting, accepting verification, exchange and client-data validation. |
+| Default | Synchronous batch framing and compression. |
+| `login` | Login formatting, accepting verification, server-token validation and client-data validation. |
 | `provider-verification` | Configured issuer/JWK verification for Login and signed SDP; includes `login`. |
 | `messaging` | Client and server adapters combining an SDK service socket with NetherNet. |
 
@@ -43,15 +43,12 @@ NetherNet Login uses the peer's verified SDP key and DTLS protection.
 ## Connect through Player Messaging
 
 Move your account's protected SDK socket into `PreparedMessaging` with the local
-NetherNet ID and intended recipient. Select the dialect from your acquired route:
-`new` takes a Player Messaging UUID, while `new_legacy` takes a legacy string
-recipient and matching SDK socket. `recipient()` preserves that distinction.
+NetherNet ID and intended Player Messaging UUID. `recipient()` retains that route.
 
 `connect` takes the proof-key SDP identity, explicit answer trust and setup
-deadline. It keeps the acquired TURN expiry and makes one attempt. Both dialects
-need signed identity and answer trust. Only the explicit legacy route can permit
-a missing answer assertion; any present assertion must pass verification. Legacy
-offer completion uses the service delivery result rather than a peer receipt.
+deadline. It keeps the acquired TURN expiry and makes one attempt. Every answer
+requires signed identity and must pass verification. Offer completion requires a
+peer receipt.
 
 Poll `MessagingConnection::recv`, or `maintain` while application input is full.
 Maintenance advances service control, heartbeats, receipts and late ICE without
@@ -107,8 +104,8 @@ field validation remain your policy.
 
 `AcceptingConnection::prepare_packets` and `prepare_raw` encode output once.
 Keep calling `PreparedSend::next`; after each capacity wait, check current
-authorization and call `commit` without an intervening await. Cipher progress
-happens once at that commit. Call `finish` after the effect completes. A canceled
+authorization and call `commit` without an intervening await. Call `finish` after
+the effect completes. A canceled
 borrow can resume with `resume_send`; do not prepare the same effect again.
 
 Keep pending settings, exchange and chunk states until the corresponding send

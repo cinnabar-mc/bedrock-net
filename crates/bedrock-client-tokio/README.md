@@ -1,7 +1,7 @@
 # bedrock-client-tokio
 
 Tokio adapters for Minecraft Bedrock client and server connections. They combine
-the generated packet codec with batching, encryption and ordered input buffering.
+the generated packet codec with batching and ordered input buffering.
 
 Use the `nethernet` feature for concrete connections, settings, Login
 and pack-transfer helpers. Without it, the crate provides `PacketIo`,

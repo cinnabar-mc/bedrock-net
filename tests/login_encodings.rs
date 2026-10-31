@@ -3,8 +3,8 @@
 
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use bedrock_net::login::{
-    LoginError, LoginVerifier, TrustedIdentity, finish_key_exchange, parse_offline_request,
-    verify_authenticated_request,
+    LoginError, LoginVerifier, TrustedIdentity, parse_offline_request,
+    verify_authenticated_request, verify_server_handshake,
 };
 use p384::ecdsa::{SigningKey, VerifyingKey};
 use serde_json::{Value, json};
@@ -120,13 +120,13 @@ fn compact_jwt_encodings_match_go_in_both_directions() {
             assert_eq!(login.xuid(), "123", "{name}");
         }
         let token = fixture["server"].as_str().unwrap();
-        let result = finish_key_exchange(&key, token, token.len());
+        let result = verify_server_handshake(token, token.len());
         if result.is_ok() != fixture["server_accepted"].as_bool().unwrap() {
             mismatches.push(format!("{name}/server: {:?}", result.as_ref().err()));
         }
         assert!(
             matches!(
-                finish_key_exchange(&key, token, token.len() - 1),
+                verify_server_handshake(token, token.len() - 1),
                 Err(LoginError::LimitExceeded { .. })
             ),
             "{name}/server"
@@ -177,7 +177,7 @@ fn shared_jose_headers_match_go_for_each_role() {
             }
         }
         let token = fixture["server"].as_str().unwrap();
-        let result = finish_key_exchange(&key, token, token.len());
+        let result = verify_server_handshake(token, token.len());
         if result.is_ok() != fixture["accepted"]["server"].as_bool().unwrap() {
             mismatches.push(format!("{name}/server: {:?}", result.err()));
         }
@@ -210,7 +210,7 @@ fn certificate_and_reference_shapes_match_go() {
             mismatches.push(format!("{}/metadata: {:?}", case["name"], result.err()));
         }
         let token = case["server"].as_str().unwrap();
-        let result = finish_key_exchange(&key, token, token.len());
+        let result = verify_server_handshake(token, token.len());
         if result.is_ok() != expected {
             mismatches.push(format!("{}/server: {:?}", case["name"], result.err()));
         }

@@ -1,6 +1,6 @@
 //! Errors from Login request formatting and server key exchange.
 
-/// A failure before a Login request or cipher pair can be published.
+/// A failure before a Login request or verified server token can be published.
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
 pub enum LoginError {
@@ -22,9 +22,6 @@ pub enum LoginError {
     /// A signed UDP address needs a caller-acquired host or service resolution result.
     #[error("login client address resolution is required")]
     AddressResolutionRequired,
-    /// The final client key cannot participate in the existing P384 cipher exchange.
-    #[error("login exchange key curve does not match the server")]
-    UnsupportedExchangeCurve,
     /// Authenticated Login requires a nonempty previously acquired credential.
     #[error("login authentication token is empty")]
     EmptyAuthenticationToken,

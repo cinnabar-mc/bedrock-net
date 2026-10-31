@@ -7,7 +7,6 @@ import (
 	"crypto/ecdh"
 	"crypto/ecdsa"
 	"crypto/elliptic"
-	"crypto/sha256"
 	"encoding/base64"
 	"encoding/binary"
 	"encoding/json"
@@ -39,8 +38,6 @@ type response struct {
 	AuthClaims  map[string]json.RawMessage `json:"auth_claims"`
 	ClientJSON  []byte                     `json:"client_json"`
 	ServerToken string                     `json:"server_token"`
-	SessionKey  []byte                     `json:"session_key"`
-	LeadingZero bool                       `json:"leading_zero"`
 	Name        string                     `json:"name"`
 	UUID        string                     `json:"uuid"`
 }
@@ -168,17 +165,8 @@ func run() error {
 	if err != nil {
 		return fmt.Errorf("server token: %w", err)
 	}
-	shared, err := server.ECDH(client.PublicKey())
-	if err != nil {
-		return fmt.Errorf("server ECDH: %w", err)
-	}
-	material := make([]byte, 0, len(input.Salt)+len(shared))
-	material = append(material, input.Salt...)
-	material = append(material, shared...)
-	key := sha256.Sum256(material)
 	return json.NewEncoder(os.Stdout).Encode(response{
 		AuthClaims: claims, ClientJSON: clientJSON, ServerToken: serverToken,
-		SessionKey: key[:], LeadingZero: shared[0] == 0,
 		Name: identity.DisplayName, UUID: identity.Identity,
 	})
 }

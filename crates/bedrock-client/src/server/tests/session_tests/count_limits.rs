@@ -19,7 +19,7 @@ fn one_archive() -> ServerPackSnapshot {
 
 /// Completes the original typed Login before asking the real delivery owner to admit one snapshot.
 fn admits(source: ServerPackSnapshot) -> bool {
-    let (server, _client, provider, now, utc) = ready_with_client(false);
+    let (server, _client, provider, now, utc) = ready_with_client();
     server
         .start_packs(
             source,
@@ -96,7 +96,7 @@ fn accepting_defaults_admit_complete_external_archive_metadata() {
                 .contents
                 .push(ServerPackContent::external(size, [0; 32], 6, false));
         }
-        let (server, _client, provider, now, utc) = ready_with_client(false);
+        let (server, _client, provider, now, utc) = ready_with_client();
         assert!(
             server
                 .start_packs(

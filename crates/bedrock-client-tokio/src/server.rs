@@ -2,7 +2,7 @@
 
 //! Packet I/O for an accepted `NetherNet` session.
 //!
-//! [`AcceptingConnection`] retains batching, ciphers and unread packets while the
+//! [`AcceptingConnection`] retains batching and unread packets while the
 //! application drives [`ServerHandshake`]. Use [`prepare_packets`](AcceptingConnection::prepare_packets)
 //! to send returned effects before advancing pending handshake states.
 
@@ -17,7 +17,6 @@ pub mod test_support;
 #[cfg(all(test, feature = "nethernet"))]
 mod tests;
 use bedrock_client::server::{ServerHandshake, ServerHandshakeOptions};
-use bedrock_net::encryption::{BatchDecryptor, BatchEncryptor};
 use bedrock_net::{BatchLimits, CompressionSettings};
 use bedrock_protocol::{packets, wire};
 use bytes::Bytes;
@@ -42,13 +41,12 @@ pub struct RetiredAcceptingConnection {
 
 impl AcceptingConnection {
     /// Wraps an accepted `NetherNet` association and binds Login to its verified SDP key.
-    /// Supply the server proof key used by signaling. DTLS protects this association,
-    /// so the returned handshake disables the additional Bedrock batch cipher.
+    /// Supply the server proof key used by signaling. DTLS protects this association.
     #[cfg(feature = "nethernet")]
     pub async fn from_nether(
         accepted: nethernet_tokio::AcceptedSession,
         key: Arc<SigningKey>,
-        mut options: ServerHandshakeOptions,
+        options: ServerHandshakeOptions,
         max_deferred_bytes: usize,
         deadline: Instant,
     ) -> io::Result<(Self, ServerHandshake)> {
@@ -56,8 +54,6 @@ impl AcceptingConnection {
             .await?
             .ok_or_else(denied)?;
         let transport_key = player.client_public_key().map_err(|_| denied())?;
-        // The actual reliable association is already DTLS protected.
-        options.batch_encryption = false;
         let handshake = ServerHandshake::new(
             key,
             Some(transport_key),
@@ -142,14 +138,6 @@ impl AcceptingConnection {
         self.connection.enable_compression(settings)
     }
 
-    /// Installs original streams only after their exact plaintext token has actually flushed.
-    pub fn encryption_flushed(
-        &mut self,
-        ciphers: (BatchEncryptor, BatchDecryptor),
-    ) -> io::Result<()> {
-        self.connection.enable_encryption(ciphers)
-    }
-
     /// Takes the original complete packet header/body; no decode/re-encode changes play packets.
     pub async fn receive_raw(&mut self, deadline: Instant) -> io::Result<Bytes> {
         self.connection.next_raw_before(deadline).await
@@ -175,7 +163,7 @@ impl AcceptingConnection {
         }
     }
 
-    /// Encodes typed effects once without changing the cipher or admitting a command.
+    /// Encodes typed effects once without admitting a command.
     /// Rejects another retained effect or a locally retired send direction.
     /// Empty input completes locally; entries that fail bounded serialization are logged and skipped.
     /// Nonempty input with no encoded entries is rejected.
@@ -206,7 +194,7 @@ impl AcceptingConnection {
         self.connection.prepare_frames(frames, deadline)
     }
 
-    /// Encodes one original complete raw packet without changing its bytes or cipher.
+    /// Encodes one original complete raw packet without changing its bytes.
     pub fn prepare_raw(
         &mut self,
         packet: Bytes,

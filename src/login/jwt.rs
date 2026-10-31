@@ -96,18 +96,18 @@ pub(super) fn sign(
     Ok(token)
 }
 
-/// Verifies a bounded server token before decoding its salt or deriving any key.
-pub(super) fn verify_server(token: &str, limit: usize) -> Result<(PublicKey, Vec<u8>), LoginError> {
+/// Verifies a bounded server token and validates its salt encoding.
+pub(super) fn verify_server(token: &str, limit: usize) -> Result<(), LoginError> {
     let parsed = Token::parse(token, limit, false)?;
     let der = decode(&parsed.header.key_text()?, false)?;
     let public = PublicKey::from_public_key_der(&der).map_err(LoginError::PublicKey)?;
     parsed.verify(&VerifyingKey::from(public))?;
     let claims: SaltClaims =
         serde_json::from_slice(&parsed.payload).map_err(|_| LoginError::MalformedJson)?;
-    let salt = STANDARD_NO_PAD
+    STANDARD_NO_PAD
         .decode(claims.salt.unwrap_or_default().trim_end_matches('='))
         .map_err(LoginError::Base64)?;
-    Ok((public, salt))
+    Ok(())
 }
 
 /// Verifies client JSON against the provider-authenticated key, never the untrusted header key.

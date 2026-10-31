@@ -1,15 +1,13 @@
-//! Batch framing, compression and encryption over the shared inputs; pairs with the Go benches.
+//! Batch framing and compression over the shared inputs; pairs with the Go benches.
 
 mod common;
 
 use std::hint::black_box;
 use std::path::PathBuf;
-use std::time::{Duration, Instant};
 
-use bedrock_net::encryption::{BatchDecryptor, BatchEncryptor};
 use bedrock_net::{
-    BatchCodec, BatchHeader, BatchLimits, BatchPhase, CompressionAlgorithm, CompressionSettings,
-    DecodeOutcome, VisitOutcome,
+    BatchCodec, BatchLimits, BatchPhase, CompressionAlgorithm, CompressionSettings, DecodeOutcome,
+    VisitOutcome,
 };
 use bytes::Bytes;
 use criterion::{Criterion, Throughput, criterion_group, criterion_main};
@@ -61,7 +59,7 @@ fn negotiated(
     algorithm: CompressionAlgorithm,
     threshold: u16,
 ) -> BatchCodec<bedrock_net::Negotiated> {
-    BatchCodec::new(BatchHeader::Prefixed, BatchLimits::default()).negotiate(CompressionSettings {
+    BatchCodec::new(BatchLimits::default()).negotiate(CompressionSettings {
         algorithm,
         threshold,
     })
@@ -98,7 +96,7 @@ fn unlimited() -> BatchLimits {
 
 /// A negotiated codec that reads back any benchmark output.
 fn reader(algorithm: CompressionAlgorithm) -> BatchCodec<bedrock_net::Negotiated> {
-    BatchCodec::new(BatchHeader::Prefixed, unlimited())
+    BatchCodec::new(unlimited())
         .negotiate(CompressionSettings {
             algorithm,
             threshold: 0,
@@ -186,8 +184,8 @@ fn framing(c: &mut Criterion) {
     codec_group(
         c,
         "BatchFraming",
-        || BatchCodec::new(BatchHeader::Prefixed, BatchLimits::default()),
-        || BatchCodec::new(BatchHeader::Prefixed, unlimited()),
+        || BatchCodec::new(BatchLimits::default()),
+        || BatchCodec::new(unlimited()),
     );
 }
 
@@ -211,106 +209,9 @@ fn snappy(c: &mut Criterion) {
     );
 }
 
-/// Encodes then encrypts complete batches in place, preserving the transport marker.
-fn encrypt_message<P: AsRef<[u8]>>(
-    codec: &BatchCodec<bedrock_net::Negotiated>,
-    encryptor: &mut BatchEncryptor,
-    packets: &[P],
-) -> Vec<Bytes> {
-    let mut frames = Vec::new();
-    encrypt_into(codec, encryptor, packets, &mut frames);
-    frames
-}
-
-/// Recycles consumed envelopes before encoding the next immediate send.
-fn encrypt_into<P: AsRef<[u8]>>(
-    codec: &BatchCodec<bedrock_net::Negotiated>,
-    encryptor: &mut BatchEncryptor,
-    packets: &[P],
-    frames: &mut Vec<Bytes>,
-) {
-    codec.encode_into(packets, frames).unwrap();
-    for message in frames {
-        *message = encryptor
-            .encrypt_batch(BatchHeader::Prefixed, std::mem::take(message))
-            .unwrap();
-    }
-}
-
-/// Measures the negotiated uncompressed (0xff) path with batch encryption.
-fn encryption(c: &mut Criterion) {
-    let cases = common::Cases::load();
-    let key = [cases.u64("/encryption_key_byte") as u8; 32];
-    let mut bench = c.benchmark_group("Encryption");
-    for case in cases.cases("Encryption") {
-        let packets = cases.packets(&case.set);
-        let bytes = common::size(&packets);
-        bench.throughput(Throughput::Bytes(bytes));
-        let mut codec = negotiated(CompressionAlgorithm::None, 0);
-        // Two consecutive frames from a fresh stream must decrypt and decode to the input.
-        let mut check = BatchEncryptor::new(key);
-        let mut decryptor = BatchDecryptor::new(key);
-        let frames: Vec<Bytes> = (0..2)
-            .flat_map(|_| encrypt_message(&codec, &mut check, &packets))
-            .map(|message| {
-                decryptor
-                    .decrypt_batch(BatchHeader::Prefixed, message)
-                    .unwrap()
-            })
-            .collect();
-        let twice: Vec<_> = packets.iter().chain(&packets).collect();
-        verify(&reader(CompressionAlgorithm::None), &frames, &twice);
-        match case.op.as_str() {
-            "encrypt" => {
-                let mut encryptor = BatchEncryptor::new(key);
-                let mut frames = Vec::new();
-                bench.bench_function(case.name(), |b| {
-                    b.iter(|| {
-                        encrypt_into(&codec, &mut encryptor, &packets, &mut frames);
-                        black_box(&frames);
-                    })
-                });
-            }
-            "decrypt" => {
-                // Decryption consumes frames in stream order, so they are produced in
-                // lockstep chunks outside the measured time.
-                let mut encryptor = BatchEncryptor::new(key);
-                let mut decryptor = BatchDecryptor::new(key);
-                let chunk = ((64 << 20) / bytes.max(1)).clamp(1, 4096);
-                bench.bench_function(case.name(), |b| {
-                    b.iter_custom(|iters| {
-                        let mut elapsed = Duration::ZERO;
-                        let mut remaining = iters;
-                        while remaining > 0 {
-                            let n = remaining.min(chunk);
-                            let mut frames: Vec<Bytes> = (0..n)
-                                .flat_map(|_| encrypt_message(&codec, &mut encryptor, &packets))
-                                .collect();
-                            let start = Instant::now();
-                            // Keep the in-place decrypted queue alive until the untimed refill.
-                            for message in &mut frames {
-                                let plain = decryptor
-                                    .decrypt_batch(BatchHeader::Prefixed, std::mem::take(message))
-                                    .unwrap();
-                                drain(&mut codec, plain.clone());
-                                *message = plain;
-                            }
-                            elapsed += start.elapsed();
-                            remaining -= n;
-                        }
-                        elapsed
-                    })
-                });
-            }
-            op => panic!("unknown op {op}"),
-        }
-    }
-    bench.finish();
-}
-
 criterion_group! {
     name = benches;
     config = Criterion::default().output_directory(&output_directory());
-    targets = framing, flate, snappy, encryption
+    targets = framing, flate, snappy
 }
 criterion_main!(benches);

@@ -2,7 +2,7 @@
 //!
 //! The caller owns the connection proof key, UTC clock and device/identity policy.
 //! These helpers format and verify opaque requests consumed by protocolgen's
-//! Login packet and derive the existing directional batch ciphers. Accepting
+//! Login packet and validate server handshake tokens. Accepting
 //! authentication requires a caller-owned provider verifier. No helper performs I/O.
 
 mod accepting;
@@ -28,10 +28,6 @@ use p384::ecdsa::SigningKey;
 use p384::pkcs8::EncodePublicKey;
 use serde::Serialize;
 use serde_json::value::RawValue;
-use sha2::{Digest, Sha256};
-use zeroize::Zeroizing;
-
-use crate::encryption::{BatchDecryptor, BatchEncryptor};
 
 pub use error::LoginError;
 pub use identity::PlayerIdentity;
@@ -215,74 +211,16 @@ fn encode_request(
     Ok(request.into())
 }
 
-/// Verifies the server token and derives outgoing and incoming batch ciphers.
-///
-/// The token's signature proves possession of its `x5u` key; it does not establish
-/// server trust. Endpoint authentication belongs to the transport/application.
-/// Call once for an accepted handshake and retain both streams for the session;
-/// never restart them with the same derived key.
+/// Verifies a server handshake's signature, public key, headers and salt encoding.
+/// Endpoint authentication remains the transport or application's responsibility.
 ///
 /// # Errors
-/// Rejects oversized or malformed tokens, unsupported headers, invalid public
-/// keys/signatures and invalid salt before creating either cipher direction.
-pub fn finish_key_exchange(
-    key: &SigningKey,
+/// Rejects oversized or malformed tokens, invalid signatures, keys, headers or salt.
+pub fn verify_server_handshake(
     server_token: &str,
     max_token_bytes: usize,
-) -> Result<(BatchEncryptor, BatchDecryptor), LoginError> {
-    let (public, salt) = jwt::verify_server(server_token, max_token_bytes)?;
-    Ok(derive_ciphers(key, &public, &salt))
-}
-
-/// Signs one accepting exchange using caller-owned server key and fresh sixteen-byte salt.
-///
-/// Send and flush the returned token without the batch cipher, then install the
-/// outgoing/incoming streams before reading the client's acknowledgment. Use
-/// once per connection; neither this function nor the ciphers may be replayed.
-/// The caller authenticates the client's public key before calling this function.
-///
-/// # Errors
-/// Returns bounded token encoding, public-key or signature errors before returning streams.
-pub fn begin_key_exchange(
-    key: &SigningKey,
-    client: &p384::ecdsa::VerifyingKey,
-    salt: &[u8; 16],
-    max_token_bytes: usize,
-) -> Result<(String, (BatchEncryptor, BatchDecryptor)), LoginError> {
-    #[derive(Serialize)]
-    struct Salt<'a> {
-        salt: &'a str,
-    }
-    let der = key
-        .verifying_key()
-        .to_public_key_der()
-        .map_err(LoginError::PublicKey)?;
-    let public = STANDARD.encode(der.as_bytes());
-    let salt_text = base64::engine::general_purpose::STANDARD_NO_PAD.encode(salt);
-    let payload = jwt::json_line(&Salt { salt: &salt_text }, max_token_bytes)?;
-    let token = jwt::sign(key, &public, &payload, max_token_bytes)?;
-    Ok((
-        token,
-        derive_ciphers(key, &p384::PublicKey::from(*client), salt),
-    ))
-}
-
-/// Uses one shared ECDH and hash owner for the client and accepting directions.
-fn derive_ciphers(
-    key: &SigningKey,
-    public: &p384::PublicKey,
-    salt: &[u8],
-) -> (BatchEncryptor, BatchDecryptor) {
-    let shared = p384::ecdh::diffie_hellman(key.as_nonzero_scalar(), public.as_affine());
-    let mut hash = Sha256::new();
-    hash.update(salt);
-    hash.update(shared.raw_secret_bytes());
-    let mut session_key = Zeroizing::new([0_u8; 32]);
-    hash.finalize_into((&mut *session_key).into());
-    (
-        BatchEncryptor::new(*session_key),
-        BatchDecryptor::new(*session_key),
-    )
+) -> Result<(), LoginError> {
+    jwt::verify_server(server_token, max_token_bytes)
 }
 
 /// Converts UTC to Unix seconds, rounding fractional pre-epoch values downward.

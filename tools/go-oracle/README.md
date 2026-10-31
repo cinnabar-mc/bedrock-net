@@ -46,7 +46,7 @@ the catalog and checks the committed bytes; update the Go module pin and this
 catalog together. Rust also checks the catalog's protocol and module binding.
 
 `go run . serve` answers length-prefixed JSON requests on stdin (batch decode/encode
-with compression and key, cipher checksums, Login build/parse) for `tests/oracle.rs`;
+with compression, Login build/parse) for `tests/oracle.rs`;
 build it and set `BEDROCK_NET_GO_ORACLE`. `cmd/interop-server SCENARIO` accepts one
 loopback client through `minecraft.Listen` or a scripted packet order, for the probe's
 interop tests under `BEDROCK_NET_GO_INTEROP`.

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 
-//! One prepared accepting effect, retained on the original codec/cipher owner.
+//! One prepared accepting effect, retained on the original codec owner.
 
 use super::Connection;
 use crate::transport::SendPermit;
@@ -113,13 +113,8 @@ impl Connection {
                         .as_slice()
                         .first()
                         .expect("original message");
-                    let bytes = match &self.ciphers {
-                        Some((encryptor, _)) => encryptor
-                            .ciphertext_len(message.len())
-                            .map_err(io::Error::other)?,
-                        None => message.len(),
-                    };
-                    pending.phase = Phase::Reserving(self.transport.reserve_send(bytes, deadline)?);
+                    pending.phase =
+                        Phase::Reserving(self.transport.reserve_send(message.len(), deadline)?);
                 }
                 Phase::Reserving(reservation) => {
                     let result = tokio::time::timeout_at(
@@ -190,7 +185,7 @@ impl Connection {
         Ok(())
     }
 
-    /// Encrypts once and synchronously commits the retained permit; its receipt stays owned here.
+    /// Synchronously commits the retained permit; its receipt stays owned here.
     pub fn commit_send_capacity(&mut self) -> io::Result<()> {
         self.reserved_send_capacity()?;
         let pending = self.pending_send.as_mut().expect("checked retained effect");
@@ -201,9 +196,7 @@ impl Connection {
             .messages
             .next()
             .expect("reserved capacity has one original message");
-        let result = self
-            .encrypt_message(message)
-            .and_then(|message| permit.commit(message));
+        let result = permit.commit(message);
         match result {
             Ok(receipt) => {
                 self.pending_send
@@ -416,12 +409,12 @@ pub struct SendRetirement<'a> {
 }
 
 impl Connection {
-    /// Encodes once without cipher progress, then borrows the same retained operation.
+    /// Encodes once on the current codec, then borrows the same retained operation.
     pub fn prepare_body(&mut self, body: Bytes, deadline: Instant) -> io::Result<PreparedSend<'_>> {
         self.prepare_send(body, deadline)?;
         Ok(PreparedSend { connection: self })
     }
-    /// Splits one already framed typed effect on the current codec without advancing its cipher.
+    /// Splits one already framed typed effect on the current codec without admitting it.
     pub(crate) fn prepare_frames(
         &mut self,
         frames: wire::Frames,
@@ -430,7 +423,7 @@ impl Connection {
         self.prepare_encoded(deadline, |connection| connection.encode_frames(frames))?;
         Ok(PreparedSend { connection: self })
     }
-    /// Reborrows the original effect without reserving capacity or changing cipher state.
+    /// Reborrows the original effect without reserving capacity or admitting packets.
     pub fn resume_send(&mut self) -> io::Result<PreparedSend<'_>> {
         self.prepared_deadline()?;
         Ok(PreparedSend { connection: self })
@@ -473,7 +466,7 @@ impl PreparedSend<'_> {
     }
 }
 impl SendCapacity<'_> {
-    /// Advances the sole cipher and commits this original permit without yielding.
+    /// Commits this original permit without yielding.
     pub fn commit(self) -> io::Result<()> {
         self.connection.commit_send_capacity()
     }

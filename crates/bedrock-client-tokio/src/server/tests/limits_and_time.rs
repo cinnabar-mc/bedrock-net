@@ -3,17 +3,10 @@
 use super::*;
 
 #[tokio::test]
-async fn oversized_generated_entry_rolls_back_without_losing_valid_siblings_or_cipher_order() {
+async fn oversized_generated_entry_rolls_back_without_losing_valid_siblings_or_batch_order() {
     tokio::time::timeout(TIMEOUT, async {
         let mut pair = signed_pair().await;
         let deadline = tokio::time::Instant::now().into_std() + TIMEOUT;
-        let key = zeroize::Zeroizing::new(rand::random::<[u8; 32]>());
-        pair.wire
-            .encryption_flushed((
-                BatchEncryptor::new(*key),
-                BatchDecryptor::new(rand::random()),
-            ))
-            .unwrap();
         let oversized: packets::Packet = packets::ResourcePackChunkData {
             resource_name: Bytes::from_static(b"synthetic-pack").into(),
             chunk_id: wire::U32LE(0),
@@ -48,10 +41,7 @@ async fn oversized_generated_entry_rolls_back_without_losing_valid_siblings_or_c
             capacity.commit().unwrap();
         }
         sending.finish().unwrap();
-        let received = decode_ciphertext(
-            &mut BatchDecryptor::new(*key),
-            pair.client.recv().await.unwrap().unwrap(),
-        );
+        let received = decode_batch(pair.client.recv().await.unwrap().unwrap());
         assert!(
             pair.finish().await,
             "original signed accepting owners leaked"
@@ -68,7 +58,7 @@ async fn expired_runtime_deadline_does_not_consume_the_original_buffered_packet(
     let prefix = [raw_packet(1), raw_packet(2)];
     let (mut pair, first) = tokio::time::timeout(TIMEOUT, async {
         let mut pair = signed_pair().await;
-        let mut batches = BatchCodec::new(BatchHeader::NetherNet, BatchLimits::default())
+        let mut batches = BatchCodec::new(BatchLimits::default())
             .encode(&prefix)
             .unwrap();
         assert_eq!(batches.len(), 1);

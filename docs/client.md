@@ -42,11 +42,9 @@ its declaration in [Cargo.toml](../Cargo.toml) when using these types.
 ## Process Login responses
 
 Call `ClientLogin::receive` for each relevant packet. Send returned packets in
-order. For `KeyExchange`, take the next state, ciphers and acknowledgment with
-`into_parts`; install both cipher directions before sending the acknowledgment.
-A transport that already encrypts the stream can disable the additional batch
-cipher, but the server token is still verified. Keep ciphertext after advancing a
-cipher; see [cipher ordering](batches.md#install-ciphers).
+order. For `KeyExchange`, take the next state and acknowledgment with `into_parts`.
+Send the acknowledgment before continuing input. The server token's signature,
+public key, headers and salt encoding are verified.
 
 `LoginEvent::Packs` returns the offer and optional cache status. Send the cache
 status once. The offer retains the Login state so late key exchange or Login

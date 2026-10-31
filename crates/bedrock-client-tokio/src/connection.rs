@@ -1,11 +1,10 @@
 // SPDX-License-Identifier: MIT
 
-//! Compression, encryption and packet FIFO retained for the entire connection.
+//! Compression and packet FIFO retained for the entire connection.
 
 use self::deferred::DeferredFrames;
 use super::PacketIo;
 use super::transport::Transport;
-use bedrock_net::encryption::{BatchDecryptor, BatchEncryptor};
 use bedrock_net::{BatchCodec, BatchError, BatchLimits, CompressionSettings, DecodeOutcome};
 use bedrock_protocol::{packets, wire};
 use bytes::Bytes;
@@ -20,7 +19,7 @@ use pending::PendingPackets;
 pub mod send;
 use send::{PendingSend, RetirementState};
 
-/// Batching, encryption and ordered input buffering for one transport connection.
+/// Batching and ordered input buffering for one transport connection.
 ///
 /// Keep this value through settings, Login, packs and play. It preserves unread
 /// batch entries and deferred packets across those transitions.
@@ -33,7 +32,6 @@ pub struct Connection {
     current: Option<Bytes>,
     deferred: DeferredFrames,
     receive_limits: wire::Limits,
-    ciphers: Option<(BatchEncryptor, BatchDecryptor)>,
     pending_send: Option<PendingSend>,
     send_retirement: Option<RetirementState>,
     send_sealed: bool,
@@ -69,7 +67,7 @@ impl Connection {
     ) -> Self {
         transport.configure_limits(limits);
         Self {
-            codec: Some(Codec::Plain(BatchCodec::new(transport.header(), limits))),
+            codec: Some(Codec::Plain(BatchCodec::new(limits))),
             transport,
             limits,
             incoming_decoded_limit: limits.max_decoded_bytes,
@@ -77,7 +75,6 @@ impl Connection {
             current: None,
             deferred: DeferredFrames::new(max_deferred_bytes),
             receive_limits,
-            ciphers: None,
             pending_send: None,
             send_retirement: None,
             send_sealed: false,
@@ -199,22 +196,6 @@ impl Connection {
             .expect("codec transition is synchronous")
     }
 
-    /// Installs both directional streams once, before the client handshake acknowledgment.
-    pub fn enable_encryption(
-        &mut self,
-        ciphers: (BatchEncryptor, BatchDecryptor),
-    ) -> io::Result<()> {
-        self.ensure_send_idle()?;
-        if self.ciphers.is_some() {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "repeated server key exchange",
-            ));
-        }
-        self.ciphers = Some(ciphers);
-        Ok(())
-    }
-
     /// Encodes without restarting a finite Login credential deadline.
     pub async fn send_body_until(
         &mut self,
@@ -223,13 +204,12 @@ impl Connection {
     ) -> io::Result<()> {
         self.ensure_send_idle()?;
         for message in self.encode_body(body)? {
-            let message = self.encrypt_message(message)?;
             self.transport.send_until(message, deadline).await?;
         }
         Ok(())
     }
 
-    /// Encodes one generated packet into this original codec/cipher owner and flushes it.
+    /// Encodes one generated packet into this original codec owner and flushes it.
     /// The caller supplies the actual wire direction and original subclient header.
     pub async fn send_packet(
         &mut self,
@@ -243,7 +223,7 @@ impl Connection {
         self.send_body_until(body, None).await
     }
 
-    /// Encodes one original generated entry before any write/cipher effect is admitted.
+    /// Encodes one original generated entry before any write effect is admitted.
     pub(crate) fn packet_body(
         &self,
         packet: &packets::Packet,
@@ -292,11 +272,6 @@ impl Connection {
         self.limits.max_packets
     }
 
-    /// Observes only whether the original verified batch cipher has been installed.
-    pub fn has_batch_ciphers(&self) -> bool {
-        self.ciphers.is_some()
-    }
-
     /// Encodes the original bounded packet entries once on the current codec.
     fn encode_body(&self, body: Bytes) -> io::Result<Vec<Bytes>> {
         Self::check_body_size(&body, self.limits.max_decoded_bytes)?;
@@ -312,17 +287,6 @@ impl Connection {
             })
             .collect::<io::Result<Vec<_>>>()?;
         self.codec().encode(&entries).map_err(io::Error::other)
-    }
-
-    /// Advances the sole original directional cipher and checks its actual envelope size.
-    fn encrypt_message(&mut self, mut message: Bytes) -> io::Result<Bytes> {
-        if let Some((encryptor, _)) = &mut self.ciphers {
-            message = encryptor
-                .encrypt_batch(self.transport.header(), message)
-                .map_err(io::Error::other)?;
-            self.check_wire_size(&message)?;
-        }
-        Ok(message)
     }
 
     /// Frames one original raw packet under the same decoded-body limit.
@@ -361,22 +325,8 @@ impl Connection {
     /// Reads a complete batch, retaining decoded siblings across every protocol transition.
     async fn fill(&mut self) -> io::Result<()> {
         while !self.pending_ready()? {
-            let mut message = self.transport.recv().await?;
+            let message = self.transport.recv().await?;
             self.check_wire_size(&message)?;
-            if let Some((_, decryptor)) = &mut self.ciphers {
-                let header = self.transport.header();
-                if let Some(marker) = header.marker() {
-                    let actual = *message
-                        .first()
-                        .ok_or_else(|| io::Error::other(BatchError::MissingBatchHeader))?;
-                    if actual != marker {
-                        return Err(io::Error::other(BatchError::InvalidBatchHeader(actual)));
-                    }
-                }
-                message = decryptor
-                    .decrypt_batch(header, message)
-                    .map_err(io::Error::other)?;
-            }
             #[cfg(any(test, feature = "test-support"))]
             let message = self.observe_batch(message);
             match self.codec().decode(message).map_err(io::Error::other)? {
@@ -579,7 +529,7 @@ impl Connection {
         self.deferred.take()
     }
 
-    /// Checks ciphertext input before decrypting or allocating decoded state.
+    /// Checks input before allocating decoded state.
     fn check_wire_size(&self, message: &[u8]) -> io::Result<()> {
         if message.len() > self.limits.max_encoded_bytes {
             return Err(io::Error::other(BatchError::EncodedTooLarge {
@@ -596,7 +546,7 @@ impl PacketIo for Connection {
         self.transport.observe_rtt()
     }
 
-    /// Advances the cipher only inside this owner's uninterrupted write operation.
+    /// Sends only inside this owner's uninterrupted write operation.
     async fn send_body(&mut self, body: Bytes) -> io::Result<()> {
         self.send_body_until(body, None).await
     }

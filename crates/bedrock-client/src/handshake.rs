@@ -9,7 +9,6 @@ use std::{sync::Arc, time::SystemTime};
 
 use bedrock_net::{
     CompressionAlgorithm, CompressionSettings,
-    encryption::{BatchDecryptor, BatchEncryptor},
     login::{self, LoginError, OfflineIdentity},
 };
 use bedrock_protocol::{PROTOCOL_VERSION, enums::PlayStatusType, packets, wire};
@@ -28,8 +27,6 @@ pub use lifecycle::{
 /// Transport and application capabilities fixed for one handshake.
 #[derive(Clone, Copy, Debug)]
 pub struct HandshakeOptions {
-    /// Whether this transport requires the Bedrock batch cipher, in addition to key verification.
-    pub batch_encryption: bool,
     /// Whether the client implements the Bedrock blob cache.
     pub blob_cache: bool,
     /// Maximum Login request and server handshake token size.
@@ -41,7 +38,6 @@ pub struct HandshakeOptions {
 impl Default for HandshakeOptions {
     fn default() -> Self {
         Self {
-            batch_encryption: true,
             blob_cache: false,
             max_login_bytes: bedrock_net::BatchLimits::default().max_decoded_bytes,
             packs: PackTransferLimits::default(),
@@ -83,14 +79,9 @@ enum EngineEvent {
     Compression(CompressionSettings),
     /// Send these generated responses immediately, in their existing order.
     Send(Vec<packets::Packet>),
-    /// Install the directional streams before sending the acknowledgment.
-    ///
-    /// `ciphers` is absent for transports that already encrypt the application
-    /// stream. The server token is still verified in that case.
+    /// Acknowledge the verified server token before continuing input.
     KeyExchange {
-        /// Outgoing then incoming stream; retain both for this connection.
-        ciphers: Option<Box<(BatchEncryptor, BatchDecryptor)>>,
-        /// The first response after the cipher transition.
+        /// Response to the verified server token.
         response: packets::ClientToServerHandshake,
     },
     /// Supply optional validated preloads, then drive this existing pack owner.
@@ -184,7 +175,7 @@ impl Engine {
     ///
     /// # Errors
     /// Rejects an out-of-sequence call or invalid/oversized caller metadata. A
-    /// signing error leaves Login ready; no response or cipher was consumed.
+    /// signing error leaves Login ready; no response was consumed.
     fn login_offline(
         &mut self,
         identity: &OfflineIdentity<'_>,
@@ -269,11 +260,9 @@ impl Engine {
                     .handshake_web_token
                     .to_str()
                     .map_err(|_| HandshakeError::InvalidTokenText)?;
-                let ciphers =
-                    login::finish_key_exchange(&self.key, token, self.options.max_login_bytes)?;
+                login::verify_server_handshake(token, self.options.max_login_bytes)?;
                 self.key_exchanged = true;
                 Ok(EngineEvent::KeyExchange {
-                    ciphers: self.options.batch_encryption.then(|| Box::new(ciphers)),
                     response: packets::ClientToServerHandshake {},
                 })
             }

@@ -119,7 +119,7 @@ impl AuthenticatedLogin {
         &self.identity.xuid
     }
 
-    /// Borrows the provider-bound metadata signing key. Use `exchange_key()` for transport and cipher setup.
+    /// Borrows the provider-bound metadata signing key. Use `exchange_key()` for transport binding.
     pub fn public_key(&self) -> &VerifyingKey {
         &self.identity.public_key
     }

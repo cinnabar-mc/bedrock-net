@@ -30,6 +30,9 @@ type capture struct {
 	frames [][]byte
 }
 
+// BatchHeader selects the unprefixed transport envelope.
+func (c *capture) BatchHeader() []byte { return nil }
+
 func (c *capture) Write(p []byte) (int, error) {
 	if c.keep {
 		c.frames = append(c.frames, bytes.Clone(p))
@@ -43,6 +46,9 @@ type queue struct {
 	next   int
 	cycle  bool
 }
+
+// BatchHeader selects the unprefixed transport envelope.
+func (q *queue) BatchHeader() []byte { return nil }
 
 func (q *queue) Read([]byte) (int, error) { return 0, io.ErrNoProgress }
 
@@ -90,13 +96,13 @@ func packets(b *testing.B, c *Cases, set string) [][]byte {
 
 // verifyFrames decodes frames with a fresh, unlimited decoder and requires exactly want, in
 // order. Each benchmark checks its own output this way once, outside the timed loop.
-func verifyFrames(b *testing.B, frames [][]byte, compression packet.Compression, key *[32]byte, want [][]byte) {
+func verifyFrames(b *testing.B, frames [][]byte, compression packet.Compression, want [][]byte) {
 	b.Helper()
 	var got [][]byte
-	if compression == nil && key == nil {
+	if compression == nil {
 		// The plain Decoder caps batches at 16 MiB, so the oversized split input is walked here.
 		for _, frame := range frames {
-			data := frame[1:]
+			data := frame
 			for len(data) > 0 {
 				var n uint32
 				var i int
@@ -115,9 +121,6 @@ func verifyFrames(b *testing.B, frames [][]byte, compression packet.Compression,
 		d := packet.NewDecoder(&queue{frames: frames})
 		d.DisableBatchPacketLimit()
 		d.EnableCompression(compression, -1)
-		if key != nil {
-			d.EnableEncryption(*key)
-		}
 		for range frames {
 			pks, err := d.Decode()
 			if err != nil {
@@ -173,7 +176,7 @@ func codecGroup(b *testing.B, group string, compression packet.Compression) {
 				if err := enc(w).Encode(pks); err != nil {
 					b.Fatal(err)
 				}
-				verifyFrames(b, w.frames, compression, nil, pks)
+				verifyFrames(b, w.frames, compression, pks)
 				e := enc(&capture{})
 				b.ResetTimer()
 				if compression != nil {
@@ -192,7 +195,7 @@ func codecGroup(b *testing.B, group string, compression packet.Compression) {
 				if len(w.frames) != 1 {
 					b.Fatalf("decode input %s spans %d batches", tc.Set, len(w.frames))
 				}
-				verifyFrames(b, w.frames, compression, nil, pks)
+				verifyFrames(b, w.frames, compression, pks)
 				d := packet.NewDecoder(&queue{frames: w.frames, cycle: true})
 				d.DisableBatchPacketLimit()
 				if compression != nil {
@@ -217,80 +220,6 @@ func codecGroup(b *testing.B, group string, compression packet.Compression) {
 func BenchmarkBatchFraming(b *testing.B) { codecGroup(b, "BatchFraming", nil) }
 func BenchmarkFlate(b *testing.B)        { codecGroup(b, "Flate", packet.FlateCompression) }
 func BenchmarkSnappy(b *testing.B)       { codecGroup(b, "Snappy", packet.SnappyCompression) }
-
-// BenchmarkEncryption measures the negotiated uncompressed (0xff) path with batch encryption.
-func BenchmarkEncryption(b *testing.B) {
-	c := load(b)
-	var key [32]byte
-	for i := range key {
-		key[i] = c.EncryptionKeyByte
-	}
-	if len(c.Cases("Encryption")) == 0 {
-		b.Fatal("cases.json lists no Encryption cases")
-	}
-	for _, tc := range c.Cases("Encryption") {
-		pks := packets(b, c, tc.Set)
-		b.Run(tc.Name(), func(b *testing.B) {
-			// Two consecutive frames from a fresh stream must decrypt and decode to the input.
-			check := &capture{keep: true}
-			ce := packet.NewEncoder(check)
-			ce.EnableCompression(packet.NopCompression, 0)
-			ce.EnableEncryption(key)
-			for range 2 {
-				if err := ce.Encode(pks); err != nil {
-					b.Fatal(err)
-				}
-			}
-			verifyFrames(b, check.frames, packet.NopCompression, &key, append(append([][]byte{}, pks...), pks...))
-			w := &capture{}
-			e := packet.NewEncoder(w)
-			e.EnableCompression(packet.NopCompression, 0)
-			e.EnableEncryption(key)
-			b.SetBytes(Size(pks))
-			b.ReportAllocs()
-			switch tc.Op {
-			case "encrypt":
-				for range b.N {
-					if err := e.Encode(pks); err != nil {
-						b.Fatal(err)
-					}
-				}
-			case "decrypt":
-				// Decryption consumes each frame in stream order and in place, so frames are
-				// produced in lockstep chunks outside the timer.
-				q := &queue{}
-				d := packet.NewDecoder(q)
-				d.DisableBatchPacketLimit()
-				d.EnableCompression(packet.NopCompression, 0)
-				d.EnableEncryption(key)
-				chunk := max(1, min(4096, int((64<<20)/max(Size(pks), 1))))
-				refill := func() {
-					w.keep, w.frames = true, w.frames[:0]
-					for range chunk {
-						if err := e.Encode(pks); err != nil {
-							b.Fatal(err)
-						}
-					}
-					q.frames, q.next = w.frames, 0
-				}
-				refill()
-				b.ResetTimer()
-				for range b.N {
-					if q.next == len(q.frames) {
-						b.StopTimer()
-						refill()
-						b.StartTimer()
-					}
-					if err := d.DecodeFunc(ignore); err != nil {
-						b.Fatal(err)
-					}
-				}
-			default:
-				b.Fatalf("unknown op %s", tc.Op)
-			}
-		})
-	}
-}
 
 // fixedKey derives the deterministic P-384 key whose scalar is fill repeated 48 times.
 func fixedKey(b *testing.B, fill byte) *ecdsa.PrivateKey {

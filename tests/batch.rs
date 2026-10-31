@@ -1,9 +1,8 @@
 //! Behavioral checks for batch compatibility and untrusted framing.
 
-use bedrock_net::encryption::{BatchDecryptor, BatchEncryptor, EncryptionError};
 use bedrock_net::{
-    BatchCodec, BatchError, BatchHeader, BatchLimits, BatchPhase, CompressionAlgorithm,
-    CompressionSettings, DecodeOutcome, DropReason, Negotiated, VisitOutcome,
+    BatchCodec, BatchError, BatchLimits, BatchPhase, CompressionAlgorithm, CompressionSettings,
+    DecodeOutcome, DropReason, Negotiated, VisitOutcome,
 };
 use bytes::Bytes;
 
@@ -12,7 +11,7 @@ mod go;
 
 /// Builds a codec after compression negotiation, using the supplied safety policy.
 fn negotiated(algorithm: CompressionAlgorithm, limits: BatchLimits) -> BatchCodec<Negotiated> {
-    BatchCodec::new(BatchHeader::Prefixed, limits).negotiate(CompressionSettings {
+    BatchCodec::new(limits).negotiate(CompressionSettings {
         algorithm,
         threshold: 0,
     })
@@ -69,19 +68,16 @@ fn client_empty_entries_preserve_packets() {
         assert_eq!(packets.collect::<Vec<_>>(), expected);
         assert_eq!(skipped_empty_packets, 3);
     }
-    let initial = BatchCodec::new(
-        BatchHeader::Prefixed,
-        BatchLimits {
-            max_packets: 0,
-            max_incoming_packets: None,
-            ..BatchLimits::default()
-        },
-    );
+    let initial = BatchCodec::new(BatchLimits {
+        max_packets: 0,
+        max_incoming_packets: None,
+        ..BatchLimits::default()
+    });
     let DecodeOutcome::Packets {
         packets,
         skipped_empty_packets,
         ..
-    } = initial.decode(Bytes::from_static(&[0xfe, 0, 0])).unwrap()
+    } = initial.decode(Bytes::from_static(&[0, 0])).unwrap()
     else {
         panic!("initial empty-entry batch was dropped");
     };
@@ -96,11 +92,10 @@ fn client_empty_entries_preserve_packets() {
 #[test]
 fn negotiation_changes_headers_and_compresses_at_threshold_equality() {
     let input = [Bytes::from_static(&[2, 0, 0, 0, 0])];
-    for header in [BatchHeader::Prefixed, BatchHeader::NetherNet] {
-        let codec = BatchCodec::new(header, BatchLimits::default());
-        let marker = usize::from(header == BatchHeader::Prefixed);
+    {
+        let codec = BatchCodec::new(BatchLimits::default());
         let initial = codec.encode(&input).unwrap().pop().unwrap();
-        assert_eq!(&initial[marker..], &[5, 2, 0, 0, 0, 0]);
+        assert_eq!(&initial[..], &[5, 2, 0, 0, 0, 0]);
         assert_eq!(packets(&codec, initial), input);
 
         let codec = codec.negotiate(CompressionSettings {
@@ -108,16 +103,15 @@ fn negotiation_changes_headers_and_compresses_at_threshold_equality() {
             threshold: 7,
         });
         let below = codec.encode(&input).unwrap().pop().unwrap();
-        assert_eq!(below[marker], 0xff);
+        assert_eq!(below[0], 0xff);
         assert_eq!(packets(&codec, below), input);
 
-        let codec =
-            BatchCodec::new(header, BatchLimits::default()).negotiate(CompressionSettings {
-                algorithm: CompressionAlgorithm::Deflate,
-                threshold: 6,
-            });
+        let codec = BatchCodec::new(BatchLimits::default()).negotiate(CompressionSettings {
+            algorithm: CompressionAlgorithm::Deflate,
+            threshold: 6,
+        });
         let at = codec.encode(&input).unwrap().pop().unwrap();
-        assert_eq!(at[marker], CompressionAlgorithm::Deflate.network_id() as u8);
+        assert_eq!(at[0], CompressionAlgorithm::Deflate.network_id() as u8);
         assert_eq!(packets(&codec, at), input);
     }
 }
@@ -160,8 +154,8 @@ fn client_batch_count_accepts_a_server_batch_above_the_outgoing_ceiling() {
         max_packets: input.len(),
         ..outgoing
     };
-    for header in [BatchHeader::Prefixed, BatchHeader::NetherNet] {
-        let client = BatchCodec::new(header, outgoing);
+    {
+        let client = BatchCodec::new(outgoing);
         let split = client.encode(&input).unwrap();
         assert_eq!(split.len(), 2);
         assert_eq!(
@@ -173,7 +167,7 @@ fn client_batch_count_accepts_a_server_batch_above_the_outgoing_ceiling() {
             input[outgoing.max_packets..]
         );
 
-        let mut original = BatchCodec::new(header, incoming).encode(&input).unwrap();
+        let mut original = BatchCodec::new(incoming).encode(&input).unwrap();
         assert_eq!(original.len(), 1);
         assert!(original[0].len() < outgoing.max_decoded_bytes);
         assert_eq!(packets(&client, original.remove(0)), input);
@@ -190,7 +184,7 @@ fn client_batch_count_preserves_declared_compression_and_decoded_byte_limits() {
         max_packets: input.len(),
         ..outgoing
     };
-    let body = BatchCodec::new(BatchHeader::NetherNet, incoming)
+    let body = BatchCodec::new(incoming)
         .encode(&input)
         .unwrap()
         .pop()
@@ -221,7 +215,7 @@ fn client_batch_count_preserves_declared_compression_and_decoded_byte_limits() {
 
 #[test]
 fn malformed_tail_never_exposes_a_partial_batch() {
-    let codec = BatchCodec::new(BatchHeader::Prefixed, BatchLimits::default());
+    let codec = BatchCodec::new(BatchLimits::default());
     for tail in [
         &[0, 0x80][..],
         &[3, 2][..],
@@ -229,20 +223,17 @@ fn malformed_tail_never_exposes_a_partial_batch() {
         &[0xff, 0xff, 0xff, 0xff, 0x10][..],
         &[0xff, 0xff, 0xff, 0xff, 0x8f, 0][..],
     ] {
-        let mut batch = vec![0xfe, 1, 2]; // One valid packet before the malformed entry.
+        let mut batch = vec![1, 2]; // One valid packet before the malformed entry.
         batch.extend_from_slice(tail);
         assert!(codec.decode(Bytes::from(batch)).is_err());
     }
-    let codec = BatchCodec::new(
-        BatchHeader::Prefixed,
-        BatchLimits {
-            max_packets: 1,
-            max_incoming_packets: Some(1),
-            ..BatchLimits::default()
-        },
-    );
+    let codec = BatchCodec::new(BatchLimits {
+        max_packets: 1,
+        max_incoming_packets: Some(1),
+        ..BatchLimits::default()
+    });
     assert!(matches!(
-        codec.decode(Bytes::from_static(&[0xfe, 1, 2, 1, 3])),
+        codec.decode(Bytes::from_static(&[1, 2, 1, 3])),
         Err(BatchError::TooManyPackets { maximum: 1 })
     ));
 }
@@ -251,10 +242,10 @@ fn malformed_tail_never_exposes_a_partial_batch() {
 fn compressed_failures_drop_but_missing_headers_and_framing_are_fatal() {
     let codec = negotiated(CompressionAlgorithm::Deflate, BatchLimits::default());
     for wire in [
-        &[0xfe, 2][..],
-        &[0xfe, 0, 0xff, 0xff, 0xff][..],
-        &[0xfe, 0][..],
-        &[0xfe, 1, 0x80][..],
+        &[2][..],
+        &[0, 0xff, 0xff, 0xff][..],
+        &[0][..],
+        &[1, 0x80][..],
     ] {
         assert!(matches!(
             codec.decode(Bytes::copy_from_slice(wire)).unwrap(),
@@ -263,15 +254,15 @@ fn compressed_failures_drop_but_missing_headers_and_framing_are_fatal() {
         assert_eq!(packets(&codec, Bytes::from_static(go::GO_BATCH_0)).len(), 2);
     }
     assert!(matches!(
-        codec.decode(Bytes::from_static(&[0xfe, 2])),
+        codec.decode(Bytes::from_static(&[2])),
         Ok(DecodeOutcome::Dropped(DropReason::UnknownCompression(2)))
     ));
     assert!(matches!(
-        codec.decode(Bytes::from_static(&[0xfe])),
+        codec.decode(Bytes::from_static(&[])),
         Err(BatchError::MissingCompressionHeader)
     ));
     assert!(matches!(
-        codec.decode(Bytes::from_static(&[0xfe, 0xff, 3, 2])),
+        codec.decode(Bytes::from_static(&[0xff, 3, 2])),
         Err(BatchError::TruncatedPacket { .. })
     ));
 }
@@ -313,7 +304,7 @@ fn decoded_limits_are_fatal_for_every_algorithm_and_accept_exact_boundary() {
 #[test]
 fn oversized_deflate_with_a_corrupt_tail_is_still_fatal() {
     // A non-final stored block expands before an invalid block type is reached.
-    let mut wire = vec![0xfe, 0, 0, 20, 0, 0xeb, 0xff];
+    let mut wire = vec![0, 0, 20, 0, 0xeb, 0xff];
     wire.extend_from_slice(&[2; 20]);
     wire.push(7);
     let codec = negotiated(
@@ -339,7 +330,7 @@ fn wire_limits_apply_before_decompression_and_outgoing_delivery() {
         },
     );
     assert!(matches!(
-        codec.decode(Bytes::from_static(&[0xfe, 0, 0xff])),
+        codec.decode(Bytes::from_static(&[0, 0xff, 0xff])),
         Err(BatchError::EncodedTooLarge { .. })
     ));
     assert!(matches!(
@@ -349,100 +340,25 @@ fn wire_limits_apply_before_decompression_and_outgoing_delivery() {
 }
 
 #[test]
-fn directional_encryption_matches_consecutive_go_batches_byte_for_byte() {
-    let key = std::array::from_fn(|index| u8::try_from(index).unwrap());
-    let mut encryptor = BatchEncryptor::new(key);
-    let mut decryptor = BatchDecryptor::new(key);
-    let plaintext = Bytes::from_static(&go::GO_BATCH_65535[1..]);
-    for wire in [go::GO_ENCRYPTED_0, go::GO_ENCRYPTED_1, go::GO_ENCRYPTED_2] {
-        let encrypted = encryptor.encrypt(plaintext.clone()).unwrap();
-        assert_eq!(encrypted, &wire[1..]);
-        assert_eq!(decryptor.decrypt(encrypted).unwrap(), plaintext);
-    }
-    // The opposite direction starts independently, even after outgoing traffic.
-    let mut opposite = BatchEncryptor::new(key);
-    assert_eq!(
-        opposite.encrypt(plaintext).unwrap(),
-        &go::GO_ENCRYPTED_0[1..]
-    );
-}
-
-#[test]
-fn discarded_compression_still_advances_the_encrypted_stream() {
-    let mut encryptor = BatchEncryptor::new([7; 32]);
-    let mut decryptor = BatchDecryptor::new([7; 32]);
-    let codec = BatchCodec::new(BatchHeader::NetherNet, BatchLimits::default()).negotiate(
-        CompressionSettings {
-            algorithm: CompressionAlgorithm::Deflate,
-            threshold: 0,
-        },
-    );
-    let bad = encryptor.encrypt(Bytes::from_static(&[2])).unwrap();
-    let body = decryptor.decrypt(bad).unwrap();
-    assert!(matches!(
-        codec.decode(body),
-        Ok(DecodeOutcome::Dropped(DropReason::UnknownCompression(2)))
-    ));
-    let good = encryptor
-        .encrypt(Bytes::from_static(&go::GO_BATCH_65535[1..]))
-        .unwrap();
-    assert_eq!(packets(&codec, decryptor.decrypt(good).unwrap()).len(), 2);
-}
-
-#[test]
-fn integrity_and_truncation_failures_permanently_invalidate_the_direction() {
-    for truncate in [false, true] {
-        let mut encryptor = BatchEncryptor::new([9; 32]);
-        let mut decryptor = BatchDecryptor::new([9; 32]);
-        let mut encrypted = encryptor
-            .encrypt(Bytes::from_static(b"synthetic packet body"))
-            .unwrap()
-            .to_vec();
-        if truncate {
-            encrypted.truncate(7);
-        } else {
-            encrypted[0] ^= 1;
-        }
-        let error = decryptor.decrypt(Bytes::from(encrypted)).unwrap_err();
-        if truncate {
-            assert_eq!(error, EncryptionError::Truncated { actual: 7 });
-        } else {
-            assert_eq!(error, EncryptionError::InvalidChecksum);
-        }
-        let subsequent = encryptor.encrypt(Bytes::from_static(b"next body")).unwrap();
-        assert_eq!(
-            decryptor.decrypt(subsequent).unwrap_err(),
-            EncryptionError::Invalidated
-        );
-    }
-}
-
-#[test]
 fn incoming_cursor_validates_full_body_and_explicit_count_before_exposure() {
     let limits = BatchLimits::default();
     let count = limits.max_packets + 1;
     let input: Vec<_> = (0..count)
         .map(|index| Bytes::from(index.to_le_bytes().to_vec()))
         .collect();
-    let wire = BatchCodec::new(
-        BatchHeader::Prefixed,
-        BatchLimits {
-            max_packets: count,
-            ..limits
-        },
-    )
+    let wire = BatchCodec::new(BatchLimits {
+        max_packets: count,
+        ..limits
+    })
     .encode(&input)
     .unwrap()
     .remove(0);
     for maximum in [None, Some(count)] {
-        let client = BatchCodec::new(
-            BatchHeader::Prefixed,
-            BatchLimits {
-                max_packets: 1,
-                max_incoming_packets: maximum,
-                ..limits
-            },
-        );
+        let client = BatchCodec::new(BatchLimits {
+            max_packets: 1,
+            max_incoming_packets: maximum,
+            ..limits
+        });
         let DecodeOutcome::Packets { packets, .. } = client.decode(wire.clone()).unwrap() else {
             panic!("valid cursor batch was dropped");
         };
@@ -450,13 +366,10 @@ fn incoming_cursor_validates_full_body_and_explicit_count_before_exposure() {
         assert!(packets.eq(input.iter().cloned()));
     }
     for maximum in [0, count - 1] {
-        let client = BatchCodec::new(
-            BatchHeader::Prefixed,
-            BatchLimits {
-                max_incoming_packets: Some(maximum),
-                ..limits
-            },
-        );
+        let client = BatchCodec::new(BatchLimits {
+            max_incoming_packets: Some(maximum),
+            ..limits
+        });
         assert!(matches!(
             client.decode(wire.clone()),
             Err(BatchError::TooManyPackets { maximum: actual }) if actual == maximum
@@ -465,7 +378,7 @@ fn incoming_cursor_validates_full_body_and_explicit_count_before_exposure() {
     let mut malformed = wire.to_vec();
     malformed.push(0x80);
     assert!(matches!(
-        BatchCodec::new(BatchHeader::Prefixed, limits).decode(Bytes::from(malformed)),
+        BatchCodec::new(limits).decode(Bytes::from(malformed)),
         Err(BatchError::InvalidPacketLength { .. })
     ));
 }
@@ -477,23 +390,19 @@ fn incoming_cursor_retains_unread_bytes_and_releases_them_on_drop_or_exhaustion(
     let input: Vec<_> = (0..count)
         .map(|index| Bytes::from(index.to_le_bytes().to_vec()))
         .collect();
-    let wire = BatchCodec::new(
-        BatchHeader::Prefixed,
-        BatchLimits {
-            max_packets: count,
-            ..limits
-        },
-    )
+    let wire = BatchCodec::new(BatchLimits {
+        max_packets: count,
+        ..limits
+    })
     .encode(&input)
     .unwrap()
     .remove(0);
     for finish in [false, true] {
         let owner: std::sync::Arc<[u8]> = wire.as_ref().into();
         let lifetime = std::sync::Arc::downgrade(&owner);
-        let DecodeOutcome::Packets { mut packets, .. } =
-            BatchCodec::new(BatchHeader::Prefixed, limits)
-                .decode(Bytes::from_owner(owner))
-                .unwrap()
+        let DecodeOutcome::Packets { mut packets, .. } = BatchCodec::new(limits)
+            .decode(Bytes::from_owner(owner))
+            .unwrap()
         else {
             panic!("owned cursor batch was dropped");
         };
@@ -531,15 +440,12 @@ fn negotiated_incoming_decoded_limit_preserves_defaults_and_output_policy() {
     let input = [Bytes::from_static(&[2; 9])];
     // One byte of length framing is part of the decoded ceiling.
     let decoded_len = input[0].len() + 1;
-    for header in [BatchHeader::Prefixed, BatchHeader::NetherNet] {
-        let plain = BatchCodec::new(header, limits);
-        let initial = BatchCodec::new(
-            header,
-            BatchLimits {
-                max_decoded_bytes: decoded_len,
-                ..limits
-            },
-        )
+    {
+        let plain = BatchCodec::new(limits);
+        let initial = BatchCodec::new(BatchLimits {
+            max_decoded_bytes: decoded_len,
+            ..limits
+        })
         .encode(&input)
         .unwrap()
         .remove(0);
@@ -556,23 +462,20 @@ fn negotiated_incoming_decoded_limit_preserves_defaults_and_output_policy() {
                 algorithm,
                 threshold: 0,
             };
-            let wire = BatchCodec::new(
-                header,
-                BatchLimits {
-                    max_decoded_bytes: decoded_len,
-                    ..limits
-                },
-            )
+            let wire = BatchCodec::new(BatchLimits {
+                max_decoded_bytes: decoded_len,
+                ..limits
+            })
             .negotiate(settings)
             .encode(&input)
             .unwrap()
             .remove(0);
-            let original = BatchCodec::new(header, limits).negotiate(settings);
+            let original = BatchCodec::new(limits).negotiate(settings);
             assert!(matches!(
                 original.decode(wire.clone()),
                 Err(BatchError::DecodedTooLarge { maximum: 8 })
             ));
-            let at = BatchCodec::new(header, limits)
+            let at = BatchCodec::new(limits)
                 .negotiate(settings)
                 .with_incoming_decoded_limit(decoded_len);
             assert_eq!(packets(&at, wire.clone()), input);
@@ -580,7 +483,7 @@ fn negotiated_incoming_decoded_limit_preserves_defaults_and_output_policy() {
                 at.encode(&input),
                 Err(BatchError::DecodedTooLarge { maximum: 8 })
             ));
-            let below = BatchCodec::new(header, limits)
+            let below = BatchCodec::new(limits)
                 .negotiate(settings)
                 .with_incoming_decoded_limit(decoded_len - 1);
             assert!(matches!(
@@ -651,34 +554,31 @@ fn negotiated_incoming_decoded_limit_keeps_wire_count_and_framing_validation() {
         Err(BatchError::DecodedTooLarge { maximum: 0 })
     ));
     // The actual encoded envelope without any body remains a valid empty batch.
-    assert!(packets(&zero, wire.slice(..2)).is_empty());
+    assert!(packets(&zero, wire.slice(..1)).is_empty());
 }
 
 #[test]
 fn framing_regression_matches_directional_empty_and_overflow_lengths() {
     for maximum in [0, 1, 1600] {
-        let accepting = BatchCodec::new(
-            BatchHeader::Prefixed,
-            BatchLimits {
-                max_incoming_packets: Some(maximum),
-                ..BatchLimits::default()
-            },
-        );
+        let accepting = BatchCodec::new(BatchLimits {
+            max_incoming_packets: Some(maximum),
+            ..BatchLimits::default()
+        });
         assert!(matches!(
-            accepting.decode(Bytes::from_static(&[0xfe, 0])),
+            accepting.decode(Bytes::from_static(&[0])),
             Err(BatchError::EmptyPacket)
         ));
     }
-    let client = BatchCodec::new(BatchHeader::Prefixed, BatchLimits::default());
+    let client = BatchCodec::new(BatchLimits::default());
     for fifth in [0x10, 0x20, 0x70] {
-        let batch = Bytes::from(vec![0xfe, 0x81, 0x80, 0x80, 0x80, fifth, 2, 1, 3]);
+        let batch = Bytes::from(vec![0x81, 0x80, 0x80, 0x80, fifth, 2, 1, 3]);
         assert_eq!(
             packets(&client, batch),
             [Bytes::from_static(&[2]), Bytes::from_static(&[3])]
         );
     }
     assert!(matches!(
-        client.decode(Bytes::from_static(&[0xfe, 0x81, 0x80, 0x80, 0x80, 0x80])),
+        client.decode(Bytes::from_static(&[0x81, 0x80, 0x80, 0x80, 0x80])),
         Err(BatchError::InvalidPacketLength { .. })
     ));
 }
@@ -688,15 +588,12 @@ fn negotiated_codec_keeps_const_construction_and_thread_safety() {
     /// Requires the public codec to keep its original thread-safety bounds.
     fn assert_send_sync<T: Send + Sync>(_: &T) {}
     let codec = const {
-        BatchCodec::new(
-            BatchHeader::Prefixed,
-            BatchLimits {
-                max_encoded_bytes: 1024,
-                max_decoded_bytes: 1024,
-                max_packets: 10,
-                max_incoming_packets: None,
-            },
-        )
+        BatchCodec::new(BatchLimits {
+            max_encoded_bytes: 1024,
+            max_decoded_bytes: 1024,
+            max_packets: 10,
+            max_incoming_packets: None,
+        })
         .negotiate(CompressionSettings {
             algorithm: CompressionAlgorithm::Deflate,
             threshold: 0,
@@ -740,13 +637,10 @@ fn encoder_writes_the_same_packet_view_it_validated() {
 
 #[test]
 fn encoding_reuses_only_consumed_unique_buffers_and_clears_failed_output() {
-    let codec = BatchCodec::new(
-        BatchHeader::Prefixed,
-        BatchLimits {
-            max_packets: 1,
-            ..BatchLimits::default()
-        },
-    );
+    let codec = BatchCodec::new(BatchLimits {
+        max_packets: 1,
+        ..BatchLimits::default()
+    });
     let input = [vec![0x42; 1 << 20], vec![0x43; 1 << 20]];
     let mut output = codec.encode(&input).unwrap();
     let slots = output.as_ptr();
@@ -776,89 +670,6 @@ fn encoding_reuses_only_consumed_unique_buffers_and_clears_failed_output() {
             .is_err()
     );
     assert!(output.is_empty());
-}
-
-#[test]
-fn complete_batch_encryption_keeps_owned_storage_and_matches_go() {
-    let key = std::array::from_fn(|index| u8::try_from(index).unwrap());
-    for header in [BatchHeader::Prefixed, BatchHeader::NetherNet] {
-        let offset = usize::from(header == BatchHeader::NetherNet);
-        let mut encryptor = BatchEncryptor::new(key);
-        let mut decryptor = BatchDecryptor::new(key);
-        for expected in [go::GO_ENCRYPTED_0, go::GO_ENCRYPTED_1, go::GO_ENCRYPTED_2] {
-            let mut storage = Vec::with_capacity(go::GO_BATCH_65535.len() + 8);
-            storage.extend_from_slice(&go::GO_BATCH_65535[offset..]);
-            let original = storage.as_ptr();
-            let encrypted = encryptor.encrypt_batch(header, storage.into()).unwrap();
-            assert_eq!(encrypted.as_ptr(), original);
-            assert_eq!(encrypted, &expected[offset..]);
-            let decrypted = decryptor.decrypt_batch(header, encrypted).unwrap();
-            assert_eq!(decrypted.as_ptr(), original);
-            assert_eq!(decrypted, &go::GO_BATCH_65535[offset..]);
-        }
-    }
-}
-
-#[test]
-fn encoded_batch_reserves_checksum_space_and_shared_encryption_preserves_input() {
-    for header in [BatchHeader::Prefixed, BatchHeader::NetherNet] {
-        for algorithm in [
-            CompressionAlgorithm::None,
-            CompressionAlgorithm::Deflate,
-            CompressionAlgorithm::Snappy,
-        ] {
-            let codec =
-                BatchCodec::new(header, BatchLimits::default()).negotiate(CompressionSettings {
-                    algorithm,
-                    threshold: 0,
-                });
-            let input = [vec![0x42; 32768]];
-            let message = codec.encode(&input).unwrap().pop().unwrap();
-            let original = message.as_ptr();
-            let mut encryptor = BatchEncryptor::new([9; 32]);
-            let encrypted = encryptor.encrypt_batch(header, message).unwrap();
-            assert_eq!(encrypted.as_ptr(), original, "{header:?} {algorithm:?}");
-            let shared = encrypted.clone();
-            let mut decryptor = BatchDecryptor::new([9; 32]);
-            let decrypted = decryptor.decrypt_batch(header, encrypted).unwrap();
-            assert_ne!(decrypted.as_ptr(), shared.as_ptr());
-            assert_eq!(packets(&codec, decrypted), input);
-            let mut another = BatchDecryptor::new([9; 32]);
-            assert_eq!(
-                packets(&codec, another.decrypt_batch(header, shared).unwrap()),
-                input
-            );
-        }
-    }
-}
-
-#[test]
-fn complete_batch_crypto_checks_marker_and_invalidates_on_failure() {
-    for message in [Bytes::new(), Bytes::from_static(&[0xfd, 0xff])] {
-        let mut encryptor = BatchEncryptor::new([9; 32]);
-        let mut decryptor = BatchDecryptor::new([9; 32]);
-        assert_eq!(
-            encryptor.encrypt_batch(BatchHeader::Prefixed, message.clone()),
-            Err(EncryptionError::InvalidBatchHeader)
-        );
-        assert_eq!(
-            decryptor.decrypt_batch(BatchHeader::Prefixed, message),
-            Err(EncryptionError::InvalidBatchHeader)
-        );
-        assert_eq!(
-            encryptor.encrypt(Bytes::new()),
-            Err(EncryptionError::Invalidated)
-        );
-        assert_eq!(
-            decryptor.decrypt(Bytes::new()),
-            Err(EncryptionError::Invalidated)
-        );
-    }
-    let mut decryptor = BatchDecryptor::new([9; 32]);
-    assert_eq!(
-        decryptor.decrypt_batch(BatchHeader::Prefixed, Bytes::from_static(&[0xfe])),
-        Err(EncryptionError::Truncated { actual: 0 })
-    );
 }
 
 #[test]
@@ -892,7 +703,7 @@ fn synchronous_snappy_decode_reuses_scratch_and_validates_before_visiting() {
             },
         );
         let mut visits = 0;
-        let mut wire = vec![0xfe, 1];
+        let mut wire = vec![1];
         wire.extend(
             snap::raw::Encoder::new()
                 .compress_vec(&[0, 1, 7, 0])
@@ -907,7 +718,7 @@ fn synchronous_snappy_decode_reuses_scratch_and_validates_before_visiting() {
             result => panic!("unexpected result: {result:?}"),
         }
         visits = 0;
-        let mut wire = vec![0xfe, 1];
+        let mut wire = vec![1];
         wire.extend(
             snap::raw::Encoder::new()
                 .compress_vec(&[1, 7, 10, 8])
@@ -933,9 +744,9 @@ fn snappy_large_offsets_and_long_matches_decode_with_the_reference() {
     let codec = negotiated(CompressionAlgorithm::Snappy, BatchLimits::default());
     let wire = codec.encode(&input).unwrap().pop().unwrap();
     let decoded = snap::raw::Decoder::new()
-        .decompress_vec(&wire[2..])
+        .decompress_vec(&wire[1..])
         .unwrap();
-    let plain = BatchCodec::new(BatchHeader::NetherNet, BatchLimits::default());
+    let plain = BatchCodec::new(BatchLimits::default());
     assert_eq!(packets(&plain, decoded.into()), input);
 }
 
@@ -964,7 +775,7 @@ fn reused_compressors_emit_independent_batches_and_retained_output_stays_unchang
 #[test]
 fn small_snappy_encoder_matches_the_reference_decoder_across_boundaries() {
     let codec = negotiated(CompressionAlgorithm::Snappy, BatchLimits::default());
-    let plain = BatchCodec::new(BatchHeader::Prefixed, BatchLimits::default());
+    let plain = BatchCodec::new(BatchLimits::default());
     let mut state = 0x12345678_u32;
     for length in [
         1, 31, 1024, 4095, 4096, 8191, 8192, 8193, 16383, 16384, 50000, 65535, 65536, 65537,
@@ -990,9 +801,9 @@ fn small_snappy_encoder_matches_the_reference_decoder_across_boundaries() {
             let expected = plain.encode(&[input]).unwrap().pop().unwrap();
             assert_eq!(
                 snap::raw::Decoder::new()
-                    .decompress_vec(&wire[2..])
+                    .decompress_vec(&wire[1..])
                     .unwrap(),
-                expected[1..]
+                expected[..]
             );
         }
     }
@@ -1010,7 +821,7 @@ fn malformed_snappy_blocks_never_dispatch_partial_packets() {
         &[1, 8, 1, 7, 8],
     ] {
         assert!(snap::raw::Decoder::new().decompress_vec(block).is_err());
-        let mut wire = vec![0xfe, 1];
+        let mut wire = vec![1];
         wire.extend_from_slice(block);
         let mut visits = 0;
         assert!(matches!(

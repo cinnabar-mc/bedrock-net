@@ -86,7 +86,6 @@ fn next_line(lines: &mut BufReader<ChildStdout>) -> Value {
 #[derive(Default, Debug)]
 struct Observed {
     compression: Option<String>,
-    encrypted: bool,
     login_success: bool,
     initial_requests: usize,
     archives: Vec<usize>,
@@ -149,7 +148,6 @@ async fn join(
     let configured = ClientHandshake::new(
         key,
         HandshakeOptions {
-            batch_encryption: transport.batch_encryption(),
             max_login_bytes: BatchLimits::default().max_decoded_bytes,
             ..Default::default()
         },
@@ -183,7 +181,7 @@ async fn join(
         &mut |event| observe(observed, event),
     )
     .await;
-    observed.encrypted |= session.has_batch_ciphers();
+
     let outcome = match result {
         Ok(Some(offer)) => login_phase(&mut session, offer, observed).await,
         Ok(None) => {
@@ -206,7 +204,7 @@ async fn login_phase(
     while !observed.login_success {
         let result =
             handshake::offer_control(session, offer, &mut |event| observe(observed, event)).await;
-        observed.encrypted |= session.has_batch_ciphers();
+
         offer = match result {
             Ok(offer) => offer,
             Err(error) => return terminal(error, observed),
@@ -216,7 +214,7 @@ async fn login_phase(
         observe(observed, event)
     })
     .await;
-    observed.encrypted |= session.has_batch_ciphers();
+
     let acquired = match result {
         Ok(acquired) => acquired,
         Err(error) => return terminal(error, observed),
@@ -321,14 +319,14 @@ impl Ledger {
     }
 }
 
-/// A Listener join that spawns: Login, encryption and the server's compression choice.
+/// A Listener join that spawns: Login and the server's compression choice.
 fn spawned_join(name: &str, compression: &str) {
     let Some((observed, _, verdict)) = scenario(name) else {
         return;
     };
     assert_eq!(verdict["result"], "ok", "{name}: {verdict}; {observed:?}");
     assert_eq!(observed.compression.as_deref(), Some(compression));
-    assert!(!observed.encrypted && observed.login_success && observed.spawned);
+    assert!(observed.login_success && observed.spawned);
 }
 
 #[test]

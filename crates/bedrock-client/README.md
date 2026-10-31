@@ -46,7 +46,7 @@ Drive the returned states in this order:
 | --- | --- |
 | `ClientSettings` | Call `receive` until `SettingsEvent::Ready`; install its compression settings. |
 | `ClientLoginReady` | Build metadata, then call `login_authenticated` or `login_offline` and send Login. |
-| `ClientLogin` | Call `receive`; send responses and install any verified key-exchange ciphers. |
+| `ClientLogin` | Call `receive`; send responses and acknowledge any verified server handshake. |
 | `ClientPackOffer` | Supply validated preloads if available, then call `start`. |
 | `ClientPacks` | Transfer packs until `PackComplete`; send each returned response. |
 | `SpawnNegotiation` | Process startup packets and prepare presentation from the returned definitions. |
@@ -74,7 +74,6 @@ untrusted on that path.
 | --- | --- |
 | Settings | Send the plaintext response, enable compression, then call `flushed`. |
 | Login | Verify the request and authorize the player through `VerifiedLogin::authorize`. |
-| Key exchange | Fresh salt; flush the server token before installing its ciphers. |
 | Packs | The selected world's `ServerPackSnapshot` and archive sources. |
 | Startup | The selected world's generated definitions and radius policy. |
 | Accepted session | Recheck authorization and attach the player to the running world. |
@@ -86,7 +85,7 @@ See the [server guide](https://github.com/cinnabar-mc/bedrock-net/blob/dev/docs/
 
 ## Integration rules
 
-Keep one key, codec and cipher pair for the connection. Send effects in order,
+Keep one key and codec for the connection. Send effects in order,
 preserve unread packets across state changes, and keep the original deadline.
 Check credentials and application authorization after I/O waits, before admission.
 The [integration guide](https://github.com/cinnabar-mc/bedrock-net/blob/dev/docs/integration.md) explains buffering, cancellation

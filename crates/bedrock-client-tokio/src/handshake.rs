@@ -87,7 +87,7 @@ pub async fn settings(
     }
 }
 
-/// Signs and sends Login once, then retains the same key/ciphers/FIFO through offer or `StartGame`.
+/// Signs and sends Login once, then retains the same key and FIFO through offer or `StartGame`.
 /// Metadata is supplied only after `settings` returned the real `LoginReady` continuation.
 pub async fn login(
     connection: &mut Connection,
@@ -193,18 +193,13 @@ pub async fn offer_control(
     }
 }
 
-/// Installs the existing verified streams before flushing their original acknowledgment.
+/// Sends the acknowledgment for the verified server token before continuing input.
 pub(crate) async fn apply_key_exchange<C>(
     connection: &mut Connection,
     exchange: ClientKeyExchange<C>,
     observe: &mut (impl FnMut(Observation<'_>) + Send),
 ) -> Result<C, NegotiationError> {
-    let (continuation, ciphers, response) = exchange.into_parts();
-    if let Some(ciphers) = ciphers {
-        connection
-            .enable_encryption(*ciphers)
-            .map_err(NegotiationError::Io)?;
-    }
+    let (continuation, response) = exchange.into_parts();
     send_packets(connection, &[response.into()], None, observe).await?;
     Ok(continuation)
 }

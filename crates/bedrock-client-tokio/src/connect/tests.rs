@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: MIT
 
 use super::*;
-use bedrock_net::BatchHeader;
 use bytes::Bytes;
 use lan::{DirectedLanConfig, LanSelection};
 use nethernet_tokio::{ConnectionConfig, LanConfig, LanSignaling, NetherServer, ServerData};
@@ -163,7 +162,6 @@ async fn native_lan_resolution_skips_ipv6_and_keeps_the_ready_ipv4_owner() {
         );
         let mut connected = connected.unwrap();
         let mut peer = peer.unwrap();
-        assert_eq!(connected.header(), BatchHeader::NetherNet);
         assert_eq!(connected.nonce(), "original-fixture-nonce");
         peer.session
             .send(Bytes::from_static(b"same peer"))
@@ -270,7 +268,6 @@ async fn native_lan_discovery_preserves_the_configured_ice_port() {
                 inbound,
                 outbound,
                 peer.session.remote_addr().await.socket_addr,
-                connected.header(),
                 connected.nonce().to_owned(),
             ))
         }
@@ -317,11 +314,10 @@ async fn native_lan_discovery_preserves_the_configured_ice_port() {
         close.unwrap();
         peer_close.unwrap();
         connected.expect("directed LAN must establish with the original configured ICE bind");
-        let (inbound, outbound, remote, header, nonce) = exchange.unwrap();
+        let (inbound, outbound, remote, nonce) = exchange.unwrap();
         assert_eq!(inbound, "configured peer");
         assert_eq!(outbound, Some(Bytes::from_static(b"configured client")));
         assert_eq!(remote, Some(client_address));
-        assert_eq!(header, BatchHeader::NetherNet);
         assert_eq!(nonce, "original-fixture-nonce");
     })
     .await

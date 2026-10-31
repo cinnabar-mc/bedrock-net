@@ -84,7 +84,7 @@ revisions. Native DEFLATE encoding requires a C compiler.
 | --- | --- |
 | Connections on your Tokio runtime | [`bedrock-client-tokio`](https://github.com/cinnabar-mc/bedrock-net/blob/dev/crates/bedrock-client-tokio/README.md), with the `nethernet` feature. |
 | Negotiation on another runtime or an existing network loop | [`bedrock-client`](https://github.com/cinnabar-mc/bedrock-net/blob/dev/crates/bedrock-client/README.md). |
-| Batching and encryption for encoded packets | [`bedrock-net`](https://github.com/cinnabar-mc/bedrock-net/blob/dev/src/lib.rs). |
+| Batching and compression for encoded packets | [`bedrock-net`](https://github.com/cinnabar-mc/bedrock-net/blob/dev/src/lib.rs). |
 | Pack JSONC parsing and archive handoffs | [`bedrock-packs`](https://github.com/cinnabar-mc/bedrock-net/blob/dev/crates/bedrock-packs/README.md). |
 
 `bedrock-client` and `bedrock-packs` do no I/O and use no async runtime. The default
@@ -98,7 +98,7 @@ Underlying transports may run their own workers.
 - [Client](https://github.com/cinnabar-mc/bedrock-net/blob/dev/docs/client.md): Login, packs and entering play.
 - [Server](https://github.com/cinnabar-mc/bedrock-net/blob/dev/docs/server.md): verification, authorization, packs and world startup.
 - [Transports](https://github.com/cinnabar-mc/bedrock-net/blob/dev/docs/transports.md): connection setup, polling and shutdown.
-- [Batch codec](https://github.com/cinnabar-mc/bedrock-net/blob/dev/docs/batches.md): framing, compression, limits and encryption.
+- [Batch codec](https://github.com/cinnabar-mc/bedrock-net/blob/dev/docs/batches.md): framing, compression and limits.
 - [Release dependencies](https://github.com/cinnabar-mc/bedrock-net/blob/dev/docs/releases.md): packaging and registry prerequisites.
 
 ## License

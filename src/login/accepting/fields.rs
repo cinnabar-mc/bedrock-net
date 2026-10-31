@@ -73,12 +73,11 @@ mod tests {
         let envelope: Envelope =
             serde_json::from_str(r#"{"AuthentıcationType":0,"Token":"exact"}"#).unwrap();
         assert_eq!(envelope.mode, None);
-        let key = p384::ecdsa::SigningKey::from_slice(&[1; 48]).unwrap();
         let header = URL_SAFE_NO_PAD.encode(br#"{"ALG":"ES384"}"#);
         let token = format!("{header}.e30.AA");
         assert!(
             matches!(
-                crate::login::finish_key_exchange(&key, &token, 1024),
+                crate::login::verify_server_handshake(&token, 1024),
                 Err(crate::login::LoginError::MalformedJson)
             ),
             "outer field folding must never alter JWS header policy"

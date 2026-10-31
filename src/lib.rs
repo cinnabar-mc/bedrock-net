@@ -2,7 +2,6 @@
 
 mod batch;
 mod compression;
-pub mod encryption;
 mod error;
 #[cfg(feature = "login")]
 pub mod login;
@@ -10,8 +9,8 @@ pub mod login;
 pub mod messaging;
 
 pub use batch::{
-    BatchCodec, BatchHeader, BatchLimits, BatchPackets, BatchPhase, DecodeOutcome, Negotiated,
-    Plain, VisitOutcome,
+    BatchCodec, BatchLimits, BatchPackets, BatchPhase, DecodeOutcome, Negotiated, Plain,
+    VisitOutcome,
 };
 pub use compression::{CompressionAlgorithm, CompressionSettings, UnknownCompressionAlgorithm};
 pub use error::{BatchError, DropReason};

@@ -25,7 +25,6 @@ type Cases struct {
 	} `json:"packet_sets"`
 	Benches              map[string][]string `json:"benches"`
 	CompressionThreshold int                 `json:"compression_threshold"`
-	EncryptionKeyByte    byte                `json:"encryption_key_byte"`
 	Packs                struct {
 		Source    string            `json:"source"`
 		Trailer   string            `json:"trailer"`
