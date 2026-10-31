@@ -28,23 +28,29 @@ fn player_identity_matches_the_original_go_login_projection() {
     }
     let key = SigningKey::from_slice(&[3; 48]).unwrap();
     let public = STANDARD.encode(key.verifying_key().to_public_key_der().unwrap().as_bytes());
-    for (xuid, legacy) in [
+    for (index, (xuid, legacy)) in [
         ("123", None),
         ("456", Some("")),
         ("00123", None),
         ("123", Some("00000000-0000-4000-8000-000000000011")),
-    ] {
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let name = format!("Player {index}");
+        let playfab_id = format!("original-master-{index}");
+        let title_id = format!("original-title-{index}");
         let identity = PlayerIdentity::new(
             xuid,
-            "Verified Player".into(),
+            name.clone(),
             legacy,
-            "original-master".into(),
-            "original-title".into(),
+            playfab_id.clone(),
+            title_id.clone(),
         )
         .unwrap();
         let claims = jwt::json_line(
-            &json!({"xid":xuid,"xname":identity.display_name(),"leguuid":legacy,
-                "mid":identity.playfab_id(),"tid":identity.playfab_title_id(),
+            &json!({"xid":xuid,"xname":name,"leguuid":legacy,
+                "mid":playfab_id,"tid":title_id,
                 "exp":4_070_908_800_u64,"cpk":public}),
             64 * 1024,
         )
