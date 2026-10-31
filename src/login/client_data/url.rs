@@ -3,8 +3,9 @@
 //! Source-attributed Go net/url host escape rules; see NOTICE.
 
 /// Decodes HTTP(S) URL host/optional-port spelling without DNS, origin or egress approval.
+/// Hosts retain escaped bytes even when they are not UTF-8.
 /// Bracketed IP-literal validation remains with the concrete consumer; no input grants authority.
-pub fn decode_url_host(host: &str) -> Option<String> {
+pub fn decode_url_host(host: &str) -> Option<Vec<u8>> {
     if let Some(literal) = host.strip_prefix('[') {
         let (literal, port) = literal.rsplit_once(']')?;
         if !optional_port(port) {
@@ -13,12 +14,16 @@ pub fn decode_url_host(host: &str) -> Option<String> {
         let decoded = match literal.find("%25") {
             Some(index) => {
                 let mut decoded = unescape(&literal[..index], Escape::Host)?;
-                decoded.push_str(&unescape(&literal[index..], Escape::Zone)?);
+                decoded.extend(unescape(&literal[index..], Escape::Zone)?);
                 decoded
             }
             None => unescape(literal, Escape::Host)?,
         };
-        return Some(format!("[{decoded}]{port}"));
+        let mut result = vec![b'['];
+        result.extend(decoded);
+        result.push(b']');
+        result.extend_from_slice(port.as_bytes());
+        return Some(result);
     }
     if host.contains('[') {
         return None;
@@ -46,7 +51,7 @@ fn optional_port(port: &str) -> bool {
 }
 
 /// Decodes host escapes and the IPv6 zone exception while rejecting control/authority delimiters.
-fn unescape(raw: &str, mode: Escape) -> Option<String> {
+fn unescape(raw: &str, mode: Escape) -> Option<Vec<u8>> {
     let mut result = Vec::with_capacity(raw.len());
     let mut bytes = raw.bytes();
     while let Some(byte) = bytes.next() {
@@ -71,7 +76,7 @@ fn unescape(raw: &str, mode: Escape) -> Option<String> {
             result.push(byte);
         }
     }
-    String::from_utf8(result).ok()
+    Some(result)
 }
 
 /// URL host characters, including Go's retained host sub-delimiters; not a DNS allowlist.
@@ -100,4 +105,22 @@ fn host_byte(byte: u8) -> bool {
                 | b'>'
                 | b'"'
         )
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn host_escapes_preserve_non_utf8_bytes() {
+        for (input, expected) in [
+            ("example%FF.com", b"example\xff.com".as_slice()),
+            ("%C3", b"\xc3"),
+            ("%C3%A9", b"\xc3\xa9"),
+        ] {
+            assert_eq!(
+                super::decode_url_host(input).map(|host| host.to_vec()),
+                Some(expected.to_vec())
+            );
+        }
+        assert!(super::decode_url_host("example%2f.com").is_none());
+    }
 }
