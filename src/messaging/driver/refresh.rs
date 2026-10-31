@@ -63,7 +63,7 @@ impl Driver {
         if let Some(error) = self.terminal.clone() {
             return Err(error);
         }
-        if self.refresh.is_some() || self.socket.legacy_network_id().is_some() {
+        if self.refresh.is_some() {
             return Err(Error::Admission);
         }
         if Instant::now() >= deadline {

@@ -175,7 +175,7 @@ pub struct PreparedMessaging {
 impl PreparedMessaging {
     /// Captures the exact network ID used at upgrade and rejects an absent peer identity.
     pub fn new(socket: MessagingSocket, local_network_id: u64, peer: Uuid) -> Result<Self, Error> {
-        if peer.is_nil() || socket.legacy_network_id().is_some() {
+        if peer.is_nil() {
             return Err(Error::Configuration);
         }
         Ok(Self {
@@ -185,27 +185,7 @@ impl PreparedMessaging {
         })
     }
 
-    /// Captures an original legacy service route on its matching protected socket.
-    /// This selects string routing only; the caller still supplies the existing signed SDP policy.
-    ///
-    /// # Errors
-    /// Rejects an empty peer or a different socket dialect/local upgrade ID.
-    pub fn new_legacy(
-        socket: MessagingSocket,
-        local_network_id: u64,
-        peer: String,
-    ) -> Result<Self, Error> {
-        if peer.is_empty() || socket.legacy_network_id() != Some(local_network_id) {
-            return Err(Error::Configuration);
-        }
-        Ok(Self {
-            socket,
-            local_network_id,
-            peer: Recipient::Legacy(peer),
-        })
-    }
-
-    /// Borrows the exact authenticated service route without converting one dialect into another.
+    /// Borrows the authenticated Player Messaging route.
     pub fn recipient(&self) -> &Recipient {
         &self.peer
     }
@@ -233,8 +213,7 @@ impl PreparedMessaging {
 impl Engine {
     /// Connects once to an explicit peer using the same local network ID supplied at socket upgrade.
     ///
-    /// Supply signed SDP identity and peer trust in `config`. Missing answers require the
-    /// explicit legacy route and client allowance; present identities always use that trust.
+    /// Supply signed SDP identity and peer trust in `config`. All answers require identity.
     /// The original deadline bounds TURN acquisition, DNS and connection establishment.
     /// TURN lifetimes are handed off unchanged. No automatic ambiguous retry occurs.
     async fn connect(
@@ -247,7 +226,7 @@ impl Engine {
         if config.identity.is_none()
             || config.server_trust.is_none()
             || config.allow_unsigned_answers
-            || (config.allow_anonymous_answers && !peer.is_legacy())
+            || config.allow_anonymous_answers
         {
             return Err(Error::Configuration);
         }
@@ -260,7 +239,7 @@ impl Engine {
             config.client_ice = Some(ice);
             config.attempts = 1;
             let caller_config = CallerSignalingConfig {
-                require_offer_receipt: !peer.is_legacy(),
+                require_offer_receipt: true,
                 ..CallerSignalingConfig::default()
             };
             let remote = peer.network_id();
@@ -487,6 +466,3 @@ impl Drop for AcquiredServers {
 
 #[cfg(test)]
 mod tests;
-
-#[cfg(test)]
-mod legacy_tests;

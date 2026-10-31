@@ -4,7 +4,7 @@ use super::{Error, Recipient};
 use bedrock_services::signaling::{
     self, Event, ReceivedSignal, RequestId, websocket::MessagingSocket,
 };
-use nethernet_tokio::{SignalRequest, SignalType};
+use nethernet_tokio::SignalRequest;
 use std::{
     future::{Future, poll_fn},
     task::Poll,
@@ -104,13 +104,6 @@ fn admit(
                 outgoing.message,
                 &outgoing.wire,
                 outgoing.request.requires_peer_receipt(),
-                outgoing.request.deadline(),
-            ),
-            Recipient::Legacy(peer) => socket.send_legacy_signal(
-                peer,
-                outgoing.message,
-                &outgoing.wire,
-                outgoing.request.signal().signal_type == SignalType::Offer,
                 outgoing.request.deadline(),
             ),
         };

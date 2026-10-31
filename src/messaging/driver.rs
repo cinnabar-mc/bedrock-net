@@ -244,7 +244,7 @@ impl Driver {
             let (receipt, waiting, deadline) = match front {
                 Some(front) => {
                     let receipt = if front.waiting.is_none() {
-                        front.signal.receipt(front.receipt, front.deadline)
+                        Some((&front.signal, front.receipt, front.deadline))
                     } else {
                         None
                     };
@@ -389,11 +389,6 @@ impl Driver {
             SocketStep::Event(Ok(Event::Signal(signal))) => {
                 let deadline = self.incoming_deadline()?;
                 self.caller.receive(&mut self.incoming, signal, deadline)
-            }
-            SocketStep::Event(Ok(Event::LegacySignal(signal))) => {
-                let deadline = self.incoming_deadline()?;
-                self.caller
-                    .receive_legacy(&mut self.incoming, signal, deadline)
             }
             SocketStep::Event(Ok(_)) => Ok(()),
         }

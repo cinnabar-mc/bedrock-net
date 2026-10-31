@@ -1,7 +1,7 @@
 //! The existing concrete one-peer and accepting signaling owners, sharing one service driver.
 
 use super::{Error, incoming::Batch};
-use bedrock_services::signaling::{ReceivedLegacySignal, ReceivedSignal};
+use bedrock_services::signaling::ReceivedSignal;
 use nethernet_tokio::{CallerServerSignalingDriver, CallerSignalingDriver, SignalRequest};
 use std::time::Instant;
 
@@ -29,19 +29,6 @@ impl Caller {
         match self {
             Self::Client(caller) => batch.push(caller, signal, deadline),
             Self::Server(caller) => batch.push_server(caller, signal, deadline),
-        }
-    }
-
-    /// Uses the original legacy envelope sender without inventing a Messaging receipt.
-    pub(super) fn receive_legacy(
-        &self,
-        batch: &mut Batch,
-        signal: ReceivedLegacySignal,
-        deadline: Instant,
-    ) -> Result<(), Error> {
-        match self {
-            Self::Client(caller) => batch.push_legacy(caller, signal, deadline),
-            Self::Server(_) => Err(Error::Configuration),
         }
     }
 
