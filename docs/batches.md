@@ -65,6 +65,8 @@ batches until emission completes before recycling it.
 
 Native DEFLATE encoding uses libdeflate at level 6 and requires a C compiler.
 Decoding uses zlib-rs; WebAssembly also uses zlib-rs level 6 for encoding. DEFLATE
-engines are temporary per call. Snappy uses the `snap` crate, reusing its tables
-and, for batches up to 64 KiB, its output for each independent block. Compatible
-encoders may produce different compressed bytes.
+engines are temporary per call. Snappy uses a bounded wide-key search for medium
+batches and `snipsnap` for other sizes. Batches up to 64 KiB reuse encoder tables
+and output. The `snap` decoder preserves accepted edge cases and error diagnostics
+when the fast decoder cannot handle a block. Compatible encoders may produce
+different compressed bytes.

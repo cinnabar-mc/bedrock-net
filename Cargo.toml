@@ -68,6 +68,7 @@ serde_json = { version = "1", features = ["raw_value"], optional = true }
 sha2 = { version = "0.11", optional = true }
 sha1 = { version = "0.10", optional = true }
 snap = "1"
+snipsnap = { git = "https://github.com/Dandandan/snipsnap", rev = "2f32cbd03a1322dfb923af1b26103f0e2966dc15" }
 thiserror = "2"
 tokio = { version = "1", features = ["net", "time", "macros"], optional = true }
 zeroize = { version = "1", optional = true }
