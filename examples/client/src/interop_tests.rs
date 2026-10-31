@@ -5,10 +5,11 @@
 //! listed in [`EXPECTED_DIVERGENCES`] and listed entries must still diverge.
 
 use std::error::Error;
-use std::io::{BufRead, BufReader};
+use std::io::{self, BufRead, BufReader, Read};
 use std::net::SocketAddr;
-use std::process::{Child, ChildStdout, Command, Stdio};
-use std::time::SystemTime;
+use std::process::{Child, Command, Stdio};
+use std::sync::mpsc::{self, Receiver};
+use std::time::{Duration, Instant, SystemTime};
 
 use bedrock_client::handshake::{ClientHandshake, HandshakeOptions};
 use bedrock_client::spawn::SpawnNegotiation;
@@ -31,55 +32,124 @@ use crate::{HANDSHAKE_TIMEOUT, PROBE_NAME, PROBE_UUID, client_data, is_login_suc
 /// Known differences from a Go Dialer, each naming its audit item.
 const EXPECTED_DIVERGENCES: &[(&str, &str)] = &[];
 
-/// One running helper and the defaults it reported.
+/// Kills and reaps the exact helper on errors, early returns and unwinding.
+struct HelperChild(Child);
+
+impl Drop for HelperChild {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
+}
+
+/// One running helper and its first absolute lifecycle cutoff.
 struct Helper {
-    child: Child,
-    lines: BufReader<ChildStdout>,
+    child: HelperChild,
+    lines: Receiver<io::Result<Value>>,
     address: SocketAddr,
     go: Value,
+    deadline: Instant,
 }
 
 impl Helper {
+    /// Starts the caller-selected fixture under the same cutoff as negotiation.
     fn start(scenario: &str) -> Option<Self> {
         let Some(binary) = std::env::var_os("BEDROCK_NET_GO_INTEROP") else {
-            // CI sets BEDROCK_NET_REQUIRE_FIXTURES so a dropped helper fails instead of skipping.
             assert!(
                 std::env::var_os("BEDROCK_NET_REQUIRE_FIXTURES").is_none(),
                 "missing fixture: BEDROCK_NET_GO_INTEROP; build tools/go-oracle/cmd/interop-server"
             );
-            eprintln!(
-                "missing fixture: BEDROCK_NET_GO_INTEROP; build tools/go-oracle/cmd/interop-server"
-            );
             return None;
         };
-        let mut child = Command::new(binary)
-            .arg(scenario)
+        let mut command = Command::new(binary);
+        command.arg(scenario);
+        Some(
+            Self::spawn(command, Instant::now() + HANDSHAKE_TIMEOUT)
+                .expect("start the interop server"),
+        )
+    }
+
+    /// Owns the child before reading any output, so malformed readiness cannot leak it.
+    fn spawn(mut command: Command, deadline: Instant) -> io::Result<Self> {
+        let child = command
+            .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .spawn()
-            .expect("start the interop server");
-        let mut lines = BufReader::new(child.stdout.take().unwrap());
-        let go = next_line(&mut lines);
-        let address = go["address"].as_str().unwrap().parse().unwrap();
-        Some(Self {
+            .spawn()?;
+        Self::from_child(child, deadline)
+    }
+
+    /// Moves blocking pipe reads onto one bounded channel while retaining exact child cleanup.
+    fn from_child(child: Child, deadline: Instant) -> io::Result<Self> {
+        let mut child = HelperChild(child);
+        let stdout = child.0.stdout.take().expect("piped helper stdout");
+        let (send, lines) = mpsc::sync_channel(1);
+        std::thread::spawn(move || {
+            let mut reader = BufReader::new(stdout);
+            loop {
+                let mut line = String::new();
+                let result = reader
+                    .by_ref()
+                    .take(1024 * 1024 + 1)
+                    .read_line(&mut line)
+                    .and_then(|length| {
+                        if length == 0 {
+                            return Err(io::ErrorKind::UnexpectedEof.into());
+                        }
+                        if length > 1024 * 1024 {
+                            return Err(io::ErrorKind::InvalidData.into());
+                        }
+                        serde_json::from_str(&line).map_err(io::Error::other)
+                    });
+                let failed = result.is_err();
+                if send.send(result).is_err() || failed {
+                    break;
+                }
+            }
+        });
+        let go = next_line(&lines, deadline)?;
+        let address = go["address"]
+            .as_str()
+            .and_then(|text| text.parse().ok())
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "invalid helper address"))?;
+        Ok(Self {
             child,
             lines,
             address,
             go,
+            deadline,
         })
     }
 
-    /// Waits for the helper's own verdict on the connection.
-    fn finish(mut self) -> Value {
-        let result = next_line(&mut self.lines);
-        self.child.wait().unwrap();
-        result
+    /// Bounds verdict and process exit; dropping this owner always reaps its exact child.
+    fn finish(mut self) -> io::Result<Value> {
+        let verdict = next_line(&self.lines, self.deadline)?;
+        loop {
+            if let Some(status) = self.child.0.try_wait()? {
+                return if status.success() {
+                    Ok(verdict)
+                } else {
+                    Err(io::Error::other("interop helper failed"))
+                };
+            }
+            let remaining = self.deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                return Err(io::ErrorKind::TimedOut.into());
+            }
+            std::thread::park_timeout(remaining.min(Duration::from_millis(10)));
+        }
     }
 }
 
-fn next_line(lines: &mut BufReader<ChildStdout>) -> Value {
-    let mut line = String::new();
-    lines.read_line(&mut line).unwrap();
-    serde_json::from_str(&line).unwrap_or_else(|_| panic!("helper line: {line:?}"))
+/// Receives one bounded JSON record under the original lifecycle cutoff.
+fn next_line(lines: &Receiver<io::Result<Value>>, deadline: Instant) -> io::Result<Value> {
+    lines
+        .recv_timeout(deadline.saturating_duration_since(Instant::now()))
+        .map_err(|error| {
+            io::Error::from(match error {
+                mpsc::RecvTimeoutError::Timeout => io::ErrorKind::TimedOut,
+                mpsc::RecvTimeoutError::Disconnected => io::ErrorKind::UnexpectedEof,
+            })
+        })?
 }
 
 /// What the client saw, in the terms a Go Dialer's behaviour is stated in.
@@ -271,16 +341,18 @@ fn scenario(name: &str) -> Option<(Observed, Value, Value)> {
         .build()
         .unwrap();
     let joined = runtime.block_on(async {
-        let deadline = tokio::time::Instant::now() + HANDSHAKE_TIMEOUT;
+        let deadline = helper.deadline.into();
         tokio::time::timeout_at(deadline, join(helper.address, &mut observed, deadline)).await
     });
     let go = helper.go.clone();
-    let verdict = helper.finish();
     match joined {
         Ok(Ok(())) => {}
         Ok(Err(error)) => panic!("{name}: client failed: {error}; observed {observed:?}"),
         Err(_) => panic!("{name}: client timed out; observed {observed:?}"),
     }
+    let verdict = helper
+        .finish()
+        .unwrap_or_else(|error| panic!("{name}: helper failed: {error}"));
     Some((observed, go, verdict))
 }
 
@@ -426,4 +498,48 @@ fn pack_stack_before_login_success_is_replayed_once() {
     };
     assert_eq!(verdict["result"], "ok", "{verdict}; {observed:?}");
     assert!(observed.login_success && observed.unhandled.is_empty());
+}
+
+#[cfg(unix)]
+#[test]
+fn stalled_helpers_time_out_and_are_reaped_at_every_lifecycle_stage() {
+    for stage in ["startup", "verdict", "exit", "invalid"] {
+        let mut command = Command::new("sh");
+        let output = match stage {
+            "startup" => "",
+            "invalid" => "printf '{\"address\":false}\\n';",
+            "verdict" => "printf '{\"address\":\"127.0.0.1:1\"}\\n';",
+            _ => "printf '{\"address\":\"127.0.0.1:1\"}\\n{}\\n';",
+        };
+        command.arg("-c").arg(format!("{output} read waiting"));
+        let child = command
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let pid = child.id();
+        let helper = Helper::from_child(child, Instant::now() + Duration::from_millis(200));
+        let error = match helper {
+            Ok(helper) => helper.finish().unwrap_err(),
+            Err(error) => error,
+        };
+        assert_eq!(
+            error.kind(),
+            if stage == "invalid" {
+                io::ErrorKind::InvalidData
+            } else {
+                io::ErrorKind::TimedOut
+            },
+            "{stage}"
+        );
+        assert!(
+            !Command::new("kill")
+                .args(["-0", &pid.to_string()])
+                .stderr(Stdio::null())
+                .status()
+                .unwrap()
+                .success(),
+            "helper {pid} was not reaped"
+        );
+    }
 }
