@@ -113,11 +113,12 @@ jobs:
         run: |
           set -o pipefail
           mkdir -p ../../target
-          go test -run '^$' -bench . -benchmem -count 3 -cpu "$BENCH_GO_PROCS" ./bench/ | tee ../../target/go-bench.txt
+          go test -run '^$' -bench . -benchmem -count 3 -cpu "$BENCH_GO_PROCS" ./bench/... | tee ../../target/go-bench.txt
       - name: Rust benchmarks
         run: |
           cargo bench --locked -p bedrock-net --features login --bench batch --bench login -- --warm-up-time 1 --measurement-time 3
           cargo bench --locked -p bedrock-client --bench packs -- --warm-up-time 1 --measurement-time 3
+          cargo bench --locked -p bedrock-client-tokio --features nethernet --bench raw -- --warm-up-time 1 --measurement-time 3
       # Slower Rust paths (exit 1) are reported as a warning while known gaps remain;
       # a missing or unpaired measurement (exit 3) or unreadable input (2) fails the job.
       - name: Compare

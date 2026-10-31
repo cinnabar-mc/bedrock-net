@@ -32,7 +32,7 @@ fn body(selected: bool) -> Bytes {
 
 /// Measures framing, raw views, selected decoding and outgoing framing without network scheduling.
 fn raw(c: &mut Criterion) {
-    let mut group = c.benchmark_group("RawBatch");
+    let mut group = c.benchmark_group("raw");
     for (name, selected) in [("forward_opaque", false), ("forward_selected", true)] {
         let body = body(selected);
         let codec = BatchCodec::new(BatchLimits::default());

@@ -40,8 +40,8 @@ func rawBody(selected bool) []byte {
 	return body
 }
 
-// BenchmarkRawBatch measures framing, raw views, selected decoding and outgoing framing.
-func BenchmarkRawBatch(b *testing.B) {
+// BenchmarkRaw measures framing, raw views, selected decoding and outgoing framing.
+func BenchmarkRaw(b *testing.B) {
 	for _, selected := range []bool{false, true} {
 		name := "forward_opaque"
 		if selected {
