@@ -93,7 +93,19 @@ fn transport_error(error: nethernet_tokio::NetherError) -> io::Error {
     } else {
         io::ErrorKind::Other
     };
-    io::Error::new(kind, error)
+    io::Error::new(kind, TransportFailure(error))
+}
+
+/// A redacted setup boundary whose source retains the original transport diagnostics.
+#[derive(thiserror::Error)]
+#[error("NetherNet setup failed")]
+pub struct TransportFailure(#[source] nethernet_tokio::NetherError);
+
+impl std::fmt::Debug for TransportFailure {
+    /// Keeps automatic I/O diagnostics as coarse as ordinary display formatting.
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Display::fmt(self, formatter)
+    }
 }
 
 #[cfg(all(test, feature = "nethernet"))]

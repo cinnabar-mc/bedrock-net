@@ -42,10 +42,22 @@ async fn http_cancelled_setup_retains_its_cancellation_category() {
         error
             .get_ref()
             .unwrap()
+            .source()
+            .unwrap()
             .downcast_ref::<nethernet_tokio::NetherError>()
             .unwrap()
             .is_cancelled()
     );
+}
+
+/// Ordinary I/O diagnostics cannot disclose an inspectable transport source's peer text.
+#[test]
+fn setup_error_formatting_keeps_peer_diagnostics_private() {
+    let error = transport_error(nethernet_tokio::NetherError::Ice(
+        "private-fixture-peer-text".into(),
+    ));
+    assert!(!error.to_string().contains("private-fixture-peer-text"));
+    assert!(!format!("{error:?}").contains("private-fixture-peer-text"));
 }
 
 /// Excludes child fork/exec inheritance while the fixture checks physical socket retirement.

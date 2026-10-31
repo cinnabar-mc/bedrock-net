@@ -26,6 +26,19 @@ The [client function](https://github.com/cinnabar-mc/bedrock-net/blob/dev/docs/t
 verified token, proof key, expiry and a metadata builder. It returns the same
 connection and an optional pack offer for further negotiation.
 
+For an addressed join, build `connect::http::HttpDialer` from a caller-configured
+`HttpProbe` and optionally attach a caller-owned `ProbeCache`. Its `connect`
+method returns the actual Ready client for key approval. Move it into the wire
+adapter with `into_transport`, then use the normal settings and Login functions.
+Login replaces `ServerAddress` with the selected URL and one explicit port while
+preserving unrelated raw claim values. Failed or cancelled settings/Login forget
+that attempt's cache entry; successful Login keeps it. An explicit-URL
+`connect::http::connect` call continues directly without discovery.
+
+HTTP setup errors expose `TimedOut` or `Interrupted` I/O kinds for timeouts and
+caller cancellation. `TransportFailure` keeps ordinary formatting redacted;
+inspect its error source explicitly when caller policy needs the native cause.
+
 The [probe](https://github.com/cinnabar-mc/bedrock-net/blob/dev/examples/client/src/main.rs) is a complete runnable application
 with explicit offline Login. Continue with the [client guide](https://github.com/cinnabar-mc/bedrock-net/blob/dev/docs/client.md)
 for pack acquisition and startup.

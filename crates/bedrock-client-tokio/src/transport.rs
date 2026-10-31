@@ -25,6 +25,7 @@ use zeroize::Zeroizing;
 pub struct Transport {
     state: State,
     nonce: Zeroizing<String>,
+    pub(crate) http_attempt: Option<crate::connect::http::HttpAttempt>,
 }
 
 enum State {
@@ -62,6 +63,7 @@ impl Transport {
         Self {
             state: State::Messaging(Box::new(MessagingTransport::new(connection))),
             nonce: Zeroizing::new(nonce),
+            http_attempt: None,
         }
     }
     /// Takes only the caller's actual Ready server association.
@@ -69,6 +71,7 @@ impl Transport {
         Self {
             state: State::Accepted(Box::new(AcceptedTransport::new(connection))),
             nonce: Zeroizing::new(String::new()),
+            http_attempt: None,
         }
     }
     /// Retains a caller's already Ready client through the same accepted I/O owner.
@@ -77,6 +80,7 @@ impl Transport {
         Self {
             state: State::Accepted(Box::new(AcceptedTransport::new(connection.into_accepted()))),
             nonce: Zeroizing::new(nonce),
+            http_attempt: None,
         }
     }
     /// Retains a real Ready client and the challenge obtained by its original discovery owner.
@@ -84,6 +88,7 @@ impl Transport {
         Self {
             state: State::Lan(Box::new(AcceptedTransport::new(connection.into_accepted()))),
             nonce: Zeroizing::new(nonce),
+            http_attempt: None,
         }
     }
     /// Retains a real Ready HTTP-signaled client, including its original receive queues.
@@ -91,6 +96,7 @@ impl Transport {
         Self {
             state: State::Http(Box::new(AcceptedTransport::new(connection.into_accepted()))),
             nonce: Zeroizing::new(String::new()),
+            http_attempt: None,
         }
     }
     /// Observes the selected association's original full round-trip estimate.
@@ -152,6 +158,7 @@ impl Transport {
     }
     /// Consumes local admission while retaining queues across a canceled teardown wait.
     pub async fn close(&mut self) -> io::Result<()> {
+        self.http_attempt.take();
         match &mut self.state {
             State::Messaging(connection) => {
                 connection.close();

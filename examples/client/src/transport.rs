@@ -8,7 +8,8 @@ use std::time::SystemTime;
 
 use bedrock_client_tokio::transport::Transport;
 use nethernet_tokio::{
-    ClientIceConfig, ConnectionConfig, HttpSignaling, SelfSignedIdentity, TokenTrust,
+    ClientIceConfig, ConnectionConfig, SelfSignedIdentity, TokenTrust,
+    signaling::http::probe::HttpProbe,
 };
 use p384::ecdsa::SigningKey;
 use p384::elliptic_curve::Generate;
@@ -37,11 +38,11 @@ pub(super) async fn connect(
         "nethernet-lan" => connect_lan(address, deadline).await,
         "nethernet" => {
             let _ = rustls::crypto::ring::default_provider().install_default();
-            let http = reqwest::Client::builder()
-                .redirect(reqwest::redirect::Policy::none())
-                .timeout(HANDSHAKE_TIMEOUT)
-                .build()?;
-            let signaling = HttpSignaling::with_client(rand::random::<u64>().to_string(), http);
+            let probe = HttpProbe::new(reqwest::Client::builder().timeout(HANDSHAKE_TIMEOUT))?;
+            let dialer = bedrock_client_tokio::connect::http::HttpDialer::new(
+                probe,
+                rand::random::<u64>().to_string(),
+            );
             let (key, identity) = offline_proof()?;
             let config = ConnectionConfig {
                 identity: Some(identity),
@@ -55,15 +56,16 @@ pub(super) async fn connect(
                 attempts: 1,
                 ..ConnectionConfig::default()
             };
-            let connection = bedrock_client_tokio::connect::http::connect(
-                signaling,
-                format!("http://{address}"),
-                config,
-                deadline,
-                None,
-            )
-            .await?;
-            Ok((Transport::from_http(connection), key))
+            let connection = dialer
+                .connect(
+                    &address.ip().to_string(),
+                    address.port(),
+                    config,
+                    deadline,
+                    None,
+                )
+                .await?;
+            Ok((connection.into_transport(), key))
         }
         _ => Err(io::Error::new(
             io::ErrorKind::InvalidInput,

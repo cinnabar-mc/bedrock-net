@@ -230,6 +230,7 @@ dependencies = [
  "nethernet-tokio",
  "p384",
  "rand",
+ "reqwest",
  "serde_json",
  "thiserror 2.0.21",
  "tokio",
@@ -1769,7 +1770,7 @@ dependencies = [
 [[package]]
 name = "nethernet"
 version = "0.0.1"
-source = "git+https://github.com/cinnabar-mc/nethernet?rev=c37c4bf17ede2e5ff749198f7ab19f59a7939750#c37c4bf17ede2e5ff749198f7ab19f59a7939750"
+source = "git+https://github.com/cinnabar-mc/nethernet?rev=efcddb67c51a5f45cf39b01912371376e68b7bcf#efcddb67c51a5f45cf39b01912371376e68b7bcf"
 dependencies = [
  "aes 0.9.3",
  "base64 0.23.1",
@@ -1795,7 +1796,7 @@ dependencies = [
 [[package]]
 name = "nethernet-tokio"
 version = "0.2.0"
-source = "git+https://github.com/cinnabar-mc/nethernet?rev=c37c4bf17ede2e5ff749198f7ab19f59a7939750#c37c4bf17ede2e5ff749198f7ab19f59a7939750"
+source = "git+https://github.com/cinnabar-mc/nethernet?rev=efcddb67c51a5f45cf39b01912371376e68b7bcf#efcddb67c51a5f45cf39b01912371376e68b7bcf"
 dependencies = [
  "bytes",
  "futures",

@@ -62,6 +62,20 @@ pub async fn settings(
     configured: ClientHandshake,
     observe: &mut (impl FnMut(Observation<'_>) + Send),
 ) -> Result<(ClientLoginReady, CompressionSettings), NegotiationError> {
+    let attempt = connection.transport_mut().http_attempt.take();
+    let result = settings_inner(connection, configured, observe).await;
+    if result.is_ok() {
+        connection.transport_mut().http_attempt = attempt;
+    }
+    result
+}
+
+/// Drives settings while the caller retains the pending HTTP failure receipt.
+async fn settings_inner(
+    connection: &mut Connection,
+    configured: ClientHandshake,
+    observe: &mut (impl FnMut(Observation<'_>) + Send),
+) -> Result<(ClientLoginReady, CompressionSettings), NegotiationError> {
     let (mut settings, request) = configured.start()?;
     send_packets(connection, &[request.into()], None, observe).await?;
     loop {
@@ -88,13 +102,22 @@ pub async fn settings(
 }
 
 /// Signs and sends Login once, then retains the same key and FIFO through offer or `StartGame`.
-/// Metadata is supplied only after `settings` returned the real `LoginReady` continuation.
+/// Metadata follows `settings`; addressed HTTP joins replace only `ServerAddress` with their selection.
 pub async fn login(
     connection: &mut Connection,
     ready: ClientLoginReady,
     input: LoginData<'_>,
     observe: &mut (impl FnMut(Observation<'_>) + Send),
 ) -> Result<Option<ClientPackOffer>, NegotiationError> {
+    let attempt = connection.transport_mut().http_attempt.take();
+    let claims = match &input {
+        LoginData::Authenticated { claims, .. } | LoginData::Offline { claims, .. } => claims,
+    };
+    let selected_claims = attempt
+        .as_ref()
+        .map(|attempt| attempt.login_claims(claims))
+        .transpose()
+        .map_err(NegotiationError::Io)?;
     let (prepared, deadline) = match input {
         LoginData::Authenticated {
             token,
@@ -107,18 +130,30 @@ pub async fn login(
                     crate::transport::ExpiredAdmission,
                 )));
             }
-            (ready.login_authenticated(token, claims), Some(deadline))
+            (
+                ready.login_authenticated(token, selected_claims.as_deref().unwrap_or(claims)),
+                Some(deadline),
+            )
         }
         LoginData::Offline {
             identity,
             claims,
             now,
-        } => (ready.login_offline(&identity, claims, now), None),
+        } => (
+            ready.login_offline(&identity, selected_claims.as_deref().unwrap_or(claims), now),
+            None,
+        ),
     };
     let (login, packet) =
         prepared.map_err(|error| NegotiationError::Handshake(error.into_parts().1))?;
     send_packets(connection, &[packet.into()], deadline, observe).await?;
-    receive_login(connection, login, observe).await
+    let result = receive_login(connection, login, observe).await;
+    if result.is_ok()
+        && let Some(attempt) = attempt
+    {
+        attempt.complete();
+    }
+    result
 }
 
 /// Drives the original post-Login continuation without introducing another phase machine.

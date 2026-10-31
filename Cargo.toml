@@ -10,8 +10,8 @@ rust-version = "1.93"
 criterion = { version = "0.8", default-features = false, features = ["cargo_bench_support"] }
 bedrock-protocol = { package = "bedrock-protocol-contract-1-26-60", git = "https://github.com/cinnabar-mc/protocolgen", rev = "9eed056998235e4c01e0f3befabed651021dea77" }
 bedrock-services = { git = "https://github.com/cinnabar-mc/bedrock-services", rev = "addf20c9465d75b169c1ab447af00554c23947f5", features = ["signaling-tokio"] }
-nethernet = { git = "https://github.com/cinnabar-mc/nethernet", rev = "c37c4bf17ede2e5ff749198f7ab19f59a7939750" }
-nethernet-tokio = { git = "https://github.com/cinnabar-mc/nethernet", rev = "c37c4bf17ede2e5ff749198f7ab19f59a7939750" }
+nethernet = { git = "https://github.com/cinnabar-mc/nethernet", rev = "efcddb67c51a5f45cf39b01912371376e68b7bcf" }
+nethernet-tokio = { git = "https://github.com/cinnabar-mc/nethernet", rev = "efcddb67c51a5f45cf39b01912371376e68b7bcf" }
 p384 = { version = "0.14", default-features = false, features = ["alloc", "ecdsa", "pkcs8"] }
 
 [package]
