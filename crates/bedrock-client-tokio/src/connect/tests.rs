@@ -415,3 +415,47 @@ async fn lan_discovery_observes_pending_and_preexisting_cancellation() {
         assert_eq!(tokio::time::Instant::now(), started);
     }
 }
+
+/// A real negotiation failure uses the same redacted source boundary as the HTTP route.
+#[tokio::test]
+async fn failed_lan_negotiation_preserves_the_transport_error_boundary() {
+    tokio::time::timeout(TEST_TIMEOUT, async {
+        let reservation = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let address = reservation.local_addr().unwrap();
+        drop(reservation);
+        let signaling = LanSignaling::with_config(
+            73,
+            address,
+            LanConfig {
+                discovery_port: address.port(),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        let mut data = ServerData::new("Fixture".into(), "World".into());
+        data.flag_b = true;
+        data.session_id = "peer-specific-fixture-nonce".into();
+        data.protocol_version = bedrock_protocol::PROTOCOL_VERSION as u32;
+        signaling.set_server_data(data);
+        let mut options = offline_options();
+        options.connection.timeouts.negotiation = Duration::from_millis(100);
+        let result = lan::connect_directed(address, &options, Instant::now() + TEST_TIMEOUT).await;
+        signaling.shutdown().await;
+        let error = result
+            .err()
+            .expect("an advertiser without a listener cannot negotiate");
+        assert_eq!(error.kind(), io::ErrorKind::TimedOut);
+        assert!(!format!("{error:?}").contains("peer-specific-fixture-nonce"));
+        let source = error
+            .get_ref()
+            .unwrap()
+            .source()
+            .unwrap()
+            .downcast_ref::<nethernet_tokio::NetherError>()
+            .unwrap();
+        assert!(source.is_timeout());
+    })
+    .await
+    .expect("finite LAN negotiation failure fixture stalled");
+}

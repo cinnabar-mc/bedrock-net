@@ -104,12 +104,7 @@ impl AcceptedTransport {
         data: Bytes,
         deadline: Option<Instant>,
     ) -> io::Result<()> {
-        let State::Established(accepted) =
-            self.state.as_mut().expect("synchronous phase transition")
-        else {
-            return Err(super::closing());
-        };
-        let sender = accepted.session.sender();
+        let sender = self.sender()?;
         let send = async move {
             match deadline {
                 Some(deadline) => sender.send_before(data, deadline).await,
@@ -117,14 +112,7 @@ impl AcceptedTransport {
             }
             .map_err(io::Error::other)
         };
-        let incoming = futures::stream::unfold(&mut accepted.reliable, |receiver| async move {
-            match receiver.recv().await {
-                Ok(Some(data)) => Some((Ok(data), receiver)),
-                Ok(None) => None,
-                Err(error) => Some((Err(io::Error::other(error)), receiver)),
-            }
-        });
-        self.inbox.send(send, incoming).await
+        self.progress(send).await?
     }
 
     /// Drains the accepted write prefix before the original established/retired receive FIFO.

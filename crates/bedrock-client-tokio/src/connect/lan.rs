@@ -245,7 +245,7 @@ async fn connect_route(
         .min(deadline.saturating_duration_since(tokio::time::Instant::now()));
     let connection = NetherClient::connect_with(signaling, id.to_string(), config)
         .await
-        .map_err(io::Error::other)?;
+        .map_err(super::transport_error)?;
     super::check(deadline, options.credential_expires)?;
     Ok((Transport::from_lan(connection, data.session_id), id))
 }
