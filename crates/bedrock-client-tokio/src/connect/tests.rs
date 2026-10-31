@@ -385,3 +385,33 @@ async fn native_lan_resolution_rejects_an_incompatible_candidate_set() {
     .unwrap();
     assert_eq!(error.kind(), io::ErrorKind::AddrNotAvailable);
 }
+
+#[tokio::test(start_paused = true)]
+async fn lan_discovery_observes_pending_and_preexisting_cancellation() {
+    for cancelled_first in [false, true] {
+        let endpoint = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let options = DirectedLanConfig {
+            connection: ConnectionConfig::default(),
+            selection: LanSelection::SelfSigned,
+            max_nonce_bytes: 1024,
+            credential_expires: None,
+        };
+        let started = tokio::time::Instant::now();
+        let deadline = started + Duration::from_secs(600);
+        if cancelled_first {
+            options.connection.cancel_token.cancel();
+        }
+        let connecting = lan::connect_directed(endpoint.local_addr().unwrap(), &options, deadline);
+        tokio::pin!(connecting);
+        if !cancelled_first {
+            assert!(futures::poll!(&mut connecting).is_pending());
+            options.connection.cancel_token.cancel();
+        }
+        let std::task::Poll::Ready(result) = futures::poll!(&mut connecting) else {
+            panic!("cancelled discovery remained pending");
+        };
+        let error = result.err().expect("cancelled discovery");
+        assert_eq!(error.kind(), io::ErrorKind::Interrupted);
+        assert_eq!(tokio::time::Instant::now(), started);
+    }
+}

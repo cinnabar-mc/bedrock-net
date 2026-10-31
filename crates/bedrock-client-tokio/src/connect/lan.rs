@@ -46,6 +46,11 @@ pub async fn connect_resolved(
     options: &DirectedLanConfig,
     deadline: tokio::time::Instant,
 ) -> io::Result<Transport> {
+    if options.connection.cancel_token.is_cancelled() {
+        return Err(super::transport_error(
+            nethernet_tokio::NetherError::Cancelled,
+        ));
+    }
     let deadline = options
         .credential_expires
         .map_or(deadline, |expires| deadline.min(expires.into()));
@@ -78,11 +83,20 @@ pub async fn connect_directed(
             "invalid directed LAN endpoint",
         ));
     }
+    if options.connection.cancel_token.is_cancelled() {
+        return Err(super::transport_error(
+            nethernet_tokio::NetherError::Cancelled,
+        ));
+    }
     let deadline = options
         .credential_expires
         .map_or(deadline, |expires| deadline.min(expires.into()));
     super::check(deadline, options.credential_expires)?;
-    let result = super::before_deadline(deadline, connect_route(address, options, deadline)).await;
+    let result = tokio::select! {
+        biased;
+        _ = options.connection.cancel_token.cancelled() => return Err(super::transport_error(nethernet_tokio::NetherError::Cancelled)),
+        result = super::before_deadline(deadline, connect_route(address, options, deadline)) => result,
+    };
     super::check(deadline, options.credential_expires)?;
     result
 }
