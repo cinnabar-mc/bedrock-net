@@ -158,6 +158,11 @@ impl AuthenticatedLogin {
         self.metadata.nonce()
     }
 
+    /// Splits a listener override or the interpreted joined address without DNS or route authority.
+    pub fn return_target(&self, override_address: &str) -> Option<(Vec<u8>, u16)> {
+        self.metadata.return_target(override_address)
+    }
+
     /// Rechecks the exact original credential after any application approval/capacity wait.
     ///
     /// # Errors

@@ -23,6 +23,9 @@ use bytes::Bytes;
 use p384::ecdsa::SigningKey;
 use std::{io, sync::Arc, time::Instant};
 
+mod identity;
+pub use identity::load_identity;
+
 /// Reads and writes generated packets on one accepted transport session.
 ///
 /// The returned handshake performs Login verification. Your application separately

@@ -71,6 +71,16 @@ impl Payload {
         &self.metadata.nonce
     }
 
+    /// Resolves return metadata without DNS or authority, retaining an explicit invalid override.
+    pub(super) fn return_target(&self, override_address: &str) -> Option<(Vec<u8>, u16)> {
+        let address = if override_address.is_empty() {
+            &self.metadata.server_address
+        } else {
+            override_address
+        };
+        crate::login::split_server_address(address)
+    }
+
     /// Consumes the validated presentation name when offline policy selects it.
     pub(super) fn take_display_name(&mut self) -> String {
         std::mem::take(&mut self.metadata.display_name)
@@ -102,6 +112,7 @@ pub(super) fn validate_payload(
 pub(super) struct Metadata {
     pub(super) nonce: zeroize::Zeroizing<String>,
     pub(super) display_name: String,
+    pub(super) server_address: String,
     pub(super) exchange_key: Option<ClientExchangeKey>,
 }
 
@@ -159,6 +170,7 @@ pub(super) fn validate(
     Ok(Metadata {
         nonce: zeroize::Zeroizing::new(data.take_text("Nonce")),
         display_name: data.take_text("ThirdPartyName"),
+        server_address: data.take_text("ServerAddress"),
         exchange_key,
     })
 }

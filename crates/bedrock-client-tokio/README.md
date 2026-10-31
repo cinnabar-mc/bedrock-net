@@ -57,6 +57,13 @@ The [accepting function](https://github.com/cinnabar-mc/bedrock-net/blob/dev/doc
 Login. `AcceptingConnection::from_nether` binds Login to the verified
 SDP key and uses the association's DTLS protection.
 
+`server::load_identity` loads or durably creates a saved signaling identity and
+its matching Bedrock proof key. Supply those two owners to the listener and
+`from_nether`. The dependency's HTTP listener defaults to a minute for transport
+acceptance; your post-accept Login deadline remains caller-owned.
+Authenticated and offline Login owners expose `return_target` to split the
+interpreted joined address or an explicit listener override without DNS.
+
 Continue with the [server guide](https://github.com/cinnabar-mc/bedrock-net/blob/dev/docs/server.md) for player authorization,
 pack delivery and world startup. Keep pending protocol states until their
 matching send finishes. Once authorization exists, recheck its grant after each

@@ -85,7 +85,7 @@ fn timed_out() -> io::Error {
 }
 
 /// Preserves the original transport cause while exposing timeout and cancellation to I/O callers.
-fn transport_error(error: nethernet_tokio::NetherError) -> io::Error {
+pub(crate) fn transport_error(error: nethernet_tokio::NetherError) -> io::Error {
     let kind = if error.is_cancelled() {
         io::ErrorKind::Interrupted
     } else if error.is_timeout() {

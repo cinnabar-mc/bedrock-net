@@ -92,6 +92,17 @@ async fn accepting_transport(anonymous: bool) {
             .bind(server_config, signaling, deadline).await.unwrap();
         let (caller, client_service) = CallerSignaling::new(client_id.to_string(), server_id.to_string(), signaling.signaling).unwrap();
         let mut client_config = test_config();
+        #[cfg(feature = "login")]
+        let proof = {
+            use p384::{ecdsa::SigningKey, elliptic_curve::Generate};
+            Arc::new(SigningKey::generate())
+        };
+        #[cfg(feature = "login")]
+        if !anonymous {
+            client_config.identity = Some(Arc::new(nethernet_tokio::SelfSignedIdentity::from_key(
+                Arc::clone(&proof), std::time::SystemTime::now(), std::time::Duration::from_secs(60),
+            ).unwrap()));
+        }
         if anonymous { client_config.identity = None; }
         client_config.server_trust = Some(TokenTrust::Any);
         client_config.client_ice = Some(ClientIceConfig {
@@ -109,6 +120,8 @@ async fn accepting_transport(anonymous: bool) {
             let mut accepted = accepted.unwrap();
             assert_eq!(accepted.session.remote_addr().await.network_id, client_id.to_string());
             let transfer = async {
+                #[cfg(feature = "login")]
+                if !anonymous { verify_routed_login(&mut client, &mut accepted, &proof).await; }
                 client.send(Bytes::from_static(b"visitor to host")).await.unwrap();
                 assert_eq!(accepted.reliable.recv().await.unwrap().unwrap(), "visitor to host");
                 accepted.session.send(Bytes::from_static(b"host to visitor")).await.unwrap();
@@ -246,3 +259,59 @@ async fn cancelled_server_close_resumes_original_service_and_listener_retirement
 }
 
 mod refresh;
+
+/// Checks signed Login against the real routed peer without granting application/world admission.
+#[cfg(feature = "login")]
+async fn verify_routed_login(
+    client: &mut nethernet_tokio::NetherClient,
+    accepted: &mut nethernet_tokio::AcceptedSession,
+    proof: &p384::ecdsa::SigningKey,
+) {
+    use crate::login::{LoginError, LoginVerifier, TrustedIdentity};
+    use p384::{
+        ecdsa::{SigningKey, VerifyingKey},
+        elliptic_curve::Generate,
+    };
+    struct Provider(VerifyingKey);
+    impl LoginVerifier for Provider {
+        /// Models a configured test issuer's one credential and its bound proof key.
+        fn verify(
+            &self,
+            token: &str,
+            _: std::time::SystemTime,
+        ) -> Result<TrustedIdentity, LoginError> {
+            if token != "routed-fixture-credential" {
+                return Err(LoginError::Authentication);
+            }
+            TrustedIdentity::new("123".into(), self.0)
+        }
+    }
+    let claims = serde_json::value::RawValue::from_string(r#"{"DeviceOS":1,"GameVersion":"1.26.60","LanguageCode":"en_US","SkinId":"synthetic","ThirdPartyName":"Probe","ServerAddress":"https://[::1]:19132:19132"}"#.into()).unwrap();
+    let wrong = SigningKey::generate();
+    let peer = accepted.session.player().await.unwrap();
+    for (key, matches_transport) in [(proof, true), (&wrong, false)] {
+        let request = crate::login::encode_authenticated_request(
+            key,
+            "routed-fixture-credential",
+            &claims,
+            65536,
+        )
+        .unwrap();
+        client.send(request).await.unwrap();
+        let received = accepted.reliable.recv().await.unwrap().unwrap();
+        let login = crate::login::verify_authenticated_request(
+            &received,
+            &Provider(*key.verifying_key()),
+            std::time::SystemTime::now(),
+            65536,
+        )
+        .unwrap();
+        assert_eq!(login.xuid(), "123");
+        assert_eq!(
+            peer.verify_login_key(login.exchange_key().as_p384().unwrap())
+                .is_ok(),
+            matches_transport
+        );
+        assert_eq!(login.return_target(""), Some((b"::1".to_vec(), 19132)));
+    }
+}

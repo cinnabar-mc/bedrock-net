@@ -83,6 +83,40 @@ fn metadata() -> Box<RawValue> {
     RawValue::from_string("{\"Nonce\":\"original-member-nonce\",\"XUID\":\"999\",\"DeviceOS\":1,\"GameVersion\":\"1.26.51\",\"LanguageCode\":\"en_US\",\"SkinId\":\"synthetic\",\"ThirdPartyName\":\"Probe\"}".into()).unwrap()
 }
 
+/// Return routing uses the final interpreted signed address and an explicit listener override.
+#[test]
+fn accepting_return_targets_share_the_joined_address_parser() {
+    let issuer = key(1);
+    let client = key(2);
+    let provider = Provider {
+        key: *issuer.verifying_key(),
+        calls: Cell::new(0),
+    };
+    let metadata = RawValue::from_string(r#"{"DeviceOS":1,"GameVersion":"1.26.60","LanguageCode":"en_US","SkinId":"synthetic","ThirdPartyName":"Probe","ServerAddress":"127.0.0.1:1","serveraddress":"https://[::1]:443:443","SERVERADDRESS":null}"#.into()).unwrap();
+    let now = UNIX_EPOCH + Duration::from_secs(1000);
+    let request =
+        encode_authenticated_request(&client, &credential(&issuer, &client), &metadata, LIMIT)
+            .unwrap();
+    let login = verify_authenticated_request(&request, &provider, now, LIMIT).unwrap();
+    assert_eq!(login.return_target(""), Some((b"::1".to_vec(), 443)));
+    assert_eq!(
+        login.return_target("relay.fixture:19133"),
+        Some((b"relay.fixture".to_vec(), 19133))
+    );
+    assert!(login.return_target("invalid-override").is_none());
+    let identity = OfflineIdentity {
+        display_name: "Probe",
+        identity: "00000000-0000-4000-8000-000000000001",
+        xuid: "",
+        playfab_id: "",
+        playfab_title_id: "",
+    };
+    let request = encode_offline_request(&client, &identity, &metadata, now, LIMIT).unwrap();
+    let offline = parse_offline_request(&request, now, LIMIT, |_| Ok(())).unwrap();
+    assert_eq!(offline.return_target(""), Some((b"::1".to_vec(), 443)));
+    assert_eq!(offline.return_target(":0"), None);
+}
+
 /// Provider presentation survives signed client spoofing and cannot change during revalidation.
 #[test]
 fn accepting_login_retains_provider_player_identity_across_revalidation() {

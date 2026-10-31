@@ -83,6 +83,11 @@ impl OfflineLogin {
         self.metadata.nonce()
     }
 
+    /// Splits a listener override or joined address; client-signed metadata grants no route authority.
+    pub fn return_target(&self, override_address: &str) -> Option<(Vec<u8>, u16)> {
+        self.metadata.return_target(override_address)
+    }
+
     /// Borrows an untrusted, shape-checked XUID claim; it grants no account authority.
     pub fn claimed_xuid(&self) -> &str {
         &self.identity.xuid

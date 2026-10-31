@@ -32,6 +32,19 @@ fn deferred_bound() -> usize {
     BatchLimits::default().max_decoded_bytes
 }
 
+/// A saved listener identity supplies the same proof to signaling and Bedrock after restart.
+#[tokio::test]
+async fn saved_listener_identity_reuses_one_proof_for_both_layers() {
+    let directory = std::env::temp_dir().join(format!("bedrock-listener-{}", uuid::Uuid::new_v4()));
+    let path = directory.join("identity.pem");
+    let (key, identity) = super::load_identity(&path, "self").await.unwrap();
+    let (reloaded, signaling) = super::load_identity(&path, "self").await.unwrap();
+    assert_eq!(key.verifying_key(), reloaded.verifying_key());
+    assert_eq!(identity.verifying_key(), reloaded.verifying_key());
+    assert_eq!(signaling.verifying_key(), reloaded.verifying_key());
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
 /// Establishes the real signed association before retaining application queue capacity.
 async fn signed_pair() -> SignedPair {
     signed_pair_with_key(Arc::new(SigningKey::generate()), deferred_bound())
