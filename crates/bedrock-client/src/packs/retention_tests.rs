@@ -189,3 +189,42 @@ fn deferred_stack_detaches_fields_from_its_decoded_batch() {
     assert!(backing.upgrade().is_none());
     assert!(!transfer.ready_for_stack());
 }
+
+#[test]
+fn admitted_offers_release_shared_batches_with_either_retention_policy() {
+    for retain in [false, true] {
+        let original = packets::ResourcePacksInfo {
+            resource_packs: vec![types::PackInfoData {
+                pack_id_version: types::PackIDVersionData {
+                    pack_uuid: uuid::Uuid::from_u128(1),
+                    pack_version: types::SemVersionData {
+                        version: "1.0.0".into(),
+                    },
+                },
+                pack_size: wire::U64LE(1),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let (packets::Packet::ResourcePacksInfo(offer), backing) =
+            coalesced(original.clone().into())
+        else {
+            panic!("offer");
+        };
+        let offer = if retain {
+            PackOffer::new_with_metadata(offer, PackTransferLimits::default())
+        } else {
+            PackOffer::new(offer, PackTransferLimits::default())
+        }
+        .unwrap();
+        assert_eq!(
+            backing.upgrade().map_or(0, |bytes| bytes.len()),
+            0,
+            "retained batch bytes with retention {retain}"
+        );
+        assert_eq!(
+            offer.offers().cloned().collect::<Vec<_>>(),
+            original.resource_packs
+        );
+    }
+}

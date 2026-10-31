@@ -293,10 +293,8 @@ impl Transfer {
         limits.validate()?;
         let (mut downloads, budget) =
             Budget::offers(std::mem::take(&mut offer.resource_packs), limits);
-        if retain_metadata {
-            for download in &mut downloads {
-                download.offer = retained::pack(std::mem::take(&mut download.offer));
-            }
+        for download in &mut downloads {
+            download.offer = retained::pack(std::mem::take(&mut download.offer));
         }
         let offer_order = downloads
             .iter()
