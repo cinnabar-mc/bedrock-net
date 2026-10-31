@@ -106,6 +106,15 @@ async fn raw_batches_preserve_boundaries_errors_and_immediate_forwarding() {
         assert!(pair.client.recv().await.unwrap().is_some());
         // Raw output must not parse identity-bearing bodies, even with identity normalization set.
         let skin = Bytes::from_static(&[packets::PlayerSkin::ID as u8, 0x80]);
+        // The older accepting adapter still applies its explicitly configured identity policy.
+        assert!(
+            pair.wire
+                .prepare_raw(
+                    skin.clone(),
+                    tokio::time::Instant::now().into_std() + TIMEOUT
+                )
+                .is_err()
+        );
         pair.wire
             .connection_mut()
             .write_packet_raw(skin.clone(), None)

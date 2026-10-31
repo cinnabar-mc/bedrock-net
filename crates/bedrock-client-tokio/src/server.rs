@@ -194,13 +194,14 @@ impl AcceptingConnection {
         self.connection.prepare_frames(frames, deadline)
     }
 
-    /// Encodes one original complete raw packet without changing its bytes.
+    /// Prepares one encoded packet, applying configured identity normalization.
     pub fn prepare_raw(
         &mut self,
         packet: Bytes,
         deadline: Instant,
     ) -> io::Result<PreparedSend<'_>> {
-        self.connection.prepare_packet_raw(packet, deadline)
+        let body = self.connection.raw_body(packet).map_err(|_| invalid())?;
+        self.connection.prepare_body(body, deadline)
     }
 
     /// Resumes the exact cursor, permit or receipt retained by an earlier borrowed operation.

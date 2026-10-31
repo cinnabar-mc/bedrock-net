@@ -142,6 +142,9 @@ retirement checks as typed sends. After packet-at-a-time reads, a raw batch cont
 the unread remainder; replayed packets form a separate prefix batch.
 Both endpoints must use the same generated protocol version.
 
+`AcceptingConnection::prepare_raw` keeps its configured identity normalization.
+For exact forwarding, use `connection_mut().prepare_packet_raw` instead.
+
 Install a `PacketObserver` with `Connection::set_packet_observer` to observe a
 copied set of packet IDs in both directions. Its synchronous callback borrows the
 payload without its header, before body decoding. Copy the payload explicitly if
