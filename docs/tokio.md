@@ -16,7 +16,7 @@ bedrock-client-tokio = { git = "https://github.com/cinnabar-mc/bedrock-net", bra
 bedrock-client = { git = "https://github.com/cinnabar-mc/bedrock-net", branch = "dev" }
 bedrock-net = { git = "https://github.com/cinnabar-mc/bedrock-net", branch = "dev" }
 bedrock-protocol = { package = "bedrock-protocol-contract-1-26-60", git = "https://github.com/cinnabar-mc/protocolgen", rev = "9eed056998235e4c01e0f3befabed651021dea77" }
-nethernet-tokio = { git = "https://github.com/cinnabar-mc/nethernet", rev = "efcddb67c51a5f45cf39b01912371376e68b7bcf" }
+nethernet-tokio = { git = "https://github.com/cinnabar-mc/nethernet", rev = "ddd68ae2b4359eefdbc84f59ea82037563222c6c" }
 p384 = { version = "0.14", default-features = false, features = ["alloc", "ecdsa", "ecdh", "pkcs8"] }
 serde_json = { version = "1", features = ["raw_value"] }
 tokio = { version = "1", features = ["rt", "time", "macros", "sync"] }
