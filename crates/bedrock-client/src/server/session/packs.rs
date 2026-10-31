@@ -164,12 +164,7 @@ impl Delivery {
             .limits
             .validate()
             .map_err(|_| invalid("invalid accepting pack limits"))?;
-        if options
-            .limits
-            .max_archive_bytes
-            .is_some_and(|limit| u64::from(options.chunk_size) > limit)
-            || options.max_metadata_bytes == 0
-            || options.chunk_size as usize > options.max_metadata_bytes
+        if options.max_metadata_bytes == 0
             || snapshot.offer.resource_packs.len() != snapshot.contents.len()
             || options
                 .limits
@@ -504,12 +499,6 @@ impl Delivery {
             .map_err(|_| invalid("invalid accepting pack request identity"))?;
         let id = uuid::Uuid::parse_str(prefix)
             .map_err(|_| invalid("invalid accepting pack request identity"))?;
-        let mut canonical = [0_u8; uuid::fmt::Hyphenated::LENGTH];
-        if prefix != id.hyphenated().encode_lower(&mut canonical) {
-            return Err(invalid(
-                "accepting pack request uses a different identity spelling",
-            ));
-        }
         self.archives
             .iter()
             .position(|a| {

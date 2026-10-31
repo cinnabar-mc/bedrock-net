@@ -83,3 +83,91 @@ fn delivery_constants_and_chunk_indexes_match_actual_pinned_go_owner() {
         }
     }
 }
+
+/// Builds a synthetic advertised archive whose UUID contains alphabetic digits.
+fn snapshot(size: usize) -> ServerPackSnapshot {
+    let id = uuid::Uuid::parse_str("aabbccdd-eeff-4000-8000-aabbccddeeff").unwrap();
+    ServerPackSnapshot {
+        offer: packets::ResourcePacksInfo {
+            resource_packs: if size == 0 {
+                Vec::new()
+            } else {
+                vec![bedrock_protocol::types::PackInfoData {
+                    pack_id_version: bedrock_protocol::types::PackIDVersionData {
+                        pack_uuid: id,
+                        pack_version: bedrock_protocol::types::SemVersionData {
+                            version: "1.0.0".into(),
+                        },
+                    },
+                    pack_size: wire::U64LE(size as u64),
+                    ..Default::default()
+                }]
+            },
+            ..Default::default()
+        },
+        stack: Default::default(),
+        contents: if size == 0 {
+            Vec::new()
+        } else {
+            vec![ServerPackContent::new(vec![1; size], 0, false)]
+        },
+    }
+}
+
+#[test]
+fn delivery_checks_actual_chunks_against_metadata_and_archive_limits() {
+    for size in [0, 1024] {
+        let options = ServerPackDelivery {
+            max_metadata_bytes: 64 * 1024,
+            limits: PackTransferLimits {
+                max_archive_bytes: Some(1024),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        assert!(
+            Delivery::new(snapshot(size), options).is_ok(),
+            "archive size {size}"
+        );
+    }
+    assert!(
+        Delivery::new(
+            snapshot(70 * 1024),
+            ServerPackDelivery {
+                max_metadata_bytes: 64 * 1024,
+                ..Default::default()
+            }
+        )
+        .is_err()
+    );
+}
+
+#[test]
+fn download_and_chunk_routing_use_uuid_identity() {
+    let delivery = Delivery::new(snapshot(1024), ServerPackDelivery::default()).unwrap();
+    for name in [
+        "aabbccdd-eeff-4000-8000-aabbccddeeff",
+        "AABBCCDD-EEFF-4000-8000-AABBCCDDEEFF",
+    ] {
+        for check_version in [false, true] {
+            assert_eq!(
+                delivery
+                    .lookup(&format!("{name}_1.0.0").into(), check_version)
+                    .unwrap(),
+                0
+            );
+            assert_eq!(delivery.lookup(&name.into(), check_version).unwrap(), 0);
+        }
+        assert!(
+            delivery
+                .lookup(&format!("{name}_2.0.0").into(), true)
+                .is_err()
+        );
+        assert_eq!(
+            delivery
+                .lookup(&format!("{name}_2.0.0").into(), false)
+                .unwrap(),
+            0
+        );
+    }
+}
