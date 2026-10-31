@@ -6,7 +6,7 @@ the accepting listener come from your application.
 
 ## Dependencies
 
-Add this complete block to a Rust 2024 application's `Cargo.toml`. It declares
+Add this dependency block to a Rust 2024 application's `Cargo.toml`. It declares
 every direct dependency used below, including the generated packet crate and
 the accepting NetherNet session type:
 
@@ -16,11 +16,16 @@ bedrock-client-tokio = { git = "https://github.com/cinnabar-mc/bedrock-net", bra
 bedrock-client = { git = "https://github.com/cinnabar-mc/bedrock-net", branch = "dev" }
 bedrock-net = { git = "https://github.com/cinnabar-mc/bedrock-net", branch = "dev" }
 bedrock-protocol = { package = "bedrock-protocol-contract-1-26-60", git = "https://github.com/cinnabar-mc/protocolgen", rev = "9eed056998235e4c01e0f3befabed651021dea77" }
-nethernet-tokio = { git = "https://github.com/cinnabar-mc/nethernet", rev = "ddd68ae2b4359eefdbc84f59ea82037563222c6c" }
+nethernet-tokio = { git = "https://github.com/cinnabar-mc/nethernet", rev = "22bd8877a1a75de41701c817309a25f9b0c707c6" }
 p384 = { version = "0.14", default-features = false, features = ["alloc", "ecdsa", "ecdh", "pkcs8"] }
 serde_json = { version = "1", features = ["raw_value"] }
 tokio = { version = "1", features = ["rt", "time", "macros", "sync"] }
 ```
+
+Copy the `[patch.crates-io]` section from this workspace's
+[Cargo.toml](../Cargo.toml) into your application's workspace root as well.
+Cargo ignores dependency-level patches. All `rtc` and `rtc-*` packages must use
+the same pinned RTC fork revision.
 
 The registry requirements and external Git revisions match this workspace's
 [Cargo.toml](../Cargo.toml) and the
