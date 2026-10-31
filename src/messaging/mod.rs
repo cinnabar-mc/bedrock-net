@@ -49,6 +49,18 @@ pub enum Error {
     /// The original caller deadline elapsed.
     #[error("messaging transport timed out")]
     TimedOut,
+    /// The caller explicitly cancelled setup; a remote close remains a different failure.
+    #[error("messaging transport setup cancelled")]
+    Cancelled,
+    /// The original local credential request could not be admitted.
+    #[error("messaging credential request failed")]
+    CredentialRequest(#[source] Arc<bedrock_services::signaling::Error>),
+    /// The service refused or could not complete the correlated credential request.
+    #[error("messaging credential acquisition failed")]
+    Credentials(#[source] CredentialFailure),
+    /// Acquired endpoints failed the original resolver's policy or deadline.
+    #[error("messaging ICE resolution failed")]
+    IceResolution(#[source] nethernet_tokio::IceResolveError),
     /// A protected service socket failed with a redacted cause.
     #[error(transparent)]
     Messaging(#[from] SocketError),
@@ -73,6 +85,35 @@ pub enum Error {
     /// The service or transport owner closed.
     #[error("messaging transport closed")]
     Closed,
+}
+
+/// A correlated service failure without the discarded response diagnostics.
+#[derive(Clone, Copy, Debug, thiserror::Error)]
+#[error("credential request did not complete successfully")]
+pub struct CredentialFailure(
+    /// The original correlated service result, retaining numeric codes without response text.
+    pub Failure,
+);
+
+impl Error {
+    /// Recognizes caller cancellation without treating a remote close as an abort.
+    pub fn is_cancelled(&self) -> bool {
+        matches!(self, Self::Cancelled)
+            || matches!(self, Self::Connection(cause) if cause.is_cancelled())
+    }
+
+    /// Recognizes original setup timeouts without relying on formatted error text.
+    pub fn is_timeout(&self) -> bool {
+        matches!(
+            self,
+            Self::TimedOut
+                | Self::Credentials(CredentialFailure(Failure::TimedOut))
+                | Self::IceResolution(nethernet_tokio::IceResolveError::TimedOut)
+                | Self::Messaging(
+                    SocketError::TimedOut | SocketError::Heartbeat(Failure::TimedOut)
+                )
+        ) || matches!(self, Self::Connection(cause) if cause.is_timeout())
+    }
 }
 
 impl fmt::Debug for Error {
@@ -106,6 +147,8 @@ impl fmt::Display for ConnectionContext<'_> {
                     error.raw_os_error()
                 );
             }
+            NetherError::Http(_) => "HTTP",
+            NetherError::Cancelled => "cancelled",
             NetherError::ConnectionClosed => "connection closed",
             NetherError::ReceiveCapacity => "receive capacity",
             NetherError::PendingCountExceeded(_) => "pending offer capacity",
@@ -277,8 +320,11 @@ impl Engine {
         });
         tokio::select! {
             biased;
-            _ = cancellation.cancelled() => Err(Error::Closed),
-            result = connecting => result.map_err(|_| Error::TimedOut)?,
+            _ = cancellation.cancelled() => Err(Error::Cancelled),
+            result = connecting => {
+                if cancellation.is_cancelled() { return Err(Error::Cancelled); }
+                result.map_err(|_| Error::TimedOut)?
+            },
         }
     }
 
@@ -384,7 +430,7 @@ async fn acquire_ice(
 ) -> Result<ClientIceConfig, Error> {
     let request = socket
         .request_credentials(deadline)
-        .map_err(|_| Error::Admission)?;
+        .map_err(|error| Error::CredentialRequest(Arc::new(error)))?;
     loop {
         if let Event::Completed {
             request: completed,
@@ -392,10 +438,7 @@ async fn acquire_ice(
         } = socket.drive().await?
             && completed == request
         {
-            result.map_err(|failure| match failure {
-                Failure::TimedOut => Error::TimedOut,
-                _ => Error::Ice,
-            })?;
+            result.map_err(|failure| Error::Credentials(CredentialFailure(failure)))?;
             break;
         }
     }
@@ -443,7 +486,7 @@ async fn acquire_ice(
     tokio::pin!(resolution);
     let targets = loop {
         tokio::select! {
-            result = &mut resolution => break result.map_err(|_| Error::Ice)?,
+            result = &mut resolution => break result.map_err(Error::IceResolution)?,
             event = socket.drive() => { event?; },
         }
     };

@@ -14,6 +14,12 @@ pub async fn connect(
     deadline: tokio::time::Instant,
     credential_expires: Option<Instant>,
 ) -> io::Result<NetherClient> {
+    let cancellation = config.cancel_token.clone();
+    if cancellation.is_cancelled() {
+        return Err(super::transport_error(
+            nethernet_tokio::NetherError::Cancelled,
+        ));
+    }
     let deadline = credential_expires.map_or(deadline, |expires| deadline.min(expires.into()));
     super::check(deadline, credential_expires)?;
     config.timeouts.negotiation = config
@@ -23,9 +29,14 @@ pub async fn connect(
     let result = super::before_deadline(deadline, async {
         NetherClient::connect_with(signaling, endpoint, config)
             .await
-            .map_err(io::Error::other)
+            .map_err(super::transport_error)
     })
     .await;
+    if cancellation.is_cancelled() {
+        return Err(super::transport_error(
+            nethernet_tokio::NetherError::Cancelled,
+        ));
+    }
     super::check(deadline, credential_expires)?;
     result
 }

@@ -65,3 +65,37 @@ fn connection_context_preserves_signal_and_io_categories() {
     assert!(Error::Transport.source().is_none());
     assert_eq!(Error::Transport.to_string(), "messaging transport failed");
 }
+
+/// Bare ICE/signaling failures remain reportable while timeout and cancellation stay distinct.
+#[test]
+fn setup_classification_uses_original_typed_causes() {
+    use super::super::CredentialFailure;
+    use bedrock_services::signaling::Failure;
+    for error in [
+        Error::TimedOut,
+        Error::Credentials(CredentialFailure(Failure::TimedOut)),
+        Error::IceResolution(nethernet_tokio::IceResolveError::TimedOut),
+        Error::Connection(Arc::new(NetherError::Timeout)),
+    ] {
+        assert!(error.is_timeout());
+        assert!(!error.is_cancelled());
+    }
+    for error in [
+        Error::Cancelled,
+        Error::Connection(Arc::new(NetherError::Cancelled)),
+    ] {
+        assert!(error.is_cancelled());
+        assert!(!error.is_timeout());
+    }
+    for error in [
+        Error::Closed,
+        Error::Ice,
+        Error::Signaling,
+        Error::Credentials(CredentialFailure(Failure::ServiceCode(-32001))),
+        Error::IceResolution(nethernet_tokio::IceResolveError::Expired),
+        Error::Connection(Arc::new(NetherError::Ice("fixture".into()))),
+    ] {
+        assert!(!error.is_timeout());
+        assert!(!error.is_cancelled());
+    }
+}

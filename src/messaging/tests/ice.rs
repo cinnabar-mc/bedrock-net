@@ -82,3 +82,42 @@ async fn actual_turn_acquisition_retains_full_service_targets_and_original_polic
     .await
     .expect("finite original SDK TURN acquisition fixture stalled");
 }
+
+/// A correlated credential refusal and a malformed ICE URL retain inspectable preparation causes.
+#[tokio::test]
+async fn actual_turn_failures_retain_their_original_preparation_causes() {
+    use std::error::Error as _;
+    for invalid_url in [false, true] {
+        tokio::time::timeout(Duration::from_secs(10), async {
+            let (mut socket, mut peer) = test_support::pair(7).await;
+            let application = async {
+                let result = acquire_ice(
+                    &mut socket,
+                    &ConnectionConfig::default(),
+                    Instant::now() + Duration::from_secs(5),
+                ).await;
+                socket.close();
+                let _ = socket.drive().await;
+                result.err().expect("preparation must refuse the fixture")
+            };
+            let service = async {
+                let request: Value = serde_json::from_str(&peer.recv_text().await.unwrap().unwrap()).unwrap();
+                let response = if invalid_url {
+                    json!({"jsonrpc":"2.0","id":request["id"],"result":{
+                        "ExpirationInSeconds":300,"TurnAuthServers":[{
+                            "Username":"fixture","Password":"fixture","Urls":["invalid:fixture"]
+                        }]
+                    }})
+                } else {
+                    json!({"jsonrpc":"2.0","id":request["id"],"error":{"code":-32001,"message":"fixture-private-diagnostic"}})
+                };
+                peer.send_text(&response.to_string()).await.unwrap();
+                let _ = peer.recv_text().await;
+                let _ = peer.close().await;
+            };
+            let (error, ()) = tokio::join!(application, service);
+            assert!(error.source().is_some(), "the actual preparation cause was discarded: {error}");
+            assert!(!error.to_string().contains("fixture-private-diagnostic"));
+        }).await.expect("finite credential-failure fixture stalled");
+    }
+}

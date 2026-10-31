@@ -84,5 +84,17 @@ fn timed_out() -> io::Error {
     io::Error::new(io::ErrorKind::TimedOut, "native join timed out")
 }
 
+/// Preserves the original transport cause while exposing timeout and cancellation to I/O callers.
+fn transport_error(error: nethernet_tokio::NetherError) -> io::Error {
+    let kind = if error.is_cancelled() {
+        io::ErrorKind::Interrupted
+    } else if error.is_timeout() {
+        io::ErrorKind::TimedOut
+    } else {
+        io::ErrorKind::Other
+    };
+    io::Error::new(kind, error)
+}
+
 #[cfg(all(test, feature = "nethernet"))]
 mod tests;

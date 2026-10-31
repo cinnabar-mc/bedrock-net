@@ -13,6 +13,41 @@ use tokio::time::Instant;
 
 const TEST_TIMEOUT: Duration = Duration::from_secs(20);
 
+/// HTTP acceptance retains the dependency's minute-long transport trust budget.
+#[test]
+fn http_acceptance_uses_the_shared_trust_budget() {
+    assert_eq!(
+        nethernet_tokio::HttpServerConfig::default().establish_timeout,
+        Duration::from_secs(60)
+    );
+}
+
+/// Explicit caller cancellation remains distinct from an ordinary transport failure.
+#[tokio::test]
+async fn http_cancelled_setup_retains_its_cancellation_category() {
+    let config = ConnectionConfig::default();
+    config.cancel_token.cancel();
+    let error = http::connect(
+        nethernet_tokio::HttpSignaling::new("cancelled-fixture".into()).unwrap(),
+        "http://127.0.0.1:1".into(),
+        config,
+        Instant::now() + TEST_TIMEOUT,
+        None,
+    )
+    .await
+    .err()
+    .unwrap();
+    assert_eq!(error.kind(), io::ErrorKind::Interrupted);
+    assert!(
+        error
+            .get_ref()
+            .unwrap()
+            .downcast_ref::<nethernet_tokio::NetherError>()
+            .unwrap()
+            .is_cancelled()
+    );
+}
+
 /// Excludes child fork/exec inheritance while the fixture checks physical socket retirement.
 static CHILD_SPAWN: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
