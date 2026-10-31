@@ -7,7 +7,7 @@ use bedrock_net::BatchLimits;
 use bedrock_protocol::{packets, wire};
 use nethernet_tokio::{
     ClientIceConfig, HttpServerConfig, HttpSignalingServer, NetherServer, SelfSignedIdentity,
-    ServerIceConfig, ServerIdentity, TokenTrust,
+    ServerIceConfig, TokenTrust,
     signaling::http::probe::{HttpProbe, ProbeCache},
 };
 use p384::{ecdsa::SigningKey, elliptic_curve::Generate};
@@ -26,7 +26,7 @@ use tokio::{
 /// Successful Login keeps its choice; refusal and dropped Login waits forget that exact choice.
 #[tokio::test]
 async fn addressed_login_uses_the_selected_url_and_invalidates_failed_attempts() {
-    for outcome in 0..4 {
+    for outcome in 0..5 {
         tokio::time::timeout(Duration::from_secs(20), attempt(outcome))
             .await
             .unwrap();
@@ -37,7 +37,11 @@ async fn addressed_login_uses_the_selected_url_and_invalidates_failed_attempts()
 async fn attempt(outcome: usize) {
     let now = SystemTime::now();
     let key = Arc::new(SigningKey::generate());
-    let server_key = Arc::new(SigningKey::generate());
+    let directory = std::env::temp_dir().join(format!("bedrock-http-{}", uuid::Uuid::new_v4()));
+    let (server_key, server_identity) =
+        crate::server::load_identity(directory.join("identity.pem"), "fixture")
+            .await
+            .unwrap();
     let signaling = Arc::new(
         HttpSignalingServer::bind("127.0.0.1:0".parse().unwrap(), HttpServerConfig::default())
             .await
@@ -46,15 +50,7 @@ async fn attempt(outcome: usize) {
     let mut listener = NetherServer::bind_with(
         Arc::clone(&signaling),
         ConnectionConfig {
-            identity: Some(Arc::new(
-                ServerIdentity::from_key(
-                    (*server_key).clone(),
-                    "fixture",
-                    now,
-                    Some(Duration::from_secs(60)),
-                )
-                .unwrap(),
-            )),
+            identity: Some(server_identity),
             token_trust: Some(TokenTrust::Any),
             server_ice: Some(ServerIceConfig {
                 bind_addr: "127.0.0.1:0".parse().unwrap(),
@@ -123,12 +119,6 @@ async fn attempt(outcome: usize) {
         .unwrap();
     assert_eq!(peer_key, *key.verifying_key());
     let limits = BatchLimits::default();
-    let mut client = Connection::new(
-        connected.into_transport(),
-        limits,
-        wire::Limits::receiving_from(wire::Peer::Server),
-        65536,
-    );
     let mut server = Connection::new(
         Transport::from_accepted(accepted),
         limits,
@@ -146,7 +136,14 @@ async fn attempt(outcome: usize) {
     .unwrap();
     let (received, receiving) = tokio::sync::oneshot::channel();
     let (complete, completed) = tokio::sync::oneshot::channel();
-    let application = async {
+    let application = connected.setup(|transport| async move {
+    let mut client = Connection::new(
+        transport,
+        limits,
+        wire::Limits::receiving_from(wire::Peer::Server),
+        65536,
+    );
+
         if outcome == 3 {
             let mut observe = |_: handshake::Observation<'_>| {};
             let settings = handshake::settings(&mut client, configured, &mut observe);
@@ -185,14 +182,15 @@ async fn attempt(outcome: usize) {
                         result = &mut login => panic!("Login completed before cancellation: {}", result.is_ok()),
                     }
                 } else {
-                    assert_eq!(login.await.is_ok(), outcome == 0);
+                    assert_eq!(login.await.is_ok(), outcome == 0 || outcome == 4);
                 }
             }
         }
         complete.send(()).unwrap();
         client.close().await.unwrap();
         client.finish_close().await.unwrap();
-    };
+        if outcome == 0 { Ok(()) } else { Err(io::Error::other("fixture setup failed")) }
+    });
     let accepting = async {
         use bedrock_client::server::{OfflinePolicy, ServerLoginEvent, ServerSettingsEvent};
         let policy = OfflinePolicy::new(|_: &str| Ok(()));
@@ -228,7 +226,7 @@ async fn attempt(outcome: usize) {
             if outcome == 2 {
                 received.send(()).unwrap();
             } else {
-                let response = if outcome == 0 {
+                let response = if outcome == 0 || outcome == 4 {
                     packets::Packet::ResourcePacksInfo(Default::default())
                 } else {
                     packets::Packet::Disconnect(Default::default())
@@ -243,7 +241,8 @@ async fn attempt(outcome: usize) {
         server.close().await.unwrap();
         server.finish_close().await.unwrap();
     };
-    tokio::join!(application, accepting);
+    let (result, ()) = tokio::join!(application, accepting);
+    assert_eq!(result.is_ok(), outcome == 0);
     let before = secure.load(Ordering::SeqCst);
     assert_eq!(before, 2);
     let selected = probe
@@ -258,6 +257,7 @@ async fn attempt(outcome: usize) {
     stop.send(()).unwrap();
     proxy_task.await.unwrap();
     listener.close().await.unwrap();
+    std::fs::remove_dir_all(directory).unwrap();
 }
 
 /// Serves proxy requests concurrently, then joins only this fixture's owned requests.

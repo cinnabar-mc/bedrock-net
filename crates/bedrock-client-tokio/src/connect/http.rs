@@ -72,7 +72,7 @@ impl HttpDialer {
         };
         let attempt = HttpAttempt {
             selection,
-            succeeded: false,
+            invalidate_on_drop: true,
         };
         let mut signaling = self.probe.signaling(self.local_id.clone());
         if let Some(info) = &self.client_info {
@@ -108,6 +108,28 @@ impl AddressedConnection {
         self.attempt.selection.login_address()
     }
 
+    /// Guards the caller's complete Bedrock setup, including work after an early pack offer.
+    /// Keep this future under the original deadline; failure or cancellation forgets its choice.
+    pub async fn setup<T, E, F>(
+        self,
+        setup: impl FnOnce(crate::transport::Transport) -> F,
+    ) -> Result<T, E>
+    where
+        F: std::future::Future<Output = Result<T, E>>,
+    {
+        let mut transport = crate::transport::Transport::from_http(self.client);
+        // The outer receipt owns invalidation through the caller's complete setup future.
+        transport.http_attempt = Some(HttpAttempt {
+            selection: self.attempt.selection.clone(),
+            invalidate_on_drop: false,
+        });
+        let result = setup(transport).await;
+        if result.is_ok() {
+            self.attempt.complete();
+        }
+        result
+    }
+
     /// Moves the original association and failure receipt into the standard Bedrock adapter.
     pub fn into_transport(self) -> crate::transport::Transport {
         let mut transport = crate::transport::Transport::from_http(self.client);
@@ -116,10 +138,10 @@ impl AddressedConnection {
     }
 }
 
-/// Holds one selected entry until the original settings/Login continuation succeeds.
+/// Retains selected metadata and the scope that owns failure invalidation.
 pub(crate) struct HttpAttempt {
     selection: ProbeSelection,
-    succeeded: bool,
+    invalidate_on_drop: bool,
 }
 
 impl HttpAttempt {
@@ -133,16 +155,16 @@ impl HttpAttempt {
         serde_json::value::to_raw_value(&claims).map_err(io::Error::other)
     }
 
-    /// Keeps the selected entry only after the original Login continuation completed.
+    /// Keeps the selected entry after the owning setup scope completed successfully.
     pub(crate) fn complete(mut self) {
-        self.succeeded = true;
+        self.invalidate_on_drop = false;
     }
 }
 
 impl Drop for HttpAttempt {
     /// Failure or cancellation cannot leave a failed settings/Login choice cached.
     fn drop(&mut self) {
-        if !self.succeeded {
+        if self.invalidate_on_drop {
             self.selection.forget();
         }
     }

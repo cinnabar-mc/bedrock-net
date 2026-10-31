@@ -28,8 +28,10 @@ connection and an optional pack offer for further negotiation.
 
 For an addressed join, build `connect::http::HttpDialer` from a caller-configured
 `HttpProbe` and optionally attach a caller-owned `ProbeCache`. Its `connect`
-method returns the actual Ready client for key approval. Move it into the wire
-adapter with `into_transport`, then use the normal settings and Login functions.
+method returns the actual Ready client for key approval. Use its `setup` method
+to guard the caller's full negotiation future, including work after an early
+pack offer. The closure receives the original transport for settings and Login.
+`into_transport` also supports a caller that stops at the Login handoff.
 Login replaces `ServerAddress` with the selected URL and one explicit port while
 preserving unrelated raw claim values. Failed or cancelled settings/Login forget
 that attempt's cache entry; successful Login keeps it. An explicit-URL
