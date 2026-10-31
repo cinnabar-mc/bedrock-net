@@ -181,6 +181,36 @@ fn split_server_address_matches_go_without_resolving_or_normalizing_hosts() {
     }
 }
 
+#[cfg(feature = "login")]
+#[test]
+fn explicit_device_profiles_match_go_defaults_claim_order_and_empty_hash() {
+    use bedrock_net::login::client_data::{DeviceProfile, RawClientData, default_input_mode};
+    let Some(mut oracle) = oracle() else { return };
+    for os in (-1..=16).chain([i64::MIN, i64::MAX]) {
+        for platform in [None, Some(0), Some(7)] {
+            let profile = DeviceProfile {
+                os,
+                model: "Caller hardware".into(),
+                id: "00112233445566778899aabbccddeeff".into(),
+            };
+            let mut value = json!({"CurrentInputMode":1,"GameVersion":"1.26.60","SkinId":"kept","ProfileHash":"","Unknown":{"value":"kept"}});
+            if let Some(platform) = platform {
+                value["PlatformType"] = json!(platform);
+            }
+            let mut rust = RawClientData::from_value(&value).unwrap();
+            let go =
+                oracle.call(json!({"op":"device_profile","profile":profile,"client_data":value}));
+            profile.apply(&mut rust).unwrap();
+            assert_eq!(
+                serde_json::to_vec(&rust).unwrap(),
+                unb64(&go["client_json"]),
+                "OS {os}, platform {platform:?}"
+            );
+            assert_eq!(default_input_mode(os), go["input_mode"].as_i64().unwrap());
+        }
+    }
+}
+
 fn b64(bytes: &[u8]) -> Value {
     STANDARD.encode(bytes).into()
 }

@@ -115,7 +115,8 @@ func nativeClientDataSchema(t *testing.T, records []nativeSchemaRecord, source n
 			strings.ToUpper(record.name),
 		)
 	}
-	out.WriteString("        }\n    }\n}\n")
+	out.WriteString("        }\n    }\n}\n\n")
+	nativeClientDeviceData(t, &out)
 	for _, record := range records {
 		fields := nativeClientDataSchemaFields(t, record, records)
 		t.Logf("%s: %d modeled fields", record.typeOf, len(fields))

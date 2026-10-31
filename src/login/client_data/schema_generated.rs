@@ -50,6 +50,76 @@ impl Record {
     }
 }
 
+pub(in crate::login) const CLAIM_ORDER: &[&str] = &[
+    "AnimatedImageData",
+    "ArmSize",
+    "CapeData",
+    "CapeId",
+    "CapeImageHeight",
+    "CapeImageWidth",
+    "CapeOnClassicSkin",
+    "ClientEditorConnectionIntent",
+    "ClientIsEditorCapable",
+    "ClientRandomId",
+    "CompatibleWithClientSideChunkGen",
+    "CurrentInputMode",
+    "DefaultInputMode",
+    "DeviceId",
+    "DeviceModel",
+    "DeviceOS",
+    "FilterProfanity",
+    "GameVersion",
+    "GraphicsMode",
+    "GuiScale",
+    "LanguageCode",
+    "MaxViewDistance",
+    "MemoryTier",
+    "OverrideSkin",
+    "PersonaPieces",
+    "PersonaSkin",
+    "PieceTintColors",
+    "PlatformOfflineId",
+    "PlatformOnlineId",
+    "PlatformUserId",
+    "PlatformType",
+    "PremiumSkin",
+    "SelfSignedId",
+    "ServerAddress",
+    "SkinAnimationData",
+    "SkinColor",
+    "SkinData",
+    "SkinGeometryData",
+    "SkinGeometryDataEngineVersion",
+    "SkinId",
+    "PlayFabId",
+    "SkinImageHeight",
+    "SkinImageWidth",
+    "SkinResourcePatch",
+    "ThirdPartyName",
+    "ThirdPartyNameOnly",
+    "TrustedSkin",
+    "UIProfile",
+    "PartyId",
+    "IsPartyLeader",
+    "ProfileHash",
+    "Nonce",
+];
+
+/// Returns the default input mode from the pinned device owner.
+pub(in crate::login) fn device_input_mode(os: i64) -> i64 {
+    match os {
+        3 => 1,
+        7 => 1,
+        8 => 1,
+        10 => 1,
+        11 => 3,
+        12 => 3,
+        13 => 3,
+        15 => 1,
+        _ => 2,
+    }
+}
+
 const CLIENT_FIELDS: &[Field] = &[
     Field {
         name: "AnimatedImageData",

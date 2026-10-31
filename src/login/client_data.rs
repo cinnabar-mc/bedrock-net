@@ -9,11 +9,13 @@ use serde::{
 use serde_json::{Value, value::RawValue};
 use std::{fmt, io};
 
+mod device;
 mod json;
 mod json_generated;
 pub(in crate::login) mod schema_generated;
 mod semantic;
 mod types;
+pub use device::{DeviceProfile, default_input_mode};
 pub use semantic::{ValidatedClientData, ValidationError};
 
 mod url;
@@ -118,12 +120,28 @@ impl RawClientData {
     /// Rejects serialization errors and known-field type mismatches without changing the object.
     /// The complete encoded Login size remains the signing caller's bound.
     pub fn insert(&mut self, name: &'static str, value: Value) -> io::Result<()> {
+        self.replace(name, value, false)
+    }
+
+    /// Adds an explicit profile claim in canonical order while preserving existing entry positions.
+    fn insert_ordered(&mut self, name: &'static str, value: Value) -> io::Result<()> {
+        self.replace(name, value, true)
+    }
+
+    /// Checks one replacement before removing aliases or choosing its insertion position.
+    fn replace(&mut self, name: &'static str, value: Value, ordered: bool) -> io::Result<()> {
         let value = serde_json::value::to_raw_value(&value).map_err(|_| invalid())?;
         types::replacement(name, &value)?;
         let index = self
             .entries
             .iter()
-            .position(|(key, _)| same_field(key, name));
+            .position(|(key, _)| same_field(key, name))
+            .or_else(|| {
+                let rank = ordered.then(|| claim_rank(name)).flatten()?;
+                self.entries
+                    .iter()
+                    .position(|(key, _)| claim_rank(key).is_some_and(|other| other > rank))
+            });
         self.entries.retain(|(key, _)| !same_field(key, name));
         self.entries.insert(
             index.unwrap_or(self.entries.len()).min(self.entries.len()),
@@ -156,6 +174,13 @@ impl RawClientData {
             .find(|(key, value)| same_field(key, name) && value.get() != "null")
             .map(|(_, value)| &**value)
     }
+}
+
+/// Reads canonical positions from metadata generated through the pinned Go serializer.
+fn claim_rank(name: &str) -> Option<usize> {
+    schema_generated::CLAIM_ORDER
+        .iter()
+        .position(|claim| same_field(name, claim))
 }
 
 impl Serialize for RawClientData {

@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/coreos/go-oidc/v3/oidc"
+	"github.com/sandertv/gophertunnel/minecraft/device"
 	"github.com/sandertv/gophertunnel/minecraft/protocol/login"
 	"github.com/sandertv/gophertunnel/minecraft/protocol/packet"
 )
@@ -49,6 +50,7 @@ type serveRequest struct {
 	Audience    string          `json:"audience"`
 	Now         int64           `json:"now"`
 	Address     string          `json:"address"`
+	Profile     *device.Profile `json:"profile"`
 }
 
 type decodeResult struct {
@@ -131,6 +133,17 @@ func handle(req *serveRequest) (any, error) {
 	case "split_server_address":
 		host, port, ok := login.SplitServerAddress(req.Address)
 		return map[string]any{"host": []byte(host), "port": port, "ok": ok}, nil
+	case "device_profile":
+		if req.Profile == nil {
+			return nil, errors.New("missing device profile")
+		}
+		var data login.ClientData
+		if err := json.Unmarshal(req.ClientData, &data); err != nil {
+			return nil, err
+		}
+		req.Profile.Apply(&data)
+		encoded, err := json.Marshal(data)
+		return map[string]any{"client_json": encoded, "input_mode": device.DefaultInputMode(req.Profile.OS)}, err
 	case "offline_fixtures":
 		return offlineFixtures()
 	default:
