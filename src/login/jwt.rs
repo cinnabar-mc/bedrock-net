@@ -5,7 +5,7 @@ use std::{
     io::{self, Write},
 };
 
-use base64::engine::general_purpose::{STANDARD_NO_PAD, URL_SAFE_NO_PAD};
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::{
     Engine, alphabet,
     engine::{DecodePaddingMode, GeneralPurpose, GeneralPurposeConfig},
@@ -104,9 +104,10 @@ pub(super) fn verify_server(token: &str, limit: usize) -> Result<(), LoginError>
     parsed.verify(&VerifyingKey::from(public))?;
     let claims: SaltClaims =
         serde_json::from_slice(&parsed.payload).map_err(|_| LoginError::MalformedJson)?;
-    STANDARD_NO_PAD
-        .decode(claims.salt.unwrap_or_default().trim_end_matches('='))
-        .map_err(LoginError::Base64)?;
+    decode_standard(
+        claims.salt.unwrap_or_default().trim_end_matches('='),
+        DecodePaddingMode::RequireNone,
+    )?;
     Ok(())
 }
 
@@ -215,6 +216,11 @@ fn decode(value: &str, url: bool) -> Result<Vec<u8>, LoginError> {
     if url {
         return decode_compact(value).map(|(bytes, _)| bytes);
     }
+    decode_standard(value, DecodePaddingMode::RequireCanonical)
+}
+
+/// Decodes standard base64 with the selected Go padding policy and ignored CR/LF.
+fn decode_standard(value: &str, padding: DecodePaddingMode) -> Result<Vec<u8>, LoginError> {
     let clean = if value.contains(['\r', '\n']) {
         Cow::Owned(value.replace(['\r', '\n'], ""))
     } else {
@@ -224,7 +230,7 @@ fn decode(value: &str, url: bool) -> Result<Vec<u8>, LoginError> {
         &alphabet::STANDARD,
         GeneralPurposeConfig::new()
             .with_decode_allow_trailing_bits(true)
-            .with_decode_padding_mode(DecodePaddingMode::RequireCanonical),
+            .with_decode_padding_mode(padding),
     )
     .decode(clean.as_bytes())
     .map_err(LoginError::Base64)

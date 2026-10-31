@@ -213,3 +213,34 @@ fn request_limits_are_exact_and_utc_validity_handles_pre_epoch_seconds() {
     assert_eq!(claims["exp"], OFFLINE_VALIDITY_SECONDS - 1);
     assert_eq!(claims["nbf"], -OFFLINE_VALIDITY_SECONDS - 1);
 }
+
+#[test]
+fn server_salt_accepts_raw_standard_base64_spellings() {
+    let server = key(197);
+    for salt in ["AR", "A\r\nQ", "AR=====", "A\r\nQ=="] {
+        let token = server_token(&server, json!({}), json!({"salt":salt}));
+        verify_server_handshake(&token, LIMIT).unwrap();
+    }
+}
+
+#[test]
+fn server_address_checks_bracketed_ip_literals() {
+    for (input, host) in [
+        ("http://[::1]:19132", b"::1".as_slice()),
+        ("http://[::1%25eth0]:19132", b"::1%eth0"),
+    ] {
+        assert_eq!(
+            split_server_address(input),
+            Some((host.to_vec(), 19132)),
+            "{input}"
+        );
+    }
+    for input in [
+        "http://[v1.example]:19132",
+        "http://[::1%25]:19132",
+        "http://[::1:19132",
+        "http://[::1]bad:19132",
+    ] {
+        assert!(split_server_address(input).is_none());
+    }
+}
