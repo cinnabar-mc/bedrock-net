@@ -35,8 +35,11 @@ impl Outgoing {
 
 pub(super) enum SocketStep {
     Event(Result<Event, signaling::websocket::SocketError>),
-    Acknowledged,
-    Outgoing(RequestId),
+    Acknowledged(Option<Result<Event, signaling::websocket::SocketError>>),
+    Outgoing(
+        RequestId,
+        Option<Result<Event, signaling::websocket::SocketError>>,
+    ),
     OutgoingCancelled,
 }
 
@@ -56,7 +59,7 @@ pub(super) async fn socket_step(
             }
         }
         match admit(socket, receipt, outgoing.as_deref_mut()) {
-            Ok(Some(step)) => return Poll::Ready(Ok(step)),
+            Ok(Some(step)) => return Poll::Ready(Ok(drive_admitted(socket, cx, step))),
             Err(error) => return Poll::Ready(Err(error)),
             Ok(None) => {}
         }
@@ -70,7 +73,7 @@ pub(super) async fn socket_step(
         }
         // A sink flush can free admission without producing any application event.
         match admit(socket, receipt, outgoing.as_deref_mut()) {
-            Ok(Some(step)) => Poll::Ready(Ok(step)),
+            Ok(Some(step)) => Poll::Ready(Ok(drive_admitted(socket, cx, step))),
             Err(error) => Poll::Ready(Err(error)),
             Ok(None) => Poll::Pending,
         }
@@ -89,7 +92,7 @@ fn admit(
             return Err(Error::TimedOut);
         }
         match socket.acknowledge(signal, message, deadline) {
-            Ok(_) => return Ok(Some(SocketStep::Acknowledged)),
+            Ok(_) => return Ok(Some(SocketStep::Acknowledged(None))),
             Err(signaling::Error::Limit) => {}
             Err(_) => return Err(Error::Admission),
         }
@@ -108,10 +111,31 @@ fn admit(
             ),
         };
         match admitted {
-            Ok(id) => return Ok(Some(SocketStep::Outgoing(id))),
+            Ok(id) => return Ok(Some(SocketStep::Outgoing(id, None))),
             Err(signaling::Error::Limit) => {}
             Err(_) => return Err(Error::Admission),
         }
     }
     Ok(None)
+}
+
+/// Polls the owned wire write before reporting local admission, retaining any simultaneous event.
+fn drive_admitted(
+    socket: &mut MessagingSocket,
+    cx: &mut std::task::Context<'_>,
+    step: SocketStep,
+) -> SocketStep {
+    let event = {
+        let drive = socket.drive();
+        tokio::pin!(drive);
+        match drive.as_mut().poll(cx) {
+            Poll::Ready(event) => Some(event),
+            Poll::Pending => None,
+        }
+    };
+    match step {
+        SocketStep::Acknowledged(_) => SocketStep::Acknowledged(event),
+        SocketStep::Outgoing(id, _) => SocketStep::Outgoing(id, event),
+        step => step,
+    }
 }

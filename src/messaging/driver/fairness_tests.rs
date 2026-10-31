@@ -147,7 +147,7 @@ async fn failed_admission_stops_before_socket_dispatch() {
     let progress = race::step(
         async move {
             dispatched.send(()).unwrap();
-            Ok(SocketStep::Acknowledged)
+            Ok(SocketStep::Acknowledged(None))
         },
         std::future::ready(Err(CallerSignalingError::Closed)),
     )

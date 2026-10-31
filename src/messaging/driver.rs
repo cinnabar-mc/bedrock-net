@@ -154,58 +154,43 @@ impl Driver {
             return Err(error);
         }
         tokio::pin!(operation);
-        let mut steps = 0;
-        loop {
-            enum Step<T> {
-                Output(T),
-                OutputWithFailure(T, Error),
-                Progress,
-                Error(Error),
-            }
-            let step = {
-                let advance = self.advance();
-                tokio::pin!(advance);
-                poll_fn(|cx| {
-                    // Poll both owners even if application data stays continuously ready.
-                    let service = advance.as_mut().poll(cx);
-                    let application = operation.as_mut().poll(cx);
-                    match service {
-                        Poll::Ready(Err(error)) => match application {
-                            Poll::Ready(value) => {
-                                Poll::Ready(Step::OutputWithFailure(value, error))
-                            }
-                            Poll::Pending => Poll::Ready(Step::Error(error)),
-                        },
-                        Poll::Ready(Ok(())) => match application {
-                            Poll::Ready(value) => Poll::Ready(Step::Output(value)),
-                            Poll::Pending => Poll::Ready(Step::Progress),
-                        },
-                        Poll::Pending => application.map(Step::Output),
+        let mut output = None;
+        poll_fn(|cx| {
+            for _ in 0..bedrock_services::signaling::MAX_BATCH_MESSAGES {
+                let service = {
+                    let advance = self.advance();
+                    tokio::pin!(advance);
+                    advance.as_mut().poll(cx)
+                };
+                if output.is_none()
+                    && let Poll::Ready(value) = operation.as_mut().poll(cx)
+                {
+                    output = Some(value);
+                }
+                match service {
+                    Poll::Ready(Err(error)) => {
+                        self.terminal = Some(error.clone());
+                        self.close();
+                        return Poll::Ready(output.take().ok_or(error));
                     }
-                })
-                .await
-            };
-            match step {
-                Step::Output(value) => return Ok(value),
-                Step::OutputWithFailure(value, error) => {
-                    self.terminal = Some(error);
-                    self.close();
-                    return Ok(value);
-                }
-                Step::Error(error) => {
-                    self.terminal = Some(error.clone());
-                    self.close();
-                    return Err(error);
-                }
-                Step::Progress => {
-                    steps += 1;
-                    if steps == bedrock_services::signaling::MAX_BATCH_MESSAGES {
-                        tokio::task::yield_now().await;
-                        steps = 0;
+                    Poll::Ready(Ok(())) => {}
+                    Poll::Pending => {
+                        return output
+                            .take()
+                            .map_or(Poll::Pending, |value| Poll::Ready(Ok(value)));
                     }
                 }
             }
-        }
+            // Drain ready service transitions before returning data, with a finite per-poll budget.
+            match output.take() {
+                Some(value) => Poll::Ready(Ok(value)),
+                None => {
+                    cx.waker().wake_by_ref();
+                    Poll::Pending
+                }
+            }
+        })
+        .await
     }
 
     /// Cancels abandoned operations before driving bytes; a written send is never retried.
@@ -264,6 +249,11 @@ impl Driver {
             }
             let progress = async {
                 tokio::select! {
+                    biased;
+                    request = async {
+                        if has_outgoing { pending().await } else { self.caller.recv().await }
+                    } => Step::Outgoing(request),
+
                     progress = race::step(
                         socket_step(&mut self.socket, receipt, self.outgoing.as_mut()),
                         async {
@@ -273,9 +263,6 @@ impl Driver {
                             }
                         }
                     ) => Step::Service(progress),
-                    request = async {
-                        if has_outgoing { pending().await } else { self.caller.recv().await }
-                    } => Step::Outgoing(request),
                     _ = async {
                         if self.pending.is_empty() { pending::<()>().await; }
                         let waits: Vec<_> = self.pending.values_mut()
@@ -318,7 +305,8 @@ impl Driver {
                     }
                 };
                 self.outgoing = Some(Outgoing::new(request, peer));
-                Ok(())
+                let progress = socket_step(&mut self.socket, None, self.outgoing.as_mut()).await;
+                self.socket_progress(progress)
             }
             Step::Service(progress) => {
                 match progress.admitted {
@@ -354,15 +342,19 @@ impl Driver {
     /// Applies socket progress after recording any handoff completed in the same poll.
     fn socket_progress(&mut self, event: Result<SocketStep, Error>) -> Result<(), Error> {
         match event? {
-            SocketStep::Acknowledged => {
+            SocketStep::Acknowledged(event) => {
                 self.incoming.acknowledged();
-                Ok(())
+                event.map_or(Ok(()), |event| {
+                    self.socket_progress(Ok(SocketStep::Event(event)))
+                })
             }
-            SocketStep::Outgoing(id) => {
+            SocketStep::Outgoing(id, event) => {
                 if let Some(outgoing) = self.outgoing.take() {
                     self.pending.insert(id, outgoing.request);
                 }
-                Ok(())
+                event.map_or(Ok(()), |event| {
+                    self.socket_progress(Ok(SocketStep::Event(event)))
+                })
             }
             SocketStep::OutgoingCancelled => {
                 self.outgoing = None;

@@ -378,3 +378,65 @@ async fn stale_accepting_admission_preserves_the_shared_service_and_healthy_rout
     .await
     .expect("finite stale accepting-route fixture stalled");
 }
+
+#[tokio::test]
+async fn ready_application_output_does_not_postpone_signal_writes() {
+    use bedrock_services::signaling::websocket::test_support;
+    let peer_id = Uuid::from_u128(1);
+    let (socket, mut peer) = test_support::pair(7).await;
+    let config = CallerSignalingConfig::default();
+    let (caller, caller_driver) =
+        CallerSignaling::new("7".into(), peer_id.to_string(), config).unwrap();
+    let _signals = caller.signals().unwrap();
+    let mut sending = Box::pin(caller.signal(Signal::offer(9, "sdp".into(), peer_id.to_string())));
+    assert!(futures::poll!(&mut sending).is_pending());
+    let mut driver = Driver::new(
+        socket,
+        caller_driver,
+        Recipient::Messaging(peer_id),
+        config.send_timeout,
+        Instant::now() + Duration::from_secs(5),
+    );
+    assert_eq!(driver.run(std::future::ready(7)).await.unwrap(), 7);
+    assert!(
+        driver.outgoing.is_none(),
+        "ready output deferred signal admission"
+    );
+    let wire = tokio::time::timeout(Duration::from_secs(1), peer.recv_text())
+        .await
+        .expect("same driver poll must write the signal")
+        .unwrap()
+        .unwrap();
+    assert!(wire.contains("sdp"));
+}
+
+#[tokio::test]
+async fn receipt_admission_drives_its_wire_write_before_returning() {
+    use bedrock_services::signaling::websocket::test_support;
+    let peer_id = Uuid::from_u128(1);
+    let (mut socket, mut peer) = test_support::pair(7).await;
+    let signal = received(
+        &mut Messaging::new(7),
+        peer_id,
+        "7",
+        &Signal::offer(9, "sdp".into(), peer_id.to_string()).to_string(),
+    );
+    let step = socket_step(
+        &mut socket,
+        Some((
+            &signal,
+            Uuid::from_u128(2),
+            Instant::now() + Duration::from_secs(5),
+        )),
+        None,
+    )
+    .await
+    .unwrap();
+    assert!(matches!(step, SocketStep::Acknowledged(_)));
+    let wire = tokio::time::timeout(Duration::from_secs(1), peer.recv_text())
+        .await
+        .expect("receipt must reach the wire in its admission poll")
+        .unwrap()
+        .unwrap();
+    assert!(wire.contains("Signaling_DeliveryNotification"));
+}
