@@ -6,7 +6,7 @@ use serde_json::{json, value::RawValue};
 
 #[test]
 fn profile_overlay_preserves_empty_hash_unknown_claims_and_original_clone() {
-    let input = r#"{"CurrentInputMode":1,"GameVersion":"1.26.60","SkinId":"kept","ProfileHash":"","Opaque":{"n":1e400}}"#;
+    let input = r#"{"CurrentInputMode":1,"DeviceId":"previous-id","DeviceModel":"Previous hardware","GameVersion":"1.26.60","SkinId":"kept","ProfileHash":"","Opaque":{"n":1e400}}"#;
     let original = RawClientData::from_raw(&RawValue::from_string(input.into()).unwrap()).unwrap();
     let profile: DeviceProfile = serde_json::from_value(json!({
         "os":1, "model":"Caller hardware", "id":"00112233445566778899aabbccddeeff"
@@ -15,6 +15,14 @@ fn profile_overlay_preserves_empty_hash_unknown_claims_and_original_clone() {
     for _ in 0..2 {
         let mut modified = original.clone();
         profile.apply(&mut modified).unwrap();
+        assert_eq!(
+            modified.read::<String>("DeviceId").unwrap().as_deref(),
+            Some(profile.id.as_str())
+        );
+        assert_eq!(
+            modified.read::<String>("DeviceModel").unwrap().as_deref(),
+            Some(profile.model.as_str())
+        );
         assert_eq!(modified.integer("DefaultInputMode").unwrap(), Some(2));
         assert_eq!(modified.integer("CurrentInputMode").unwrap(), Some(1));
         assert_eq!(modified.integer("PlatformType").unwrap(), Some(1));
