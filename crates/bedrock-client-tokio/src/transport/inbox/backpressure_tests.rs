@@ -49,7 +49,7 @@ async fn native_nether_inbox_count_pressure_keeps_completion_and_fifo() {
 #[tokio::test]
 async fn native_nether_inbox_byte_pressure_keeps_canceled_head_and_fifo() {
     let mut inbox = Inbox::default();
-    let maximum = bedrock_net::BatchLimits::default().max_encoded_bytes;
+    let maximum = inbox.max_bytes;
     let prefix = Bytes::from(vec![0xfe; maximum.checked_sub(1).unwrap()]);
     inbox.push(prefix.clone()).unwrap();
     assert!(!inbox.is_full());

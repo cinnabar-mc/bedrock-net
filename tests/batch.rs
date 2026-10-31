@@ -268,7 +268,7 @@ fn malformed_tail_never_exposes_a_partial_batch() {
 }
 
 #[test]
-fn compressed_failures_drop_but_missing_headers_and_framing_are_fatal() {
+fn compressed_failures_drop_but_malformed_framing_is_fatal() {
     let codec = negotiated(CompressionAlgorithm::Deflate, BatchLimits::default());
     for wire in [
         &[2][..],
@@ -286,10 +286,7 @@ fn compressed_failures_drop_but_missing_headers_and_framing_are_fatal() {
         codec.decode(Bytes::from_static(&[2])),
         Ok(DecodeOutcome::Dropped(DropReason::UnknownCompression(2)))
     ));
-    assert!(matches!(
-        codec.decode(Bytes::from_static(&[])),
-        Err(BatchError::MissingCompressionHeader)
-    ));
+    assert!(packets(&codec, Bytes::new()).is_empty());
     assert!(matches!(
         codec.decode(Bytes::from_static(&[0xff, 3, 2])),
         Err(BatchError::TruncatedPacket { .. })
@@ -859,4 +856,32 @@ fn malformed_snappy_blocks_never_dispatch_partial_packets() {
         ));
         assert_eq!(visits, 0);
     }
+}
+
+#[test]
+fn empty_transport_messages_are_skipped_after_negotiation() {
+    let mut codec = negotiated(CompressionAlgorithm::Deflate, BatchLimits::default());
+    assert!(packets(&codec, Bytes::new()).is_empty());
+    assert!(matches!(
+        codec
+            .decode_with(Bytes::new(), |_| panic!("no packet"))
+            .unwrap(),
+        VisitOutcome::Packets { count: 0, .. }
+    ));
+}
+
+#[test]
+fn incoming_decoded_allowance_accepts_large_uncompressed_wire_messages() {
+    let codec = negotiated(CompressionAlgorithm::None, BatchLimits::default())
+        .with_incoming_decoded_limit(64 * 1024 * 1024);
+    let packet = vec![7; 33 * 1024 * 1024];
+    let mut message = vec![0xff];
+    let mut length = packet.len() as u32;
+    while length >= 128 {
+        message.push(length as u8 | 128);
+        length >>= 7;
+    }
+    message.push(length as u8);
+    message.extend_from_slice(&packet);
+    assert_eq!(packets(&codec, Bytes::from(message)), [Bytes::from(packet)]);
 }

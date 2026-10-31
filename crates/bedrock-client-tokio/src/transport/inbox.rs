@@ -13,6 +13,7 @@ pub struct Inbox {
     bytes: usize,
     pending_message: Option<Bytes>,
     max_bytes: usize,
+    max_message_bytes: usize,
     max_packets: usize,
 }
 
@@ -23,7 +24,10 @@ impl Default for Inbox {
             messages: VecDeque::new(),
             bytes: 0,
             pending_message: None,
-            max_bytes: limits.max_encoded_bytes,
+            max_bytes: limits
+                .max_encoded_bytes
+                .min(limits.max_decoded_bytes.saturating_mul(2)),
+            max_message_bytes: limits.max_encoded_bytes,
             max_packets: limits.max_packets,
         }
     }
@@ -32,7 +36,10 @@ impl Default for Inbox {
 impl Inbox {
     /// Binds the connection caller's existing wire/count limits without discarding admitted input.
     pub(super) fn configure_limits(&mut self, limits: bedrock_net::BatchLimits) {
-        self.max_bytes = limits.max_encoded_bytes;
+        self.max_bytes = limits
+            .max_encoded_bytes
+            .min(limits.max_decoded_bytes.saturating_mul(2));
+        self.max_message_bytes = limits.max_encoded_bytes;
         self.max_packets = limits.max_packets;
     }
     /// Releases the charged FIFO prefix before its one unadmitted wire head.
@@ -67,7 +74,7 @@ impl Inbox {
             .bytes
             .checked_add(message.len())
             .ok_or_else(|| io::Error::other("native wire receive budget overflow"))?;
-        if message.len() > self.max_bytes {
+        if message.len() > self.max_message_bytes {
             return Err(Self::full_error());
         }
         if self.pending_message.is_some()
@@ -130,7 +137,7 @@ mod tests {
 
     #[test]
     fn byte_pressure_preserves_the_unadmitted_head_and_strict_fifo_contract() {
-        let limit = bedrock_net::BatchLimits::default().max_encoded_bytes;
+        let limit = Inbox::default().max_bytes;
         let first = Bytes::from(vec![0xfe; limit.checked_sub(1).unwrap()]);
         let head = Bytes::from_static(b"head");
         assert!(head.len() <= limit);
@@ -152,6 +159,23 @@ mod tests {
         assert!(inbox.try_push(head).unwrap().is_none());
         assert_eq!(inbox.pop().unwrap().as_ref(), b"head");
         assert!(inbox.pop().is_none());
+    }
+
+    #[test]
+    fn a_legal_message_larger_than_the_fifo_budget_remains_readable() {
+        let mut inbox = Inbox::default();
+        inbox.configure_limits(bedrock_net::BatchLimits {
+            max_encoded_bytes: 1024,
+            max_decoded_bytes: 4,
+            ..Default::default()
+        });
+        let message = Bytes::from_static(b"large head");
+        inbox.retain(message.clone()).unwrap();
+        assert!(inbox.is_full());
+        assert_eq!(inbox.bytes, 0);
+        assert_eq!(inbox.pop().unwrap(), message);
+        assert!(!inbox.is_full());
+        assert!(inbox.retain(Bytes::from(vec![0; 1025])).is_err());
     }
 
     #[tokio::test(start_paused = true)]

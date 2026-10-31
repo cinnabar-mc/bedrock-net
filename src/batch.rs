@@ -28,8 +28,8 @@ pub struct BatchLimits {
 impl Default for BatchLimits {
     fn default() -> Self {
         Self {
-            // Compression can expand an incompressible body; the wire allowance is separate.
-            max_encoded_bytes: DEFAULT_DECODED_BYTES * 2,
+            // Incoming allocation is bounded by the decoded allowance; callers can cap wire bytes.
+            max_encoded_bytes: usize::MAX,
             max_decoded_bytes: DEFAULT_DECODED_BYTES,
             max_packets: DEFAULT_PACKET_COUNT,
             max_incoming_packets: None,
@@ -427,8 +427,7 @@ impl<S: BatchPhase> BatchCodec<S> {
     /// Empty server entries are skipped and counted, retaining the byte bounds.
     ///
     /// # Errors
-    /// Returns an error for malformed envelopes or packet lengths, missing
-    /// compression headers, or exceeded size/count limits. Invalid compression
+    /// Returns an error for malformed packet lengths or exceeded size/count limits. Invalid compression
     /// instead returns [`DecodeOutcome::Dropped`].
     pub fn decode(&self, message: Bytes) -> Result<DecodeOutcome, BatchError> {
         let (id, body) = self.strip_envelope(message)?;
@@ -494,7 +493,7 @@ impl<S: BatchPhase> BatchCodec<S> {
     /// Checks the wire ceiling and removes the negotiated algorithm marker.
     fn strip_envelope(&self, mut message: Bytes) -> Result<(Option<u8>, Bytes), BatchError> {
         self.check_encoded_size(message.len())?;
-        let id = if self.phase.compression().is_some() {
+        let id = if self.phase.compression().is_some() && !message.is_empty() {
             let id = message
                 .first()
                 .copied()

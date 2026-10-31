@@ -15,33 +15,29 @@ use bedrock_net::{
 use bytes::Bytes;
 use serde_json::{Value, json};
 
-/// Known Go/Rust differences: case, the Rust result's [`Summary`], and its audit item.
-/// A listed case must still diverge with exactly that Rust result; a fix must remove it here.
-const EXPECTED_DIVERGENCES: &[(&str, &str, &str)] = &[
-    // Audit A "readBatch, empty transport message": Go skips it, Rust is fatal.
-    ("decode/empty_message", "fatal", "empty transport message"),
-    // Audit stricter-limits list: incoming wire messages over 32 MiB are fatal.
-    (
-        "decode/wire_over_32mib",
-        "fatal",
-        "max_encoded_bytes wire cap",
-    ),
-    // Audit stricter-limits list: outgoing batches split at 16 MiB; Go has no outgoing cap.
-    ("encode/split_16mib", "2", "outgoing 16 MiB split"),
-    // Incomplete streams are discarded even when the peer inflater returns partial packet bytes.
-    (
-        "decode/flate_truncated_partial",
-        "dropped,packets(3)",
-        "incomplete DEFLATE output",
-    ),
-];
+/// Deliberate differences checked against both complete outcomes below.
+const EXPECTED_DIVERGENCES: &[&str] = &["encode/split_16mib", "decode/flate_truncated_partial"];
 
 /// A short description of a result, so a listed divergence cannot silently change shape.
 trait Summary {
     fn summary(&self) -> String;
+
+    /// Allows only the named difference, preserving all unaffected bytes and outcomes.
+    fn allowed_difference(_name: &str, _go: &Self, _rust: &Self) -> bool
+    where
+        Self: Sized,
+    {
+        false
+    }
 }
 
 impl Summary for Vec<Outcome> {
+    fn allowed_difference(name: &str, go: &Self, rust: &Self) -> bool {
+        name == "decode/flate_truncated_partial"
+            && *go == [Outcome::Fatal]
+            && *rust == [Outcome::Dropped, Outcome::Packets(sample())]
+    }
+
     fn summary(&self) -> String {
         let parts: Vec<_> = self
             .iter()
@@ -57,6 +53,15 @@ impl Summary for Vec<Outcome> {
 
 /// Frames written per encode call.
 impl Summary for Vec<Vec<Vec<u8>>> {
+    fn allowed_difference(name: &str, go: &Self, rust: &Self) -> bool {
+        name == "encode/split_16mib"
+            && go.len() == 1
+            && go[0].len() == 1
+            && rust.len() == 1
+            && rust[0].len() == 2
+            && go[0][0] == rust[0].concat()
+    }
+
     fn summary(&self) -> String {
         let parts: Vec<_> = self.iter().map(|call| call.len().to_string()).collect();
         parts.join(",")
@@ -158,6 +163,10 @@ fn split_server_address_matches_go_without_resolving_or_normalizing_hosts() {
         "http://[::1]:19132:19132",
         "http://:19132",
         "http://[invalid]:19132",
+        "http://[v1.example]:19132",
+        "http://[::1%25]:19132",
+        "http://[::1:19132",
+        "http://[::1]bad:19132",
         "https://[fe80::1%25eth0]:19132",
         "https://[fe80::1%25]:19132",
         "http://ho%ffst:19132:19132",
@@ -362,16 +371,14 @@ struct Ledger {
 
 impl Ledger {
     fn compare<T: PartialEq + std::fmt::Debug + Summary>(&mut self, name: &str, go: T, rust: T) {
-        let listed = EXPECTED_DIVERGENCES.iter().find(|(case, ..)| *case == name);
+        let listed = EXPECTED_DIVERGENCES.iter().find(|case| **case == name);
         match (go == rust, listed) {
             (true, None) => {}
-            (false, Some((case, expected, _))) if rust.summary() == *expected => {
-                self.seen.push(case)
+            (false, Some(case)) if T::allowed_difference(name, &go, &rust) => {
+                self.seen.push(case);
             }
-            (false, Some((_, expected, _))) => self.unexpected.push(format!(
-                "{name}: Rust result changed from {expected} to {}; Go {}",
-                rust.summary(),
-                go.summary()
+            (false, Some(_)) => self.unexpected.push(format!(
+                "{name}: unexpected difference: Go {go:?}; Rust {rust:?}"
             )),
             (true, Some(_)) => self.unexpected.push(format!(
                 "{name}: now matches Go; remove its divergence entry"
@@ -385,8 +392,8 @@ impl Ledger {
     fn finish(self, prefix: &str) {
         let missing: Vec<_> = EXPECTED_DIVERGENCES
             .iter()
-            .filter(|(case, ..)| case.starts_with(prefix) && !self.seen.contains(case))
-            .map(|(case, ..)| *case)
+            .filter(|case| case.starts_with(prefix) && !self.seen.contains(case))
+            .copied()
             .collect();
         assert!(
             self.unexpected.is_empty() && missing.is_empty(),
@@ -1457,4 +1464,40 @@ mod login {
         }
         assert!(mismatches.is_empty(), "UUID mismatches: {mismatches:?}");
     }
+}
+
+#[test]
+fn truncated_stream_exemption_rejects_unaffected_packet_corruption() {
+    let mut ledger = Ledger::default();
+    let mut healthy = sample();
+    healthy[0][0] ^= 1;
+    ledger.compare(
+        "decode/flate_truncated_partial",
+        vec![Outcome::Fatal],
+        vec![Outcome::Dropped, Outcome::Packets(healthy)],
+    );
+    assert!(!ledger.unexpected.is_empty());
+    let mut ledger = Ledger::default();
+    let mut healthy = sample();
+    healthy.swap(0, 1);
+    ledger.compare(
+        "decode/flate_truncated_partial",
+        vec![Outcome::Fatal],
+        vec![Outcome::Dropped, Outcome::Packets(healthy)],
+    );
+    assert!(!ledger.unexpected.is_empty());
+    let mut ledger = Ledger::default();
+    ledger.compare(
+        "decode/flate_truncated_partial",
+        vec![Outcome::Dropped],
+        vec![Outcome::Dropped, Outcome::Packets(sample())],
+    );
+    assert!(!ledger.unexpected.is_empty());
+    let mut ledger = Ledger::default();
+    ledger.compare(
+        "decode/flate_truncated_partial",
+        vec![Outcome::Fatal],
+        vec![Outcome::Dropped, Outcome::Packets(sample())],
+    );
+    assert!(ledger.unexpected.is_empty());
 }
