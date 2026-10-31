@@ -7,76 +7,21 @@ use bedrock_net::login::parse_offline_request;
 #[cfg(feature = "login")]
 use serde_json::{Value, json};
 #[cfg(feature = "login")]
-use std::{
-    io::{Read, Write},
-    process::{Child, ChildStdin, ChildStdout, Command, Stdio},
-    time::{Duration, UNIX_EPOCH},
-};
+use std::time::{Duration, UNIX_EPOCH};
 
 #[cfg(feature = "login")]
-struct Oracle {
-    child: Child,
-    input: Option<ChildStdin>,
-    output: ChildStdout,
-}
-
-#[cfg(feature = "login")]
-impl Oracle {
-    /// Starts only the caller-configured synthetic helper; required-fixture runs cannot skip it.
-    fn new() -> Option<Self> {
-        let Some(binary) = std::env::var_os("BEDROCK_NET_GO_ORACLE") else {
-            assert!(
-                std::env::var_os("BEDROCK_NET_REQUIRE_FIXTURES").is_none(),
-                "missing Go oracle"
-            );
-            return None;
-        };
-        let mut child = Command::new(binary)
-            .arg("serve")
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .spawn()
-            .unwrap();
-        Some(Self {
-            input: child.stdin.take(),
-            output: child.stdout.take().unwrap(),
-            child,
-        })
-    }
-
-    /// Reads the independently generated requests and actual pinned Go parser decisions.
-    fn shapes(&mut self) -> Vec<Value> {
-        let request = serde_json::to_vec(&json!({"op":"offline_shapes"})).unwrap();
-        let input = self.input.as_mut().unwrap();
-        input
-            .write_all(&(request.len() as u32).to_le_bytes())
-            .unwrap();
-        input.write_all(&request).unwrap();
-        input.flush().unwrap();
-        let mut size = [0; 4];
-        self.output.read_exact(&mut size).unwrap();
-        let mut response = vec![0; u32::from_le_bytes(size) as usize];
-        self.output.read_exact(&mut response).unwrap();
-        serde_json::from_slice(&response).unwrap()
-    }
-}
-
-#[cfg(feature = "login")]
-impl Drop for Oracle {
-    /// Closes the helper's stdin and reaps its normal EOF exit without sending any signal.
-    fn drop(&mut self) {
-        drop(self.input.take());
-        self.child.wait().unwrap();
-    }
-}
+#[path = "support/oracle.rs"]
+mod oracle_support;
 
 /// Compares every case in the selected independent shape group and reports all mismatches.
 #[cfg(feature = "login")]
 fn compare(group: &str) {
-    let Some(mut oracle) = Oracle::new() else {
+    let Some(mut oracle) = oracle_support::Oracle::configured() else {
         return;
     };
-    let fixtures = oracle.shapes();
+    let response: Value = oracle.call(json!({"op":"offline_shapes"}));
+    let fixtures = response.as_array().expect("Go shape fixture array");
+    oracle.finish().expect("finish Go shape oracle");
     assert!(
         fixtures
             .iter()

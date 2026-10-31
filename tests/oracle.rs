@@ -3,9 +3,8 @@
 //! Every case compares Rust's accept/drop/fatal decision and bytes with Go's. A mismatch must
 //! be listed in [`EXPECTED_DIVERGENCES`], and a listed entry must still diverge.
 
-use std::io::{Read, Write};
-use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
-use std::sync::{Mutex, OnceLock};
+#[path = "support/oracle.rs"]
+mod oracle_support;
 
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
@@ -75,59 +74,30 @@ impl Summary for bool {
     }
 }
 
-struct Oracle {
-    _child: Child,
-    stdin: ChildStdin,
-    stdout: ChildStdout,
-}
+struct Oracle(oracle_support::Oracle);
 
 impl Oracle {
+    /// Checks helper errors after the shared deadline and cleanup boundary has read a full response.
     fn call(&mut self, request: Value) -> Value {
-        let request = serde_json::to_vec(&request).unwrap();
-        self.stdin
-            .write_all(&(request.len() as u32).to_le_bytes())
-            .unwrap();
-        self.stdin.write_all(&request).unwrap();
-        self.stdin.flush().unwrap();
-        let mut size = [0; 4];
-        self.stdout.read_exact(&mut size).unwrap();
-        let mut response = vec![0; u32::from_le_bytes(size) as usize];
-        self.stdout.read_exact(&mut response).unwrap();
-        let response: Value = serde_json::from_slice(&response).unwrap();
+        let response: Value = self.0.call(request);
         assert!(response.get("error").is_none(), "oracle error: {response}");
         response
     }
 }
 
-/// Starts the shared oracle once per test binary, or reports the missing fixture.
-fn oracle() -> Option<std::sync::MutexGuard<'static, Oracle>> {
-    static ORACLE: OnceLock<Option<Mutex<Oracle>>> = OnceLock::new();
-    let oracle = ORACLE.get_or_init(|| {
-        let binary = std::env::var_os("BEDROCK_NET_GO_ORACLE")?;
-        let mut child = Command::new(binary)
-            .arg("serve")
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .spawn()
-            .expect("start go-oracle serve");
-        Some(Mutex::new(Oracle {
-            stdin: child.stdin.take().unwrap(),
-            stdout: child.stdout.take().unwrap(),
-            _child: child,
-        }))
-    });
-    match oracle {
-        Some(oracle) => Some(oracle.lock().unwrap_or_else(|poison| poison.into_inner())),
-        None => {
-            // CI sets BEDROCK_NET_REQUIRE_FIXTURES so a dropped helper fails instead of skipping.
-            assert!(
-                std::env::var_os("BEDROCK_NET_REQUIRE_FIXTURES").is_none(),
-                "missing fixture: BEDROCK_NET_GO_ORACLE; build tools/go-oracle"
-            );
-            eprintln!("missing fixture: BEDROCK_NET_GO_ORACLE; build tools/go-oracle");
-            None
+impl Drop for Oracle {
+    /// Checks bounded normal shutdown without replacing an assertion already unwinding.
+    fn drop(&mut self) {
+        let result = self.0.finish();
+        if !std::thread::panicking() {
+            result.expect("finish Go oracle");
         }
     }
+}
+
+/// Starts one helper per test while reusing it for every comparison in that test.
+fn oracle() -> Option<Oracle> {
+    oracle_support::Oracle::configured().map(Oracle)
 }
 
 #[cfg(feature = "login")]

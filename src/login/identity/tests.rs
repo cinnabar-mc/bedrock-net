@@ -13,6 +13,10 @@ use std::{
 #[test]
 fn player_identity_matches_the_original_go_login_projection() {
     let Some(binary) = std::env::var_os("BEDROCK_NET_LOGIN_ORACLE") else {
+        assert!(
+            std::env::var_os("BEDROCK_NET_REQUIRE_FIXTURES").is_none(),
+            "missing fixture: BEDROCK_NET_LOGIN_ORACLE; build tools/go-oracle/cmd/login-check"
+        );
         eprintln!(
             "missing-fixture: BEDROCK_NET_LOGIN_ORACLE (build tools/go-oracle/cmd/login-check)"
         );
