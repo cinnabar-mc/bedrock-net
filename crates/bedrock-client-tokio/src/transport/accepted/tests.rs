@@ -63,6 +63,7 @@ async fn cached_orderly_eof_does_not_prevent_original_receiver_retirement() {
         let progress = server.progress(std::future::pending::<()>()).await;
         let cached = server.input_failure.as_ref().cloned();
         let repeated = server.progress(std::future::ready(())).await;
+        let settled = server.settle(std::future::ready(23)).await;
         let finished = server.finish_close().await;
         let replayed = server.recv().await;
         let retained = match (&cached, &server.input_failure) {
@@ -88,6 +89,7 @@ async fn cached_orderly_eof_does_not_prevent_original_receiver_retirement() {
         assert!(client_released && signaling_released);
         assert!(matches!(reliable, Ok(None)), "{reliable:?}");
         assert!(matches!(unreliable, Ok(None)), "{unreliable:?}");
+        assert_eq!(settled.unwrap(), 23);
         requested.unwrap();
         client_finished.unwrap();
         listener_closed.unwrap();

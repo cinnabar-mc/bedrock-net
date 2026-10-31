@@ -267,3 +267,14 @@ impl<'a> Cursor<'a> {
         end
     }
 }
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn transform_language_region_errors_match_the_pinned_parser() {
+        for locale in ["en-t-en-h0-hybrid", "en-t-en-h0"] {
+            assert!(!super::valid(locale), "{locale}");
+        }
+        assert!(super::valid("en-t-en-us-h0-hybrid"));
+    }
+}

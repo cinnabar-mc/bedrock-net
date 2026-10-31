@@ -160,3 +160,23 @@ fn go_shift(time: i128, seconds: i64) -> i128 {
     };
     i128::from(seconds) * second + time.rem_euclid(second)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn registered_dates_require_numeric_json_values() {
+        for field in ["exp", "nbf", "iat"] {
+            let mut claims = Registered::default();
+            claims
+                .merge(&Object::parse(format!(r#"{{"{field}":1060}}"#).as_bytes()).unwrap())
+                .unwrap();
+            assert!(
+                claims
+                    .merge(&Object::parse(format!(r#"{{"{field}":"1060"}}"#).as_bytes()).unwrap())
+                    .is_err()
+            );
+        }
+    }
+}
