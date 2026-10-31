@@ -169,8 +169,7 @@ impl AcceptingConnection {
 
     /// Encodes typed effects once without admitting a command.
     /// Rejects another retained effect or a locally retired send direction.
-    /// Empty input completes locally; entries that fail bounded serialization are logged and skipped.
-    /// Nonempty input with no encoded entries is rejected.
+    /// Empty input completes locally; any serialization failure rejects the complete effect.
     /// Larger groups split under the original codec's per-batch limits as one retained effect.
     pub fn prepare_packets(
         &mut self,
@@ -184,15 +183,8 @@ impl AcceptingConnection {
                 sender_subclient: 0,
                 target_subclient: 0,
             };
-            if let Err(error) = self
-                .connection
-                .append_packet_frame(&mut body, header, packet)
-            {
-                tracing::warn!(id = ?packet.id(), %error, "skipping an outbound packet that failed to encode");
-            }
-        }
-        if !packets.is_empty() && body.is_empty() {
-            return Err(invalid());
+            self.connection
+                .append_packet_frame(&mut body, header, packet)?;
         }
         let frames = wire::Frames::new(Bytes::from(body), packets.len());
         self.connection.prepare_frames(frames, deadline)

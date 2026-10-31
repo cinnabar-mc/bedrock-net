@@ -95,7 +95,7 @@ fn chunk_packet(data: Bytes) -> packets::Packet {
 }
 
 #[tokio::test]
-async fn full_frame_bound_accepts_exact_limit_and_skips_one_over_without_losing_siblings() {
+async fn full_frame_bound_accepts_exact_limit_and_rejects_one_over_atomically() {
     tokio::time::timeout(TIMEOUT, async {
         let (mut pair, _) = signed_pair_with_key(
             Arc::new(SigningKey::generate()),
@@ -137,22 +137,23 @@ async fn full_frame_bound_accepts_exact_limit_and_skips_one_over_without_losing_
             .wire
             .prepare_packets(vec![time_packet(1), oversized, time_packet(2)], deadline)
             .map(drop);
-        let received = if prepared.is_ok() {
-            let mut sending = pair.wire.resume_send().unwrap();
-            while let Some(capacity) = sending.next().await.unwrap() {
-                capacity.commit().unwrap();
-            }
-            sending.finish().unwrap();
-            let plaintext = pair.client.recv().await.unwrap().unwrap();
-            match BatchCodec::new(BatchLimits::default())
-                .decode(plaintext)
-                .unwrap()
-            {
-                DecodeOutcome::Packets { packets, .. } => Some(packets.collect::<Vec<_>>()),
-                DecodeOutcome::Dropped(_) => panic!("plaintext fixture message was dropped"),
-            }
-        } else {
-            None
+        let no_partial_send = pair.wire.resume_send().is_err();
+        pair.wire
+            .prepare_packets(vec![time_packet(1), time_packet(2)], deadline)
+            .map(drop)
+            .unwrap();
+        let mut sending = pair.wire.resume_send().unwrap();
+        while let Some(capacity) = sending.next().await.unwrap() {
+            capacity.commit().unwrap();
+        }
+        sending.finish().unwrap();
+        let plaintext = pair.client.recv().await.unwrap().unwrap();
+        let received = match BatchCodec::new(BatchLimits::default())
+            .decode(plaintext)
+            .unwrap()
+        {
+            DecodeOutcome::Packets { packets, .. } => packets.collect::<Vec<_>>(),
+            DecodeOutcome::Dropped(_) => panic!("plaintext fixture message was dropped"),
         };
         assert!(
             pair.finish().await,
@@ -161,8 +162,8 @@ async fn full_frame_bound_accepts_exact_limit_and_skips_one_over_without_losing_
         assert!(fitting_result.is_ok());
         assert_eq!(fitting_length, limit);
         assert!(
-            prepared.is_ok(),
-            "a one-over frame discarded valid siblings: {prepared:?}"
+            prepared.is_err() && no_partial_send,
+            "a one-over frame retained a partial effect: {prepared:?}"
         );
         assert!(
             matches!(oversized_result, Err(error) if error.kind() == io::ErrorKind::InvalidInput)
@@ -172,7 +173,7 @@ async fn full_frame_bound_accepts_exact_limit_and_skips_one_over_without_losing_
             let packet = time_packet(time);
             packet_bytes(wire::PacketHeader::new(packet.id() as u32), &packet)
         });
-        assert_eq!(received, Some(expected.to_vec()));
+        assert_eq!(received, expected.to_vec());
     })
     .await
     .expect("finite actual full-frame boundary fixture stalled");

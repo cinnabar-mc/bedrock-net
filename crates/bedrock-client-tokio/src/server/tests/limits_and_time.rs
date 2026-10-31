@@ -3,7 +3,7 @@
 use super::*;
 
 #[tokio::test]
-async fn oversized_generated_entry_rolls_back_without_losing_valid_siblings_or_batch_order() {
+async fn oversized_generated_entry_rejects_the_effect_and_preserves_the_next_send() {
     tokio::time::timeout(TIMEOUT, async {
         let mut pair = signed_pair().await;
         let deadline = tokio::time::Instant::now().into_std() + TIMEOUT;
@@ -25,17 +25,15 @@ async fn oversized_generated_entry_rolls_back_without_losing_valid_siblings_or_b
             }
             .into()
         };
-        let prepared = pair
+        let mixed_failed = pair
             .wire
             .prepare_packets(vec![valid(1), oversized, valid(2)], deadline)
-            .map(drop);
-        if let Err(error) = prepared {
-            assert!(
-                pair.finish().await,
-                "original signed accepting owners leaked"
-            );
-            panic!("an oversized generated entry must not discard valid siblings: {error}");
-        }
+            .is_err();
+        let mixed_retained_nothing = pair.wire.resume_send().is_err();
+        pair.wire
+            .prepare_packets(vec![valid(1), valid(2)], deadline)
+            .map(drop)
+            .unwrap();
         let mut sending = pair.wire.resume_send().unwrap();
         while let Some(capacity) = sending.next().await.unwrap() {
             capacity.commit().unwrap();
@@ -46,7 +44,7 @@ async fn oversized_generated_entry_rolls_back_without_losing_valid_siblings_or_b
             pair.finish().await,
             "original signed accepting owners leaked"
         );
-        assert!(all_failed && no_retained_send);
+        assert!(all_failed && no_retained_send && mixed_failed && mixed_retained_nothing);
         assert_eq!(received, [raw_packet(1), raw_packet(2)]);
     })
     .await
