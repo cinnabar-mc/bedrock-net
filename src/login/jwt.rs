@@ -32,7 +32,7 @@ struct SigningHeader<'a> {
     x5u: &'a str,
 }
 
-#[derive(Deserialize)]
+#[derive(Default, Deserialize)]
 struct SaltClaims {
     #[serde(default)]
     salt: Option<String>,
@@ -129,8 +129,9 @@ pub(super) fn verify_server(token: &str, limit: usize) -> Result<(), LoginError>
     let der = decode(&parsed.header.key_text()?, false)?;
     let public = PublicKey::from_public_key_der(&der).map_err(LoginError::PublicKey)?;
     parsed.verify(&VerifyingKey::from(public))?;
-    let claims: SaltClaims =
-        serde_json::from_slice(&parsed.payload).map_err(|_| LoginError::MalformedJson)?;
+    let claims = serde_json::from_slice::<Option<SaltClaims>>(&parsed.payload)
+        .map_err(|_| LoginError::MalformedJson)?
+        .unwrap_or_default();
     decode_standard(
         claims.salt.unwrap_or_default().trim_end_matches('='),
         DecodePaddingMode::RequireNone,
@@ -342,6 +343,26 @@ mod tests {
             URL_SAFE_NO_PAD.encode(b"{}"),
             URL_SAFE_NO_PAD.encode([0; 96])
         )
+    }
+
+    /// Claim decoding follows the pinned JOSE decoder, including null and duplicate keys.
+    #[test]
+    fn server_claim_shapes_match_the_jose_decoder() {
+        use base64::engine::general_purpose::STANDARD;
+        use p384::pkcs8::EncodePublicKey;
+        let key = SigningKey::from_slice(&[3; 48]).unwrap();
+        let public = STANDARD.encode(key.verifying_key().to_public_key_der().unwrap().as_bytes());
+        for (payload, accepted) in [
+            ("null", true),
+            (r#"{"salt":"AQ","salt":"Ag"}"#, false),
+            (r#"{"salt":17,"salt":"Ag"}"#, false),
+            (r#"{"salt":null}"#, true),
+            (r#"{"Salt":"!"}"#, true),
+            (r#"{"salt":17}"#, false),
+        ] {
+            let token = sign(&key, &public, payload.as_bytes(), 65536).unwrap();
+            assert_eq!(verify_server(&token, 65536).is_ok(), accepted, "{payload}");
+        }
     }
 
     #[test]

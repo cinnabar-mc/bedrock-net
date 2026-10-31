@@ -1462,3 +1462,66 @@ fn truncated_stream_exemption_rejects_unaffected_packet_corruption() {
     );
     assert!(ledger.unexpected.is_empty());
 }
+
+#[cfg(feature = "login")]
+#[test]
+fn url_hosts_match_the_go_parser() {
+    let Some(mut oracle) = oracle() else { return };
+    for host in [
+        "::1",
+        "2001:db8::1",
+        "a[b",
+        "::bad",
+        "host:no",
+        "[::1]bad",
+        "[::1]",
+        "[2001:db8::1]:123",
+        "host:123",
+    ] {
+        let go = oracle.call(json!({"op":"url_host", "address":host}));
+        let rust = bedrock_net::login::client_data::decode_url_host(host);
+        assert_eq!(rust.is_some(), go["accepted"].as_bool().unwrap(), "{host}");
+        if let Some(host) = rust {
+            assert_eq!(STANDARD.encode(host), go["host"]);
+        }
+    }
+}
+
+#[cfg(feature = "login")]
+#[test]
+fn server_handshake_claim_shapes_match_go() {
+    use p384::{
+        ecdsa::{Signature, SigningKey, signature::Signer},
+        pkcs8::EncodePublicKey,
+    };
+    let Some(mut oracle) = oracle() else { return };
+    let key = SigningKey::from_slice(&[3; 48]).unwrap();
+    let public = STANDARD.encode(key.verifying_key().to_public_key_der().unwrap().as_bytes());
+    let header = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .encode(serde_json::to_vec(&json!({"alg":"ES384", "x5u":public})).unwrap());
+    for (payload, accepted) in [
+        ("null", true),
+        (r#"{"salt":"AQ","salt":"Ag"}"#, false),
+        (r#"{"salt":17,"salt":"Ag"}"#, false),
+        (r#"{"salt":null}"#, true),
+        (r#"{"Salt":"!"}"#, true),
+        (r#"{"salt":17}"#, false),
+    ] {
+        let input = format!(
+            "{header}.{}",
+            base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(payload)
+        );
+        let signature: Signature = key.sign(input.as_bytes());
+        let token = format!(
+            "{input}.{}",
+            base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(signature.to_bytes())
+        );
+        let go = oracle.call(json!({"op":"server_handshake", "token":token}));
+        assert_eq!(go["accepted"], accepted, "{payload}");
+        assert_eq!(
+            bedrock_net::login::verify_server_handshake(&token, 65536).is_ok(),
+            accepted,
+            "{payload}"
+        );
+    }
+}

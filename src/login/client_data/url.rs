@@ -112,6 +112,8 @@ mod tests {
     #[test]
     fn host_escapes_preserve_non_utf8_bytes() {
         for (input, expected) in [
+            ("[::1]", b"[::1]".as_slice()),
+            ("[2001:db8::1]:123", b"[2001:db8::1]:123"),
             ("example%FF.com", b"example\xff.com".as_slice()),
             ("%C3", b"\xc3"),
             ("%C3%A9", b"\xc3\xa9"),
@@ -121,6 +123,16 @@ mod tests {
                 Some(expected.to_vec())
             );
         }
-        assert!(super::decode_url_host("example%2f.com").is_none());
+        for host in [
+            "::1",
+            "2001:db8::1",
+            "a[b",
+            "example%2f.com",
+            "::bad",
+            "host:no",
+            "[::1]bad",
+        ] {
+            assert!(super::decode_url_host(host).is_none(), "{host}");
+        }
     }
 }
