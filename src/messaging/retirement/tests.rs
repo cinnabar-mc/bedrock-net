@@ -2,7 +2,7 @@ use super::*;
 use bytes::Bytes;
 use nethernet::identity::ServerIdentity;
 use nethernet_tokio::signaling::http::{HttpServerConfig, HttpSignaling, HttpSignalingServer};
-use nethernet_tokio::{ConnectionConfig, NetherServer};
+use nethernet_tokio::{ClientIceConfig, ConnectionConfig, NetherServer, ServerIceConfig};
 use std::{
     sync::Arc,
     time::{Duration, SystemTime},
@@ -28,6 +28,13 @@ async fn dropping_messaging_transport_owner_closes_a_retained_session() {
                 identity: Some(Arc::new(
                     ServerIdentity::generate("synthetic-server", SystemTime::now()).unwrap(),
                 )),
+                // Keep this lifetime test independent of the host's default network route.
+                server_ice: Some(ServerIceConfig {
+                    bind_addr: "127.0.0.1:0".parse().unwrap(),
+                    ice: Default::default(),
+                    turn_streams: Vec::new(),
+                    turn_tls: None,
+                }),
                 ..Default::default()
             },
         )
@@ -40,6 +47,12 @@ async fn dropping_messaging_transport_owner_closes_a_retained_session() {
                 identity: Some(Arc::new(
                     ServerIdentity::generate("synthetic-client", SystemTime::now()).unwrap(),
                 )),
+                client_ice: Some(ClientIceConfig {
+                    bind_addr: Some("127.0.0.1:0".parse().unwrap()),
+                    ice: Default::default(),
+                    turn_streams: Vec::new(),
+                    turn_tls: None,
+                }),
                 attempts: 1,
                 ..Default::default()
             },
