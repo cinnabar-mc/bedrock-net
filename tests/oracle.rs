@@ -134,6 +134,53 @@ fn oracle() -> Option<std::sync::MutexGuard<'static, Oracle>> {
     }
 }
 
+#[cfg(feature = "login")]
+#[test]
+fn split_server_address_matches_go_without_resolving_or_normalizing_hosts() {
+    let Some(mut oracle) = oracle() else { return };
+    for address in [
+        "host:19132",
+        "[::1]:19133",
+        ":0",
+        "",
+        "host",
+        "host:0",
+        "host:",
+        "host:65536",
+        "host:+1",
+        "host:-1",
+        "host:00001",
+        "[named-host]:7",
+        "http://host:80",
+        "https://host:443:443",
+        "https://host",
+        "https://host:1:2",
+        "http://[::1]:19132:19132",
+        "http://:19132",
+        "http://[invalid]:19132",
+        "https://[fe80::1%25eth0]:19132",
+        "https://[fe80::1%25]:19132",
+        "http://ho%ffst:19132:19132",
+        "ftp://host:21",
+        "HTTP://host:80",
+        "host:1:1",
+        "http://user:pass@host:80/path?query#fragment",
+        "https://host:1/#bad%zz",
+        "http://host:1/#fragment:1\n",
+        "http://host:19132/#\n:19133",
+        "http://[::1%25zone%20name]:19132",
+        "http://host:00080:00080",
+    ] {
+        let go = oracle.call(json!({"op":"split_server_address", "address":address}));
+        let rust = bedrock_net::login::split_server_address(address);
+        assert_eq!(rust.is_some(), go["ok"].as_bool().unwrap(), "{address:?}");
+        if let Some((host, port)) = rust {
+            assert_eq!(STANDARD.encode(host), go["host"], "{address:?}");
+            assert_eq!(u64::from(port), go["port"].as_u64().unwrap(), "{address:?}");
+        }
+    }
+}
+
 fn b64(bytes: &[u8]) -> Value {
     STANDARD.encode(bytes).into()
 }

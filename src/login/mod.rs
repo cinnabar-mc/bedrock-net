@@ -31,6 +31,7 @@ use serde_json::value::RawValue;
 
 pub use error::LoginError;
 pub use identity::PlayerIdentity;
+pub use url::split_server_address;
 
 const OFFLINE_VALIDITY_SECONDS: i64 = 6 * 60 * 60;
 const MULTIPLAYER_AUDIENCE: &str = "api://auth-minecraft-services/multiplayer";

@@ -128,6 +128,9 @@ func handle(req *serveRequest) (any, error) {
 	case "resolve_udp":
 		_, err := net.ResolveUDPAddr("udp", req.Address)
 		return map[string]bool{"resolved": err == nil}, nil
+	case "split_server_address":
+		host, port, ok := login.SplitServerAddress(req.Address)
+		return map[string]any{"host": []byte(host), "port": port, "ok": ok}, nil
 	case "offline_fixtures":
 		return offlineFixtures()
 	default:

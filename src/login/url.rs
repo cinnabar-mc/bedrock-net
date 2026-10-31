@@ -3,49 +3,69 @@
 
 /// Accepts HTTP title metadata with a host and port, including the legacy echoed-port suffix.
 pub(super) fn server_address(address: &str) -> bool {
-    if let Some((inner, echoed)) = address.rsplit_once(':')
-        && server_url(inner, Some(echoed))
-    {
-        return true;
-    }
-    server_url(address, None)
-}
-
-/// Applies the title owner's host/port requirements without URL or numeric-port normalization.
-fn server_url(address: &str, echoed: Option<&str>) -> bool {
     let Some((scheme, _)) = address.split_once("://") else {
         return false;
     };
     if !scheme.eq_ignore_ascii_case("http") && !scheme.eq_ignore_ascii_case("https") {
         return false;
     }
-    let Some(host) = parse(address) else {
+    let Some(host) = parse_server_url(address) else {
         return false;
     };
-    let Some(colon) = host.iter().rposition(|byte| *byte == b':') else {
-        return false;
-    };
-    let bracketed = host.first() == Some(&b'[');
-    let name = if bracketed {
-        let Some(end) = host.iter().position(|byte| *byte == b']') else {
-            return false;
-        };
-        if end + 1 != colon {
-            return false;
-        }
-        &host[1..end]
+    host_port(&host)
+        .is_some_and(|(name, port)| !name.is_empty() && port.iter().all(u8::is_ascii_digit))
+}
+
+/// Returns the joined host and nonzero port from plain or URL Login metadata, without DNS.
+/// Hosts are bytes because URL escapes can decode to non-UTF-8. LAN `":0"` has no return target.
+///
+/// ```
+/// let (host, port) = bedrock_net::login::split_server_address("https://play.example:19132:19132").unwrap();
+/// assert_eq!(host, b"play.example");
+/// assert_eq!(port, 19132);
+/// ```
+pub fn split_server_address(address: &str) -> Option<(Vec<u8>, u16)> {
+    let decoded;
+    let address = if address.contains("://") {
+        decoded = parse_server_url(address)?;
+        decoded.as_slice()
     } else {
-        &host[..colon]
+        address.as_bytes()
     };
-    if name.is_empty()
-        || name.iter().any(|byte| b"[]".contains(byte))
-        || (!bracketed && name.contains(&b':'))
-    {
-        return false;
+    let (host, port) = host_port(address)?;
+    if host.is_empty() || port.is_empty() || !port.iter().all(u8::is_ascii_digit) {
+        return None;
     }
-    let port = &host[colon + 1..];
-    port.iter().all(u8::is_ascii_digit)
-        && echoed.is_none_or(|echoed| !port.is_empty() && port == echoed.as_bytes())
+    let port = std::str::from_utf8(port).ok()?.parse::<u16>().ok()?;
+    (port != 0).then(|| (host.to_vec(), port))
+}
+
+/// Drops only a repeated nonempty URL port before applying the shared URL parser.
+fn parse_server_url(address: &str) -> Option<Vec<u8>> {
+    if let Some((inner, echoed)) = address.rsplit_once(':')
+        && let Some(host) = parse(inner)
+        && host_port(&host).is_some_and(|(_, port)| !port.is_empty() && port == echoed.as_bytes())
+    {
+        return Some(host);
+    }
+    parse(address)
+}
+
+/// Splits the Go host:port syntax, retaining empty hosts/ports for the consumer to interpret.
+fn host_port(address: &[u8]) -> Option<(&[u8], &[u8])> {
+    let colon = address.iter().rposition(|byte| *byte == b':')?;
+    let host = &address[..colon];
+    let port = &address[colon + 1..];
+    let host = if host.first() == Some(&b'[') {
+        host.strip_prefix(b"[")?.strip_suffix(b"]")?
+    } else {
+        if host.contains(&b':') {
+            return None;
+        }
+        host
+    };
+    (!host.iter().any(|byte| b"[]".contains(byte)) && !port.iter().any(|byte| b"[]".contains(byte)))
+        .then_some((host, port))
 }
 
 /// Returns the decoded host bytes for certificate URI checks, retaining relative and opaque forms.
