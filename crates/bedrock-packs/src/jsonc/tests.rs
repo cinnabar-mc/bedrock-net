@@ -226,8 +226,15 @@ fn a_document_whose_tree_could_exhaust_memory_is_refused_before_parsing() {
         dense.extend_from_slice(b"0,");
     }
     dense.extend_from_slice(b"0]");
-    let error = parse_jsonc::<TreeConstruction>(&dense).unwrap_err();
-    assert!(error.to_string().contains("too large"), "{error}");
+    for error in [
+        parse_jsonc::<TreeConstruction>(&dense).unwrap_err(),
+        parse_jsonc_lenient::<TreeConstruction>(&dense).unwrap_err(),
+    ] {
+        assert!(error.to_string().contains("too large"), "{error}");
+    }
+    let mut trailing = b"{} # ignored\n".to_vec();
+    trailing.extend_from_slice(&dense);
+    assert_eq!(parse_jsonc_lenient::<Value>(&trailing).unwrap(), json!({}));
 }
 
 // Small objects each allocate a whole map node, far more than their text suggests.

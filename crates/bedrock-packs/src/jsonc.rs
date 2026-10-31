@@ -143,6 +143,16 @@ pub fn parse_jsonc_lenient<T: DeserializeOwned>(bytes: &[u8]) -> Result<T, serde
     let stripped =
         strip_comments(text.as_bytes(), false).expect("lenient comment stripping retains input");
     let prepared = escape_string_controls(&strip_trailing_commas(&stripped));
+    let mut values =
+        serde_json::Deserializer::from_slice(&prepared).into_iter::<serde::de::IgnoredAny>();
+    if let Some(value) = values.next() {
+        value?;
+    }
+    if !fits_parse_budget(&prepared[..values.byte_offset()], MAX_PARSED_BYTES) {
+        return Err(<serde_json::Error as serde::de::Error>::custom(
+            "document is too large to parse",
+        ));
+    }
     let mut decoder = serde_json::Deserializer::from_slice(&prepared);
     T::deserialize(&mut decoder)
 }
