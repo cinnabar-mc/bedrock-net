@@ -46,6 +46,9 @@ pub enum Error {
     /// The target, bounds or signed transport policy was incomplete.
     #[error("invalid messaging transport configuration")]
     Configuration,
+    /// The validated service target cannot be represented by the Messaging UUID route.
+    #[error("service messaging recipient is invalid")]
+    Target(#[source] Arc<uuid::Error>),
     /// The original caller deadline elapsed.
     #[error("messaging transport timed out")]
     TimedOut,
@@ -216,6 +219,17 @@ pub struct PreparedMessaging {
 }
 
 impl PreparedMessaging {
+    /// Uses the common Realms/Gatherings target and the JSON-RPC runtime's UUID recipient rule.
+    pub fn from_target(
+        socket: MessagingSocket,
+        local_network_id: u64,
+        target: bedrock_services::realms::JoinTarget<'_>,
+    ) -> Result<Self, Error> {
+        let peer = Uuid::parse_str(target.nethernet_id())
+            .map_err(|error| Error::Target(Arc::new(error)))?;
+        Self::new(socket, local_network_id, peer)
+    }
+
     /// Captures the exact network ID used at upgrade and rejects an absent peer identity.
     pub fn new(socket: MessagingSocket, local_network_id: u64, peer: Uuid) -> Result<Self, Error> {
         if peer.is_nil() {
