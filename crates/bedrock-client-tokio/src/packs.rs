@@ -131,8 +131,8 @@ pub async fn wait_io<T>(
     loop {
         tokio::select! {
             biased;
-            () = connection.maintain() => {},
             output = &mut operation => return output,
+            () = connection.maintain() => tokio::task::yield_now().await,
         }
     }
 }
@@ -147,4 +147,42 @@ fn completed(waiting: &mut Vec<uuid::Uuid>, packs: &ClientPacks, io: &mut impl P
             true
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct ReadyMaintenance(usize);
+    impl PacketIo for ReadyMaintenance {
+        async fn send_body(&mut self, _: bytes::Bytes) -> io::Result<()> {
+            unreachable!()
+        }
+        async fn recv_body(&mut self) -> io::Result<bytes::Bytes> {
+            unreachable!()
+        }
+        async fn close(&mut self) -> io::Result<()> {
+            unreachable!()
+        }
+        async fn maintain(&mut self) {
+            self.0 += 1;
+            assert!(self.0 <= 1, "ready maintenance starved the operation");
+        }
+    }
+
+    #[tokio::test]
+    async fn ready_operation_completes_beside_ready_maintenance() {
+        let mut connection = ReadyMaintenance(0);
+        assert_eq!(wait_io(&mut connection, std::future::ready(7)).await, 7);
+    }
+
+    #[tokio::test]
+    async fn pending_operation_yields_beside_ready_maintenance() {
+        let mut connection = ReadyMaintenance(0);
+        let operation = async {
+            tokio::task::yield_now().await;
+            9
+        };
+        assert_eq!(wait_io(&mut connection, operation).await, 9);
+    }
 }
