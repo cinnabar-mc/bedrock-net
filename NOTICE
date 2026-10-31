@@ -38,7 +38,8 @@ These dependencies are not vendored here.
 The optional Login helpers use the same public Rust and Go references for
 line-terminated token JSON, token-only offline requests, server token validation and
 authenticated player identity projection, including the XUID-derived UUID.
-P-384 signatures and public-key parsing use RustCrypto p384. The synthetic
+Native P-384 signing uses AWS-LC through aws-lc-rs. Portable signing and
+public-key parsing use RustCrypto p384. The synthetic
 Login oracle shares tools/go-oracle's existing Gophertunnel pin.
 
 The original accepting pack/startup owner follows that same MIT Go reference

@@ -45,7 +45,7 @@ readme = "README.md"
 
 [features]
 default = []
-login = ["dep:base64", "dep:md-5", "dep:p384", "dep:p224", "dep:p256", "dep:p521", "dep:serde", "dep:serde_json", "dep:uuid", "dep:sha2", "dep:zeroize", "dep:num-bigint", "dep:sha1"]
+login = ["dep:aws-lc-rs", "dep:base64", "dep:md-5", "dep:p384", "dep:p224", "dep:p256", "dep:p521", "dep:serde", "dep:serde_json", "dep:uuid", "dep:sha2", "dep:zeroize", "dep:num-bigint", "dep:sha1"]
 provider-verification = ["login", "dep:nethernet"]
 messaging = ["dep:zeroize", "dep:bedrock-services", "dep:futures", "dep:nethernet", "dep:nethernet-tokio", "dep:tokio", "dep:uuid", "uuid/v4"]
 
@@ -74,6 +74,7 @@ zeroize = { version = "1", optional = true }
 uuid = { version = "1", optional = true }
 
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
+aws-lc-rs = { version = "1.18.2", default-features = false, features = ["non-fips", "prebuilt-nasm"], optional = true }
 libdeflater = "=1.26.1"
 
 [dev-dependencies]

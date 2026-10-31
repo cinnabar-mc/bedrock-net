@@ -164,6 +164,20 @@ fn server_tokens_verify_and_ignore_unused_registered_claims() {
     }
 }
 
+/// Verifies both original signatures and compares their exact payloads independently of nonce choice.
+fn request_payloads(key: &SigningKey, request: &[u8]) -> (Value, Vec<u8>) {
+    let length = u32::from_le_bytes(request[..4].try_into().unwrap()) as usize;
+    let mut envelope: Value = serde_json::from_slice(&request[4..4 + length]).unwrap();
+    let token = envelope["Token"].as_str().unwrap();
+    let payload = jwt::verify_client(token, key.verifying_key(), LIMIT).unwrap();
+    envelope["Token"] = serde_json::from_slice(&payload).unwrap();
+    let client = std::str::from_utf8(&request[8 + length..]).unwrap();
+    (
+        envelope,
+        jwt::verify_client(client, key.verifying_key(), LIMIT).unwrap(),
+    )
+}
+
 #[test]
 fn request_limits_are_exact_and_utc_validity_handles_pre_epoch_seconds() {
     let client = key(1);
@@ -176,9 +190,12 @@ fn request_limits_are_exact_and_utc_validity_handles_pre_epoch_seconds() {
     // Windows SystemTime stores 100 ns intervals; keep the fraction representable.
     let now = UNIX_EPOCH - Duration::from_micros(1);
     let request = encode_offline_request(&client, &identity(), &client_data, now, LIMIT).unwrap();
+    let bounded =
+        encode_offline_request(&client, &identity(), &client_data, now, request.len()).unwrap();
+    assert_eq!(bounded.len(), request.len());
     assert_eq!(
-        encode_offline_request(&client, &identity(), &client_data, now, request.len()).unwrap(),
-        request
+        request_payloads(&client, &bounded),
+        request_payloads(&client, &request)
     );
     for limit in [0, CLIENT_DATA.len(), request.len() - 1] {
         assert!(matches!(
@@ -190,9 +207,12 @@ fn request_limits_are_exact_and_utc_validity_handles_pre_epoch_seconds() {
     let envelope: Value = serde_json::from_slice(&request[4..4 + length]).unwrap();
     let token = envelope["Token"].as_str().unwrap();
     let authenticated = encode_authenticated_request(&client, token, &client_data, LIMIT).unwrap();
+    let bounded =
+        encode_authenticated_request(&client, token, &client_data, authenticated.len()).unwrap();
+    assert_eq!(bounded.len(), authenticated.len());
     assert_eq!(
-        encode_authenticated_request(&client, token, &client_data, authenticated.len()).unwrap(),
-        authenticated
+        request_payloads(&client, &bounded),
+        request_payloads(&client, &authenticated)
     );
     for limit in [0, token.len() - 1, authenticated.len() - 1] {
         assert!(matches!(

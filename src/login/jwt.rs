@@ -11,7 +11,9 @@ use base64::{
     engine::{DecodePaddingMode, GeneralPurpose, GeneralPurposeConfig},
 };
 use p384::PublicKey;
-use p384::ecdsa::signature::{Signer, Verifier};
+#[cfg(target_family = "wasm")]
+use p384::ecdsa::signature::Signer;
+use p384::ecdsa::signature::Verifier;
 use p384::ecdsa::{Signature, SigningKey, VerifyingKey};
 use p384::pkcs8::DecodePublicKey;
 use serde::{Deserialize, Serialize};
@@ -80,9 +82,7 @@ pub(super) fn sign(
     URL_SAFE_NO_PAD.encode_string(header, &mut token);
     token.push('.');
     URL_SAFE_NO_PAD.encode_string(payload, &mut token);
-    let signature: Signature = key
-        .try_sign(token.as_bytes())
-        .map_err(LoginError::Signature)?;
+    let signature = sign_message(key, token.as_bytes())?;
     let signature = signature.to_bytes();
     let length = base64::encoded_len(signature.len(), false)
         .and_then(|length| length.checked_add(1))
@@ -94,6 +94,33 @@ pub(super) fn sign(
     token.push('.');
     URL_SAFE_NO_PAD.encode_string(signature, &mut token);
     Ok(token)
+}
+
+/// Signs with the existing native crypto backend while retaining the caller's proof key.
+#[cfg(not(target_family = "wasm"))]
+fn sign_message(key: &SigningKey, message: &[u8]) -> Result<Signature, LoginError> {
+    use aws_lc_rs::{
+        rand::SystemRandom,
+        signature::{ECDSA_P384_SHA384_FIXED_SIGNING, EcdsaKeyPair},
+    };
+    let private = zeroize::Zeroizing::new(key.to_bytes());
+    let public = key.verifying_key().to_sec1_point(false);
+    let signing = EcdsaKeyPair::from_private_key_and_public_key(
+        &ECDSA_P384_SHA384_FIXED_SIGNING,
+        private.as_slice(),
+        public.as_bytes(),
+    )
+    .map_err(|_| LoginError::Signature(p384::ecdsa::Error::new()))?;
+    let signature = signing
+        .sign(&SystemRandom::new(), message)
+        .map_err(|_| LoginError::Signature(p384::ecdsa::Error::new()))?;
+    Signature::from_slice(signature.as_ref()).map_err(LoginError::Signature)
+}
+
+/// Keeps the portable signing path on targets without the native crypto backend.
+#[cfg(target_family = "wasm")]
+fn sign_message(key: &SigningKey, message: &[u8]) -> Result<Signature, LoginError> {
+    key.try_sign(message).map_err(LoginError::Signature)
 }
 
 /// Verifies a bounded server token and validates its salt encoding.
